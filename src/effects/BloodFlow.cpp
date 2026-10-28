@@ -1,8 +1,11 @@
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 
 #include "BloodFlow.h"
+#include "BloodFluid.h"
+#include "../core/RenderRect.h"
 #include "../core/FrameClock.h"
 
 namespace {
@@ -114,6 +117,7 @@ namespace {
 		bool HasBody;
 		float BoundCenter[3], BoundRadius;
 		float MinZ;
+		float GroundZ, GroundSlope[2];
 		UInt16 Dismembered;
 		float PartPos[16][3];
 		bool PartFound[16];
@@ -123,11 +127,53 @@ namespace {
 		"Bip01 R Forearm", "Bip01 L Thigh", "Bip01 L Calf", "Bip01 L Foot", "Bip01 R Thigh", "Bip01 R Calf", "Bip01 R Foot", "Bip01 Head",
 		nullptr, nullptr };
 
-	int WalkNodes(NiAVObject* root, float& minZ, float* centre, const float* bound, float reach, RawActor* parts = nullptr) {
+	void GroundUnderBones(const float (*bones)[3], const bool* bone, int count, const float* centre, float minZ, float* ground) {
+		ground[0] = minZ - 1.5f; ground[1] = ground[2] = 0.0f;
+		int boneCount = 0;
+		for (int i = 0; i < count; i++) boneCount += bone[i] ? 1 : 0;
+		if (boneCount < 6) return;
+		float slope[2] = { 0.0f, 0.0f };
+		bool use[160];
+		for (int i = 0; i < count; i++) use[i] = bone[i];
+		for (int pass = 0; pass < 2; pass++) {
+			double n = 0.0, mx = 0.0, my = 0.0, mz = 0.0;
+			for (int i = 0; i < count; i++) if (use[i]) { n += 1.0; mx += bones[i][0] - centre[0]; my += bones[i][1] - centre[1]; mz += bones[i][2]; }
+			if (n < 4.0) break;
+			mx /= n; my /= n; mz /= n;
+			double sxx = 0.0, sxy = 0.0, syy = 0.0, sxz = 0.0, syz = 0.0;
+			for (int i = 0; i < count; i++) {
+				if (!use[i]) continue;
+				const double x = bones[i][0] - centre[0] - mx, y = bones[i][1] - centre[1] - my, z = bones[i][2] - mz;
+				sxx += x * x; sxy += x * y; syy += y * y; sxz += x * z; syz += y * z;
+			}
+			const double ridge = n * 100.0;
+			sxx += ridge; syy += ridge;
+			const double det = sxx * syy - sxy * sxy;
+			if (!(det > 1e-6)) break;
+			slope[0] = (float)((sxz * syy - syz * sxy) / det);
+			slope[1] = (float)((syz * sxx - sxz * sxy) / det);
+			const float steep = sqrtf(slope[0] * slope[0] + slope[1] * slope[1]);
+			if (steep > 0.6f) { slope[0] *= 0.6f / steep; slope[1] *= 0.6f / steep; }
+			if (pass > 0) break;
+			const float level = (float)mz - slope[0] * (float)mx - slope[1] * (float)my;
+			for (int i = 0; i < count; i++)
+				use[i] = bone[i] && bones[i][2] - (level + slope[0] * (bones[i][0] - centre[0]) + slope[1] * (bones[i][1] - centre[1])) <= 0.0f;
+		}
+		float lowest = 1e30f;
+		for (int i = 0; i < count; i++)
+			lowest = min(lowest, bones[i][2] - slope[0] * (bones[i][0] - centre[0]) - slope[1] * (bones[i][1] - centre[1]));
+		if (!(lowest < 1e29f)) return;
+		ground[0] = lowest - 1.5f; ground[1] = slope[0]; ground[2] = slope[1];
+	}
+
+	int WalkNodes(NiAVObject* root, float& minZ, float* centre, float* ground, const float* bound, float reach, RawActor* parts = nullptr) {
 		NiAVObject* stack[64];
 		int top = 0, seen = 0, nodes = 0;
 		float sum[3] = {}, spine[3] = {};
 		bool haveSpine = false;
+		float points[160][3];
+		bool bone[160];
+		int pointCount = 0;
 		stack[top++] = root;
 		while (top && seen < 256) {
 			NiAVObject* object = stack[--top];
@@ -138,6 +184,10 @@ namespace {
 			const bool inReach = dx * dx + dy * dy + dz * dz <= reach * reach;
 			if (inReach) minZ = min(minZ, at.z);
 			NiNode* node = object->IsNiNode();
+			if (inReach && pointCount < 160) {
+				points[pointCount][0] = at.x; points[pointCount][1] = at.y; points[pointCount][2] = at.z;
+				bone[pointCount++] = node && object != root;
+			}
 			if (!node) continue;
 			if (object != root && inReach) {
 				sum[0] += at.x; sum[1] += at.y; sum[2] += at.z;
@@ -157,6 +207,7 @@ namespace {
 		}
 		if (haveSpine) { centre[0] = spine[0]; centre[1] = spine[1]; centre[2] = spine[2]; }
 		else if (nodes) { centre[0] = sum[0] / nodes; centre[1] = sum[1] / nodes; centre[2] = sum[2] / nodes; }
+		GroundUnderBones(points, bone, pointCount, centre, minZ, ground);
 		return nodes ? seen : 0;
 	}
 
@@ -219,8 +270,10 @@ namespace {
 								a.RefID = refID; a.LifeState = lifeState;
 							}
 							else {
-								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
+								float ground[3];
+								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, ground, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
 									a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+								a.GroundZ = ground[0]; a.GroundSlope[0] = ground[1]; a.GroundSlope[1] = ground[2];
 								WalkCache& w = Walks[a.RefID];
 								w.Center[0] = boundAt[0]; w.Center[1] = boundAt[1]; w.Center[2] = boundAt[2];
 								w.Radius = bound->Radius; w.Dismembered = a.Dismembered; w.Time = now; w.Result = a;
@@ -267,6 +320,7 @@ namespace {
 		double StillSince = -1.0;
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);
+		float PoolSlope[2] = { 0.0f, 0.0f };
 		float MaxRadius = 0.0f;
 		float Tint = 0.0f;
 		UInt16 GibMask = 0;
@@ -331,6 +385,9 @@ static D3DXVECTOR4 BloodFlowShape(0.0f, 0.0f, 0.0f, 0.0f);
 static D3DXVECTOR4 BloodFlowGround(1.0f, 3.0f, 0.0f, 0.0f);
 static bool BloodFlowGroundFit = true;
 static bool BloodFlowGroundUnseen = false;
+static float BloodFlowBaseDripLength = 40.0f;
+static float BloodFlowBaseSplatDrips = 1.0f;
+static D3DXVECTOR4 BloodFlowLook(1.0f, 1.0f, 0.0f, 0.0f);
 
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
@@ -340,6 +397,7 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowSplat", &Constants.Splat);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowGround", &BloodFlowGround);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowLook", &BloodFlowLook);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
@@ -422,6 +480,12 @@ void BloodFlowEffect::UpdateSettings() {
 		Mask.Reset();
 		MaskShape[0] = Settings.SplatReach; MaskShape[1] = Settings.SplatSpray; MaskShape[2] = Settings.SplatDrips;
 	}
+	BloodFlowBaseDripLength = Settings.DripLength;
+	BloodFlowBaseSplatDrips = Settings.SplatDrips;
+	if (TheSettingManager->GetSettingI(section, "OldLook") != 0) BloodFlowLook = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);
+	else BloodFlowLook = D3DXVECTOR4(std::clamp(TheSettingManager->GetSettingF(section, "Sheen"), 0.0f, 2.0f), 0.25f,
+		std::clamp(TheSettingManager->GetSettingF(section, "SheenTint"), 0.0f, 1.0f), SrgbToLinear(std::clamp(TheSettingManager->GetSettingF(section, "MatchFloor"), 0.0f, 0.6f)));
+	TheBloodFluid().ReadSettings();
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
 	static int loggedAtlas = -1;
 	if (loggedAtlas != (Settings.SplatterAtlas ? 1 : 0)) {
@@ -561,6 +625,7 @@ void BloodFlowEffect::GatherSplats() {
 		if (!(radius > 0.5f && radius < 200.0f)) radius = 8.0f;
 		item.Center = center;
 		item.Normal = normal;
+		item.SlopeX = item.SlopeY = 0.0f;
 		item.Radius = max(std::clamp(radius, 1.0f, 60.0f), grownRadius[c]);
 		item.Age = std::clamp(fabsf(s.Direction[2]) > 0.99f ? s.Age - Settings.GibHold : s.Age, 0.0f, 1e6f);
 		item.Seed = Hash01(HashFloats(s.Origin, 3));
@@ -639,12 +704,13 @@ void BloodFlowEffect::GatherPools() {
 				body.Locked = true;
 				if (!body.EverLocked) body.LockAt = old ? Clock - 1e5 : Clock;
 				body.EverLocked = true;
-				body.Pool = D3DXVECTOR3(now.x, now.y, a.MinZ - 1.5f);
+				body.Pool = D3DXVECTOR3(now.x, now.y, a.GroundZ);
+				body.PoolSlope[0] = a.GroundSlope[0]; body.PoolSlope[1] = a.GroundSlope[1];
 				body.MaxRadius = maxRadius;
 				if (LoggedPools < 12) {
 					LoggedPools++;
-					Logger::Log("BloodFlow: pool under %08X at (%.1f %.1f %.1f), body radius %.1f, lowest node %.1f, pool radius %.1f, %s",
-						a.RefID, now.x, now.y, body.Pool.z, a.BoundRadius, a.MinZ, maxRadius, old ? "old body" : "fresh");
+					Logger::Log("BloodFlow: pool under %08X at (%.1f %.1f %.1f), body radius %.1f, lowest node %.1f, ground slope (%.2f %.2f), pool radius %.1f, %s",
+						a.RefID, now.x, now.y, body.Pool.z, a.BoundRadius, a.MinZ, a.GroundSlope[0], a.GroundSlope[1], maxRadius, old ? "old body" : "fresh");
 				}
 			}
 		}
@@ -656,7 +722,8 @@ void BloodFlowEffect::GatherPools() {
 				if (body.Locked && !(fresh & (1 << k))) continue;
 				const float* at = a.PartFound[k] ? a.PartPos[k] : a.BoundCenter;
 				const float spread = a.PartFound[k] ? 0.0f : a.BoundRadius * 0.3f;
-				body.GibPool[k] = D3DXVECTOR3(at[0] + spread * cosf(k * 1.7f), at[1] + spread * sinf(k * 1.7f), a.MinZ - 1.5f);
+				const float gx = at[0] + spread * cosf(k * 1.7f), gy = at[1] + spread * sinf(k * 1.7f);
+				body.GibPool[k] = D3DXVECTOR3(gx, gy, a.GroundZ + a.GroundSlope[0] * (gx - now.x) + a.GroundSlope[1] * (gy - now.y));
 			}
 			if (fresh && LoggedGibs < 20) {
 				LoggedGibs++;
@@ -693,6 +760,7 @@ void BloodFlowEffect::GatherPools() {
 		item.Fresh = false;
 		item.Center = body.Pool;
 		item.Normal = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+		item.SlopeX = body.PoolSlope[0]; item.SlopeY = body.PoolSlope[1];
 		item.Radius = body.MaxRadius;
 		item.Age = (float)min(Clock - body.LockAt, 1e5);
 		item.Seed = Hash01(candidates[c].RefID);
@@ -735,6 +803,7 @@ void BloodFlowEffect::GatherPools() {
 			item.Fresh = false;
 			item.Center = body.GibPool[k];
 			item.Normal = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+			item.SlopeX = body.PoolSlope[0]; item.SlopeY = body.PoolSlope[1];
 			item.Radius = std::clamp(body.MaxRadius * Settings.GibPools, 4.0f, 60.0f);
 			item.Age = (float)min(Clock - max(body.GibAt[k], body.LockAt), 1e5);
 			item.Seed = Hash01(candidates[c].RefID * 31u + (UInt32)k * 977u);
@@ -778,7 +847,7 @@ void BloodFlowEffect::AddTestSplats() {
 		Item& item = Items[Count++];
 		item = Item();
 		item.Center = TestAnchor + D3DXVECTOR3(((i % columns) - 1.5f) * 70.0f, (float)(i / columns) * 70.0f - 70.0f, 0.0f);
-		item.Normal = D3DXVECTOR3(0.05f, -0.05f, 1.0f);
+		item.Normal = D3DXVECTOR3(-0.05f, 0.05f, -1.0f);
 		item.Radius = 20.0f + 40.0f * hash;
 		item.Age = (float)(Clock - TestStart);
 		item.Seed = hash;
@@ -793,8 +862,16 @@ void BloodFlowEffect::UpdateConstants() {
 	static CpuTimer gatherTimer("Blood gather (CPU)");
 	CpuProfileScope cpu(gatherTimer);
 	Clock += ElapsedOncePerFrame(lastFrameTime) * TunedClockRate;
+	{
+		const bool replace = TheBloodFluid().ReplacesStreams();
+		Settings.DripLength = replace ? 0.0f : BloodFlowBaseDripLength;
+		const float splatDrips = replace ? 0.0f : BloodFlowBaseSplatDrips;
+		if (Settings.SplatDrips != splatDrips) { Settings.SplatDrips = splatDrips; Mask.Reset(); MaskShape[2] = splatDrips; }
+	}
 	if (TheShaderManager->GameState.isUnderwater) { Count = 0; return; }
+	bool gathered = false;
 	if (TheFrameRateManager->Time != lastGatherTime || !Settings.CheapGather) {
+		gathered = true;
 		lastGatherTime = TheFrameRateManager->Time;
 		Frame++;
 		Count = 0;
@@ -812,6 +889,17 @@ void BloodFlowEffect::UpdateConstants() {
 			Items[i].Visible = !Settings.CheapGather || BloodFlowBoxes::OnScreen(Items[i], Settings.DripLength, Settings.MaxFall, eye, origin, TheRenderManager->ViewProjMatrix);
 			OnScreenCount += Items[i].Visible ? 1 : 0;
 		}
+	}
+	if (gathered && TheBloodFluid().On()) {
+		int kept = 0;
+		OnScreenCount = 0;
+		for (int i = 0; i < Count; i++) {
+			if (TheBloodFluid().Offer(Items[i].Slot >= 0 ? Slots[Items[i].Slot].Key : 0, Items[i])) continue;
+			OnScreenCount += Items[i].Visible ? 1 : 0;
+			if (kept != i) Items[kept] = Items[i];
+			kept++;
+		}
+		Count = kept;
 	}
 	if (GpuTimer::Enabled && ++ItemLogTick >= 240) {
 		ItemLogTick = 0;
@@ -838,7 +926,7 @@ void BloodFlowEffect::UpdateConstants() {
 }
 
 bool BloodFlowEffect::ShouldRender() {
-	return Count > 0 && OnScreenCount > 0;
+	return (Count > 0 && OnScreenCount > 0) || TheBloodFluid().Active();
 }
 
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
@@ -864,6 +952,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	const D3DXVECTOR3 eye(cameraPosition.x, cameraPosition.y, cameraPosition.z);
 	const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
 	const float w = (float)TheRenderManager->width, h = (float)TheRenderManager->height;
+	const float rw = (float)RenderRect::Width((unsigned)w), rh = (float)RenderRect::Height((unsigned)h);
 
 	IDirect3DSurface9* previousTarget = nullptr;
 	IDirect3DSurface9* previousDepth = nullptr;
@@ -945,7 +1034,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		MaskConstants = D3DXVECTOR4(1.0f, BloodFlowBoxes::SplatMask::E(Settings.SplatReach), BloodFlowBoxes::SplatMask::D(Settings.SplatReach, Settings.SplatDrips),
 			(float)BloodFlowBoxes::SplatMask::CellsPerRow);
 		MaskSizeConstants = D3DXVECTOR4(1.0f / BloodFlowBoxes::SplatMask::AtlasWidth, 1.0f / BloodFlowBoxes::SplatMask::AtlasHeight, (float)BloodFlowBoxes::SplatMask::CellSize, 0.0f);
-		const int bakeTriangles = Mask.Update(Items, Count, Settings.SplatReach, Settings.SplatDrips, eye, h, TheRenderManager->projMatrix._22, MaskBakeVertices);
+		const int bakeTriangles = Mask.Update(Items, Count, Settings.SplatReach, Settings.SplatDrips, eye, rh, TheRenderManager->projMatrix._22, MaskBakeVertices);
 		static int loggedMask = 0;
 		if (loggedMask < 5 && Mask.baked > 0) { loggedMask++; Logger::Log("BloodFlow: splat mask: %d cells worked out, %d splats drawn from their cell", Mask.baked, Mask.masked); }
 		if (bakeTriangles) {
@@ -1004,13 +1093,14 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	const bool chained = chain.Owns(target, rendered);
 	IDirect3DSurface9* image = chained ? TheTextureManager->RenderedSurface : target;
 	RECT area;
-	area.left = (LONG)max(0.0f, floorf(std::clamp(minU, 0.0f, 1.0f) * w) - 2.0f);
-	area.top = (LONG)max(0.0f, floorf(std::clamp(minV, 0.0f, 1.0f) * h) - 2.0f);
-	area.right = (LONG)min(w, ceilf(std::clamp(maxU, 0.0f, 1.0f) * w) + 2.0f);
-	area.bottom = (LONG)min(h, ceilf(std::clamp(maxV, 0.0f, 1.0f) * h) + 2.0f);
+	area.left = (LONG)max(0.0f, floorf(std::clamp(minU, 0.0f, 1.0f) * rw) - 2.0f);
+	area.top = (LONG)max(0.0f, floorf(std::clamp(minV, 0.0f, 1.0f) * rh) - 2.0f);
+	area.right = (LONG)min(rw, ceilf(std::clamp(maxU, 0.0f, 1.0f) * rw) + 2.0f);
+	area.bottom = (LONG)min(rh, ceilf(std::clamp(maxV, 0.0f, 1.0f) * rh) + 2.0f);
 	if (triangles && area.right > area.left && area.bottom > area.top) {
 		if (source) device->StretchRect(image, &area, source, &area, D3DTEXF_NONE);
 		device->SetRenderTarget(0, image);
+		RenderRect::ApplyViewport(device);
 		Effect->SetTechnique(boxes);
 		SetCT();
 		if (SUCCEEDED(Effect->Begin(&passes, 0))) {
@@ -1057,6 +1147,12 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		}
 	}
 	bindVertexBounds(false);
+	static GpuTimer fluidTimer("  Blood fluid");
+	bool fluidDrew = false;
+	if (TheBloodFluid().On() && !RenderRect::Active()) {
+		GpuProfileScope gpu(fluidTimer, device);
+		fluidDrew = TheBloodFluid().Render(device, image, source, this);
+	}
 	if (previousDeclaration) device->SetVertexDeclaration(previousDeclaration);
 	device->SetStreamSource(0, previousStream, previousOffset, previousStride);
 	device->SetRenderTarget(0, previousTarget);
@@ -1064,6 +1160,8 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	if (previousDepth) previousDepth->Release();
 	if (previousDeclaration) previousDeclaration->Release();
 	if (previousStream) previousStream->Release();
-	if (triangles && area.right > area.left && area.bottom > area.top && !chained && rendered && rendered != target)
+	if (fluidDrew && !chained && rendered && rendered != target)
+		device->StretchRect(target, NULL, rendered, NULL, D3DTEXF_NONE);
+	else if (triangles && area.right > area.left && area.bottom > area.top && !chained && rendered && rendered != target)
 		device->StretchRect(target, &area, rendered, &area, D3DTEXF_NONE);
 }

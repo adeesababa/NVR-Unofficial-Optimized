@@ -1,3 +1,5 @@
+# Builds tests\actor_only_redraw.cpp (32-bit) and runs it on this machine's D3D9; with -Dxvk <folder>, a second time with
+# that folder's d3d9.dll next to the exe (DXVK, as the game may run).
 param([string]$Dxvk = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path

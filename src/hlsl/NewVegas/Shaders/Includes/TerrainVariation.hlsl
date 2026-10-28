@@ -1,3 +1,4 @@
+
 float4 TESR_TerrainVariationData : register(c95);
 float4 TESR_TerrainVariationExtra : register(c96);
 

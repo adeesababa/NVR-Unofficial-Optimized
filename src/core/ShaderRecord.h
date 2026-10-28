@@ -96,6 +96,7 @@ public:
 	bool					HasRenderedBuffer;
 	bool					HasDepthBuffer;
 	bool					HasTerrainBlendDepth = false;
+	bool					HasDisplaceDepth = false;
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;
 	bool					UsedOnce = false;
@@ -139,6 +140,7 @@ public:
 };
 
 inline int MarkShadersFrom = 0, MarkShadersTo = 0, MarkShadersFamily = 0, MarkShadersVanilla = 0, MarkShadersVsFrom = 0, MarkShadersVsTo = 0;
+inline bool GameShaderEyes = true;
 
 class NiD3DPixelShaderEx : public NiD3DPixelShader {
 public:

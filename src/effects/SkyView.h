@@ -19,6 +19,9 @@ public:
 	void	RegisterTextures();
 	bool	ShouldRender();
 	void	RenderTable(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget);
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	ExtPass	extPass[5];
 
 private:
 	bool	transBuilt = false, msBuilt = false;

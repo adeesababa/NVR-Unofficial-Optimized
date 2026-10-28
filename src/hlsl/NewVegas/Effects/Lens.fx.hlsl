@@ -37,12 +37,13 @@ VSOUT FrameVS(VSIN IN)
 }
 
 #include "Includes/Helpers.hlsl"
+#include "Includes/RenderRect.hlsl"
 
 float4 Lens(VSOUT IN) : COLOR0 
 {
 	float2 uv = IN.UVCoord;
     float4 color = linearize(tex2D(TESR_SourceBuffer, uv));
-    float4 dirtColor = pows(tex2D(TESR_LensSampler, uv), max(0, 3 - TESR_LensData.z));
+    float4 dirtColor = pows(tex2D(TESR_LensSampler, rectToScreen(uv)),max(0, 3 - TESR_LensData.z));
 
     // Get the bloom mask to calculate areas where dirt lens will appear
 	float4 bloom = tex2D(TESR_BloomBuffer, IN.UVCoord);

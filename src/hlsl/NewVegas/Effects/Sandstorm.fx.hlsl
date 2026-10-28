@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_FogColor;
 float4 TESR_SunColor;
@@ -319,6 +320,7 @@ float4 SandstormPS(VSOUT IN) : COLOR0
 	result *= surfaceDetail;
 	return delinearize(float4(result, color.a));
 }
+
 
 
 #ifndef SANDFAST_STREAK_SAMPLES

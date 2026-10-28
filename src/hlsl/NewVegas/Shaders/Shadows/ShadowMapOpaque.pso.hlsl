@@ -1,5 +1,6 @@
+
 #ifndef SHADOW_FIXED_MODE
-    #define SHADOW_FIXED_MODE 2
+    #define SHADOW_FIXED_MODE 3
 #endif
 
 float4 TESR_ShadowData : register(c0);

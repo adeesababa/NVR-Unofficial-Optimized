@@ -3,6 +3,8 @@
 #include "GrassCollision.h"
 #include "../core/GrassWind.h"
 #include "../core/PlantWind.h"
+#include "GpuGrass.h"
+#include "../core/GrassShadows.h"
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -17,6 +19,8 @@ void GrassShaders::UpdateSettings() {
 	Constants.Scale.x = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleX");
 	Constants.Scale.y = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleY");
 	Constants.Scale.z = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleZ");
+	Constants.Scale.w = (TheSettingManager->GetSettingI("Shaders.Grass.Main", "ShadowFix") ? 1.0f : 0.0f)
+		+ (TheSettingManager->GetSettingI("Shaders.Grass.Main", "SkyLightScale") ? 2.0f : 0.0f);
 	GameShaderFix = TheSettingManager->GetSettingI("Shaders.Grass.Main", "GameShaderFix");
 	DrawFirst = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirst");
 	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");
@@ -24,6 +28,8 @@ void GrassShaders::UpdateSettings() {
 	NewGrass::ReadSettings();
 	GrassCollision::ReadSettings();
 	GrassWind::ReadSettings();
+	GpuGrass::ReadSettings();
+	GrassShadows::ReadSettings();
 }
 
 void GrassShaders::UpdateConstants() {

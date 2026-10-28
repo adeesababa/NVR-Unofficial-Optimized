@@ -116,7 +116,7 @@ float getCaustics(float3 pos){
 float4 Godrays( VSOUT IN) : COLOR0 {
 	// volumetric god rays rendered at quarter resolution
 	float2 uv = IN.UVCoord * 2;
-	clip( (uv <= 1) - 1);
+	clip( (uv <= TESR_RenderScale.xy) - 1);
 	// if (uv.x > 1 && uv.y >1) return tex2D(TESR_RenderedBuffer, uv - 1);
 	// if (uv.x > 1 || uv.y >1) return float4(0, 0, 0, 1);
 
@@ -229,8 +229,9 @@ float4 WaterDistortion( VSOUT IN ) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	if (aboveWater(TESR_CameraPosition.z, worldPos.z, TESR_WaterSettings.x, depth)) return color;
 
-	IN.UVCoord.x += sin(frame * 3 + IN.UVCoord.x * 60) * 0.001f;
-	IN.UVCoord.y += cos(frame * 3 + IN.UVCoord.y * 60) * 0.001f;
+	float2 s01 = rectToScreen(IN.UVCoord);
+	IN.UVCoord.x += sin(frame * 3 + s01.x * 60) * 0.001f * TESR_RenderScale.x;
+	IN.UVCoord.y += cos(frame * 3 + s01.y * 60) * 0.001f * TESR_RenderScale.y;
 	color = tex2D(TESR_RenderedBuffer, IN.UVCoord);
 	color.a = 1;
     return color;

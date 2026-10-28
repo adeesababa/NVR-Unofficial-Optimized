@@ -274,10 +274,19 @@
     #ifndef LAMP_REACH_SKIP
         #define LAMP_REACH_SKIP 0
     #endif
-    #if LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+    #ifndef NO_SLOT_LIMIT
+        #define NO_SLOT_LIMIT 0
+    #endif
+    #if NO_SLOT_LIMIT && LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6 && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+        #define LAMP_IFK(k, att) [branch] if ((att) > 0.0f && (k) < lightsUsed)
+        #define LAMP_SLOT_SKIP 1
+    #elif LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+        #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+        #define LAMP_IFK(k, att) LAMP_IF(att)
     #else
         #define LAMP_IF(att)
+        #define LAMP_IFK(k, att)
     #endif
 #endif
 
@@ -583,12 +592,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifdef OBJ_SMOOTH_NORMAL_W
         {
             #ifndef SKIN
-                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+                const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz;
             #else
-                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+                const float3 smoothN = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz;
             #endif
-            OUT.lightDistSq.w = smoothOct.x;
-            OUT.lightDir.w = smoothOct.y;
+            OUT.lightDistSq.w = smoothN.x;
+            OUT.lightDir.w = smoothN.y;
+            OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
         }
     #endif
 
@@ -796,10 +806,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     SHADOW_WP_STORE(OUT, shadowWorldPos);
     #if OBJECT_SMOOTH_NORMALS
         #ifndef SKIN
-            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+            const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz;
         #else
-            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+            const float3 smoothN = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz;
         #endif
+        OUT.uv.zw = smoothN.xy;
+        OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
     #endif
 
     return OUT;
@@ -813,7 +825,13 @@ struct PS_INPUT {
     float4 foldColor : COLOR0;
 #endif
 #ifdef NVR_LAMP_SUMS
+#if defined(NVR_SM4) && NVR_SM4
+    float4 vpos4 : VPOS;
+    #define NVR_IN_VPOS (IN.vpos4.xy - 0.5f)
+#else
     float2 vpos : VPOS;
+    #define NVR_IN_VPOS IN.vpos
+#endif
 #endif
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;
@@ -1033,7 +1051,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         #ifdef OBJ_SMOOTH_NORMAL_INTERP
             float3 shadowGeometricNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);
         #elif defined(OBJ_SMOOTH_NORMAL_W)
-            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowDecodeNormal(float2(IN.lightDistSq.w, IN.lightDir.w)), IN.shadowWorldPos.xyz);
+            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowPlainNormal(float2(IN.lightDistSq.w, IN.lightDir.w), IN.vertexColor.a), IN.shadowWorldPos.xyz);
         #else
             float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
         #endif
@@ -1275,7 +1293,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
     #ifdef NVR_LAMP_SUMS
         [branch] if (TESR_PassRedirect.y > 0.5f) {
-            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((NVR_IN_VPOS + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
             finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
         }
     #endif
@@ -1408,7 +1426,7 @@ struct PS_INPUT {
 };
 
 #if OBJECT_SMOOTH_NORMALS
-    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), (p))
+    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), (p))
 #else
     #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
 #endif
@@ -1518,6 +1536,19 @@ PS_OUTPUT main(PS_INPUT IN) {
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
+        #ifdef LAMP_SLOT_SKIP
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            float a;
+            #ifdef OPT
+                a = PT_ATT(0);				[branch] if (a > 0.0f && 0 < lightsUsed) ptShadow0 = POINT_SHADOW_LOOKUP(0, a);
+            #endif
+            a = PT_ATT(lightOffset + 0);	[branch] if (a > 0.0f && 1 < lightsUsed) ptShadow1 = POINT_SHADOW_LOOKUP(1, a);
+            a = PT_ATT(lightOffset + 1);	[branch] if (a > 0.0f && 2 < lightsUsed) ptShadow2 = POINT_SHADOW_LOOKUP(2, a);
+            a = PT_ATT(lightOffset + 2);	[branch] if (a > 0.0f && 3 < lightsUsed) ptShadow3 = POINT_SHADOW_LOOKUP(3, a);
+            a = PT_ATT(lightOffset + 3);	[branch] if (a > 0.0f && 4 < lightsUsed) ptShadow4 = POINT_SHADOW_LOOKUP(4, a);
+            a = PT_ATT(lightOffset + 4);	[branch] if (a > 0.0f && 5 < lightsUsed) ptShadow5 = POINT_SHADOW_LOOKUP(5, a);
+        }
+        #else
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #ifdef OPT
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, PT_ATT(0));
@@ -1532,6 +1563,7 @@ PS_OUTPUT main(PS_INPUT IN) {
                 ptShadow5 = POINT_SHADOW_LOOKUP(5, PT_ATT(lightOffset + 4));
             #endif
         }
+        #endif
         #undef PT_ATT
     #endif
 

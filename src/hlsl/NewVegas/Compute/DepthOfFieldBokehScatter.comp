@@ -1,0 +1,151 @@
+
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_samplerless_texture_functions : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform texture2D t_source;
+layout(set = 1, binding = 1) uniform texture2D t_blur;
+layout(set = 1, binding = 2) uniform texture2D t_depth;
+
+struct Sprite {
+    vec2  pos;
+    float radius;
+    float depth;
+    vec3  energy;
+    float nearField;
+};
+
+layout(set = 1, binding = 3, std430) buffer Sprites {
+    uint   spriteCount;
+    uint   spritePad[3];
+    Sprite sprites[];
+};
+
+layout(set = 1, binding = 4, std430) buffer Accum {
+    uint accum[];
+};
+
+layout(push_constant) uniform Push {
+    uint  halfW;
+    uint  halfH;
+    uint  fullW;
+    uint  fullH;
+    uint  phase;
+    uint  maxSprites;
+    uint  shape;
+    uint  samplerIndex;
+    float threshold;
+    float intensity;
+    float maxRadius;
+    float rotation;
+} pc;
+
+const float FIXED = 65536.0;
+
+float lumaAt(ivec2 h) {
+    h = clamp(h, ivec2(0), ivec2(pc.halfW - 1u, pc.halfH - 1u));
+    vec2 uv = (vec2(h) * 2.0 + 1.0) / vec2(pc.fullW, pc.fullH);
+    return luma(textureLod(sampler2D(t_source, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).rgb);
+}
+
+float shapeDistance(vec2 p) {
+    float r = length(p);
+    if (pc.shape < 3u) return r;
+    float n = float(pc.shape);
+    float sector = 6.28318530718 / n;
+    float a = atan(p.y, p.x) + pc.rotation;
+    a = mod(a, sector) - 0.5 * sector;
+    return r * cos(a) / cos(0.5 * sector);
+}
+
+float shapeArea(float radius) {
+    if (pc.shape < 3u) return 3.14159265359 * radius * radius;
+    float n = float(pc.shape);
+    return 0.5 * n * sin(6.28318530718 / n) * radius * radius;
+}
+
+void detect() {
+    ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    if (h.x >= int(pc.halfW) || h.y >= int(pc.halfH)) return;
+    float center = lumaAt(h);
+    if (center <= pc.threshold) return;
+
+    float ringScale = float(pc.fullH) / 1080.0;
+    float neighbours = 0.0;
+    for (int k = 0; k < 8; k++) {
+        float a = float(k) * 0.785398163 + 0.3927;
+        vec2 dir = vec2(cos(a), sin(a));
+        neighbours += lumaAt(h + ivec2(round(dir * 6.0 * ringScale)));
+        neighbours += lumaAt(h + ivec2(round(dir * 12.0 * ringScale)));
+    }
+    neighbours /= 16.0;
+
+    vec2 uv = (vec2(h) * 2.0 + 1.0) / vec2(pc.fullW, pc.fullH);
+    vec2 blur = textureLod(sampler2D(t_blur, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).rg;
+    float coc = max(blur.r, blur.g);
+    float radius = coc * pc.maxRadius;
+    if (radius < 1.0) return;
+
+    float bright = saturate((center - pc.threshold) / max(1.0 - pc.threshold, 0.01));
+    float standOut = saturate((center - neighbours) / max(0.25 * center, 0.001));
+    float weight = bright * standOut * saturate(radius - 1.0);
+    if (weight < 0.02) return;
+
+    vec3 colour = linearize(textureLod(sampler2D(t_source, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).rgb);
+    float boost = 1.0 / (1.0 - min(luma(colour), 0.95));
+
+    uint index = atomicAdd(spriteCount, 1u);
+    if (index >= pc.maxSprites) return;
+    Sprite s;
+    s.pos = vec2(h) + 0.5;
+    s.radius = radius;
+    s.depth = texelFetch(t_depth, ivec2(h * 2), 0).x;
+    s.energy = colour * boost * weight * pc.intensity;
+    s.nearField = blur.r > blur.g ? 1.0 : 0.0;
+    sprites[index] = s;
+}
+
+void splat() {
+    uint slot = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint count = min(spriteCount, pc.maxSprites);
+    if (slot >= count) return;
+    uint t = gl_LocalInvocationIndex;
+
+    Sprite s = sprites[slot];
+    float r = s.radius;
+    int ir = int(ceil(r + 0.5));
+    int side = 2 * ir + 1;
+    float inverseArea = 1.0 / max(shapeArea(r), 1.0);
+    ivec2 origin = ivec2(floor(s.pos)) - ir;
+    vec2 fullScale = vec2(pc.fullW, pc.fullH) / vec2(pc.halfW, pc.halfH);
+    for (int i = int(t); i < side * side; i += 256) {
+        ivec2 q = origin + ivec2(i % side, i / side);
+        if (q.x < 0 || q.y < 0 || q.x >= int(pc.halfW) || q.y >= int(pc.halfH)) continue;
+        vec2 offset = (vec2(q) + 0.5 - s.pos) / r;
+        float d = shapeDistance(offset);
+        float coverage = saturate((1.0 - d) * r + 0.5);
+        if (coverage <= 0.0) continue;
+        if (s.nearField < 0.5) {
+            ivec2 full = ivec2(vec2(q) * fullScale);
+            float destDepth = texelFetch(t_depth, full, 0).x;
+            if (destDepth < s.depth * 0.9) {
+                vec2 destBlur = texelFetch(t_blur, full, 0).rg;
+                coverage *= saturate(max(destBlur.r, destBlur.g) * 2.0);
+                if (coverage <= 0.0) continue;
+            }
+        }
+        vec3 add = min(s.energy * (coverage * inverseArea), vec3(4.0));
+        uint base = (uint(q.y) * pc.halfW + uint(q.x)) * 3u;
+        atomicAdd(accum[base + 0u], uint(add.r * FIXED + 0.5));
+        atomicAdd(accum[base + 1u], uint(add.g * FIXED + 0.5));
+        atomicAdd(accum[base + 2u], uint(add.b * FIXED + 0.5));
+    }
+}
+
+void main() {
+    if (pc.phase == 0u) detect();
+    else splat();
+}

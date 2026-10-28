@@ -1,6 +1,128 @@
 #include "GodRays.h"
 #include "../core/GpuProfiler.h"
 #include "../core/TestTools.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
+
+namespace {
+	struct GodRaysPush {
+		D3DXVECTOR4 skip;
+		D3DXVECTOR4 reduce;
+		float blurStep;
+		float storeAttenuation;
+		UInt32 linearSampler;
+		UInt32 pointSampler;
+	};
+	struct GodRaysUniforms {
+		D3DXMATRIX projection, invProjection;
+		D3DXVECTOR4 reciprocalResolution, sunColor, ray, rayColor, data, viewSpaceLightDir, sunDirection, sunPosition, sunAmount, sunsetColor, cameraData, layout;
+	};
+
+	const D3DXVECTOR4* RegisteredConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DTexture9* DepthTexture() {
+		return TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	}
+
+	void MakePipeline(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount, bool point) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[6] = {};
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
+		bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = 0; bindings[count].PushOffset = 40; count++;
+		if (point) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = 1; bindings[count].PushOffset = 44; count++; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(GodRaysPush), true);
+	}
+
+	UINT Resources(NVR_EXT_RESOURCE_BINDING* resources, IDirect3DBaseTexture9* const* textures, UINT textureCount, ID3D9NvrExtBuffer* uniforms, bool point) {
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) { resources[count].Slot = i; resources[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[count].pResource = textures[i]; }
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms; count++;
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = DxvkCompute::LinearClamp(); count++;
+		if (point) { resources[count].Slot = 1; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = DxvkCompute::PointClamp(); count++; }
+		return count;
+	}
+}
+
+bool GodRaysEffect::ExtPrepare(const D3DXVECTOR4& layout) {
+	MakePipeline(extSkyMask, "GodRaysSkyMask", 2, false);
+	MakePipeline(extLightMask, "GodRaysLightMask", 1, false);
+	MakePipeline(extBlur, "GodRaysBlur", 3, true);
+	MakePipeline(extCombine, "GodRaysCombine", 2, false);
+	MakePipeline(extReduce, "GodRaysMaxReduce", 1, false);
+	if (!extSkyMask.Pipeline || !extLightMask.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !extReduce.Pipeline ||
+		!DxvkCompute::LinearClamp() || !DxvkCompute::PointClamp() || !DepthTexture() || !TheTextureManager->RenderedTexture) return false;
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = RegisteredConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* reciprocalResolution = RegisteredConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* sunColor = RegisteredConstant("TESR_SunColor");
+	const D3DXVECTOR4* viewSpaceLightDir = RegisteredConstant("TESR_ViewSpaceLightDir");
+	const D3DXVECTOR4* sunDirection = RegisteredConstant("TESR_SunDirection");
+	const D3DXVECTOR4* sunPosition = RegisteredConstant("TESR_SunPosition");
+	const D3DXVECTOR4* sunAmount = RegisteredConstant("TESR_SunAmount");
+	const D3DXVECTOR4* sunsetColor = RegisteredConstant("TESR_SunsetColor");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	if (!projection || !invProjection || !reciprocalResolution || !sunColor || !viewSpaceLightDir || !sunDirection || !sunPosition ||
+		!sunAmount || !sunsetColor || !cameraData) return false;
+	GodRaysUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	uniforms.reciprocalResolution = *reciprocalResolution;
+	uniforms.sunColor = *sunColor;
+	uniforms.ray = Constants.Ray;
+	uniforms.rayColor = Constants.RayColor;
+	uniforms.data = Constants.Data;
+	uniforms.viewSpaceLightDir = *viewSpaceLightDir;
+	uniforms.sunDirection = *sunDirection;
+	uniforms.sunPosition = *sunPosition;
+	uniforms.sunAmount = *sunAmount;
+	uniforms.sunsetColor = *sunsetColor;
+	uniforms.cameraData = *cameraData;
+	uniforms.layout = layout;
+	return ExtUniforms(extUniforms, &uniforms, sizeof(uniforms)) != nullptr;
+}
+
+bool GodRaysEffect::ExtDrawPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT pass,
+	IDirect3DTexture9* const* textures, IDirect3DSurface9* const* surfaces, const D3DXVECTOR4& skip, IDirect3DTexture9* reduced) {
+	if (ExtFailed) return false;
+	static const float stepLength = 1.0f / 10.0f;
+	static const float steps[3] = { stepLength, stepLength * stepLength, stepLength * stepLength * stepLength };
+	GodRaysPush push = {};
+	push.skip = skip;
+	ID3D9NvrExtBuffer* uniforms = extUniforms.Buffer;
+	NVR_EXT_RESOURCE_BINDING resources[6] = {};
+	if (pass == 5) {
+		IDirect3DBaseTexture9* inputs[2] = { TheTextureManager->RenderedTexture, textures[0] };
+		const UINT count = Resources(resources, inputs, 2, uniforms, false);
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extCombine.Pipeline, resources, count, &push, sizeof(push), true);
+	}
+	ExtPass* pipeline = &extSkyMask;
+	UINT count = 0;
+	if (pass == 0) {
+		IDirect3DBaseTexture9* inputs[2] = { TheTextureManager->RenderedTexture, DepthTexture() };
+		count = Resources(resources, inputs, 2, uniforms, false);
+	}
+	else if (pass == 1) {
+		pipeline = &extLightMask;
+		IDirect3DBaseTexture9* inputs[1] = { textures[0] };
+		count = Resources(resources, inputs, 1, uniforms, false);
+	}
+	else {
+		pipeline = &extBlur;
+		push.blurStep = steps[pass - 2];
+		push.storeAttenuation = pass == 4 ? 1.0f : 0.0f;
+		IDirect3DBaseTexture9* inputs[3] = { textures[(pass - 1) & 1], reduced ? (IDirect3DBaseTexture9*)reduced : TheTextureManager->RenderedTexture, DepthTexture() };
+		count = Resources(resources, inputs, 3, uniforms, true);
+	}
+	return ExtDrawTo(pipeline->Pipeline, &surfaces[pass & 1], 1, resources, count, &push, sizeof(push));
+}
 
 void GodRaysEffect::UpdateConstants() {
 	Constants.Data.z = std::lerp(nightMult, dayMult, TheShaderManager->GameState.transitionCurve);
@@ -67,6 +189,21 @@ bool GodRaysEffect::RunReduce(IDirect3DDevice9* Device, IDirect3DTexture9* sourc
 	for (int i = 0; i < maxSteps[set]; i++) if (!maxTexture[set][i] || !maxSurface[set][i]) return false;
 	static GpuTimer reduceTimer("  GR max reduce");
 	GpuProfileScope gpu(reduceTimer, Device);
+	if (extDrawing) {
+		IDirect3DTexture9* from = source;
+		UINT w = width, h = height;
+		for (int i = 0; i < maxSteps[set]; i++) {
+			if (ExtFailed) return false;
+			GodRaysPush push = {};
+			push.reduce = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* input = from;
+			NVR_EXT_RESOURCE_BINDING resources[3] = {};
+			const UINT count = Resources(resources, &input, 1, extUniforms.Buffer, false);
+			if (!ExtDrawTo(extReduce.Pipeline, &maxSurface[set][i], 1, resources, count, &push, sizeof(push))) return false;
+			from = maxTexture[set][i]; w = maxWidth[set][i]; h = maxHeight[set][i];
+		}
+		return true;
+	}
 	UINT passes = 0;
 	HRESULT result = Effect->SetTechnique(technique);
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
@@ -294,7 +431,7 @@ bool GodRaysEffect::ShouldRender() {
 }
 
 bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
-	IDirect3DSurface9* RenderedSurface) {
+	IDirect3DSurface9* RenderedSurface, bool ext) {
 	if (dedicatedRenderFailed) return false;
 	const bool lowRes = TheSettingManager->SettingsMain.Main.GodRaysLowRes &&
 		raysTextureLow[0] && raysTextureLow[1] && raysSurfaceLow[0] && raysSurfaceLow[1];
@@ -312,11 +449,12 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(surfaces[0]->GetDesc(&rays)) ||
 		original.X || original.Y ||
-		original.Width != target.Width || original.Height != target.Height ||
+		((original.Width != target.Width || original.Height != target.Height) && !RenderRect::Active()) ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
 		rays.Width != (target.Width + divisor - 1) / divisor || rays.Height != (target.Height + divisor - 1) / divisor ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;
+	if (RenderRect::Active()) { original.Width = target.Width; original.Height = target.Height; }
 
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -329,6 +467,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* depthSurface = nullptr;
 	DWORD oldScissorEnabled = FALSE;
 	HRESULT result = Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled);
+	if (ext && (FAILED(result) || oldScissorEnabled || !ExtPrepare(layout))) return false;
 	if (SUCCEEDED(result)) result = Device->GetDepthStencilSurface(&depthSurface);
 	if (SUCCEEDED(result) && !ReShadeIntegration::KeepDepthBound()) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
@@ -344,16 +483,26 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	bool heavySkipped = false;
 	const bool checkOnly = idleCheckFrame && idleEmptyKnown;
 	UINT passes = 0;
+	static GpuTimer passTimers[6] = { GpuTimer("  GR sky mask (half)"), GpuTimer("  GR light mask (half)"),
+		GpuTimer("  GR blur 1 (half)"), GpuTimer("  GR blur 2 (half)"), GpuTimer("  GR blur 3 (half)"),
+		GpuTimer("  GR combine (full)") };
+	extDrawing = ext;
 	for (int stage = 0; stage < 2 && SUCCEEDED(result); stage++) {
+	if (ext) {
+		const D3DXVECTOR4 skip(maskReduced ? 1.0f : 0.0f, skipIdle ? 1.0f : 0.0f, idleLimit, 0.0f);
+		const UINT first = stage == 0 ? 0 : 2, last = stage == 0 ? (checkOnly ? 1 : 2) : 6;
+		for (UINT p = first; p < last && SUCCEEDED(result); ++p) {
+			GpuProfileScope gpuPass(passTimers[p], Device);
+			if (!ExtDrawPass(Device, RenderTarget, RenderedSurface, p, textures, surfaces, skip, maskReduced ? maxTexture[set][maxSteps[set] - 1] : nullptr)) result = E_FAIL;
+		}
+	}
+	else {
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
 	if (skipHandle) { const D3DXVECTOR4 skip(maskReduced ? 1.0f : 0.0f, skipIdle ? 1.0f : 0.0f, idleLimit, 0.0f); Effect->SetVector(skipHandle, &skip); }
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		static GpuTimer passTimers[6] = { GpuTimer("  GR sky mask (half)"), GpuTimer("  GR light mask (half)"),
-			GpuTimer("  GR blur 1 (half)"), GpuTimer("  GR blur 2 (half)"), GpuTimer("  GR blur 3 (half)"),
-			GpuTimer("  GR combine (full)") };
 		const UINT first = stage == 0 ? 0 : 2, last = stage == 0 ? (passes < 2 ? passes : (checkOnly ? 1 : 2)) : passes;
 		for (UINT p = first; p < last && SUCCEEDED(result); ++p) {
 			GpuProfileScope gpuPass(passTimers[p < 6 ? p : 5], Device);
@@ -367,11 +516,13 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 			if (FAILED(result)) break;
 			if (p > 0) Device->SetTexture(5, textures[combine ? 0 : (p - 1) & 1]);
 			if (p >= 2) Device->SetTexture(6, maskReduced ? maxTexture[set][maxSteps[set] - 1] : nullptr);
+			RenderRect::ApplyViewport(Device);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
 		}
 		Effect->End();
+	}
 	}
 	if (stage == 0 && SUCCEEDED(result)) {
 		if (idleCheckFrame) {
@@ -384,6 +535,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		if (skipEmpty && skipHandle) maskReduced = RunReduce(Device, textures[1], reduced.Width, reduced.Height, set);
 	}
 	}
+	extDrawing = false;
 #if NVR_TEST_TOOLS
 	if (combineCheck && SUCCEEDED(result) && !heavySkipped) CombineCheck(Device, RenderedSurface, finalTarget);
 #endif
@@ -394,11 +546,15 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetRenderState(D3DRS_SCISSORTESTENABLE, oldScissorEnabled);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
-	if (SUCCEEDED(result) && !heavySkipped) {
+	if (SUCCEEDED(result) && !heavySkipped && !ext) {
 		if (chained) chain.Commit();
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	idleCheckSkipped = heavySkipped;
+	if (FAILED(result) && ext) {
+		if (!ExtFailed) { ExtFailed = true; Logger::Log("UNOFFICIAL NVR DXVK: pass GodRays failed to draw: its D3D9 technique is used from now on"); }
+		return false;
+	}
 	if (FAILED(result)) {
 		Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
 		dedicatedRenderFailed = true;
@@ -438,13 +594,19 @@ void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 
 	{
 		auto timer = TimeLogger();
-		if (RenderDedicated(Device, RenderTarget, RenderedSurface)) {
+		bool ext = !ExtFailed && !dedicatedRenderFailed && DxvkCompute::PassesOn();
+#if NVR_TEST_TOOLS
+		if (probeLevel > 0) ext = false;
+#endif
+		if ((ext && RenderDedicated(Device, RenderTarget, RenderedSurface, true)) || RenderDedicated(Device, RenderTarget, RenderedSurface)) {
 			if (idleCheckSkipped) idleCheckOnly++; else idleFull++;
 			renderTime = timer.LogTime("GodRays::DedicatedRender");
 			IdleStats();
 			return;
 		}
 	}
+
+	if (RenderRect::Active()) return;
 
 	D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
 	D3DXTECHNIQUE_DESC description = {};

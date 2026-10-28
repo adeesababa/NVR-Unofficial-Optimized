@@ -114,6 +114,7 @@
     <ClCompile Include="..\src\base\PluginVersion.cpp" />
     <ClCompile Include="..\src\base\SafeWrite.cpp" />
     <ClCompile Include="..\src\core\BinkManager.cpp" />
+    <ClCompile Include="..\src\core\TerrainErosion.cpp" />
     <ClCompile Include="..\src\core\CameraManager.cpp" />
     <ClCompile Include="..\src\core\CommandManager.cpp" />
     <ClCompile Include="..\src\core\Device\Device.cpp" />
@@ -138,10 +139,15 @@
     <ClCompile Include="..\src\core\TextureRecord.cpp" />
     <ClCompile Include="..\src\effects\AmbientOcclusion.cpp" />
     <ClCompile Include="..\src\effects\Animator.cpp" />
+    <ClCompile Include="..\src\core\Sm6Pass.cpp" />
+    <ClCompile Include="..\src\core\DxvkCompute.cpp" />
+    <ClCompile Include="..\src\core\HiZ.cpp" />
+    <ClCompile Include="..\src\core\PixelInspector.cpp" />
     <ClCompile Include="..\src\effects\AvgLuma.cpp" />
     <ClCompile Include="..\src\effects\SkyView.cpp" />
     <ClCompile Include="..\src\effects\AmbientLight.cpp" />
     <ClCompile Include="..\src\effects\BloodLens.cpp" />
+    <ClCompile Include="..\src\effects\BarrelHaze.cpp" />
     <ClCompile Include="..\src\effects\Bloom.cpp" />
     <ClCompile Include="..\src\effects\BloomLegacy.cpp" />
     <ClCompile Include="..\src\effects\Cinema.cpp" />
@@ -164,10 +170,18 @@
     <ClCompile Include="..\src\effects\Normals.cpp" />
     <ClCompile Include="..\src\effects\PBR.cpp" />
     <ClCompile Include="..\src\effects\POM.cpp" />
+    <ClCompile Include="..\src\effects\PointShadows2.cpp" />
+    <ClCompile Include="..\src\effects\PointShadows.cpp" />
     <ClCompile Include="..\src\effects\Rain.cpp" />
+    <ClCompile Include="..\src\effects\GpuParticles.cpp" />
+    <ClCompile Include="..\src\effects\GpuGrass.cpp" />
     <ClCompile Include="..\src\effects\SMAA.cpp" />
     <ClCompile Include="..\src\effects\FXAA.cpp" />
     <ClCompile Include="..\src\effects\TAA.cpp" />
+    <ClCompile Include="..\src\effects\TAAFSR.cpp" />
+    <ClCompile Include="..\src\effects\TAAUpscale.cpp" />
+    <ClCompile Include="..\src\core\Upscaler.cpp" />
+    <ClCompile Include="..\src\core\UpscalerDlss.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
@@ -183,6 +197,7 @@
     <ClCompile Include="..\src\effects\Reflections.cpp" />
     <ClCompile Include="..\src\effects\VolumetricClouds.cpp" />
     <ClCompile Include="..\src\effects\BloodFlow.cpp" />
+    <ClCompile Include="..\src\effects\BloodFluid.cpp" />
     <ClCompile Include="..\src\effects\BounceLight.cpp" />
     <ClCompile Include="..\src\effects\Skin.cpp" />
     <ClCompile Include="..\src\effects\SkinScattering.cpp" />
@@ -199,6 +214,7 @@
     <ClCompile Include="..\src\effects\Water.cpp" />
     <ClCompile Include="..\src\effects\WaterLens.cpp" />
     <ClCompile Include="..\src\effects\WetWorld.cpp" />
+    <ClCompile Include="..\src\effects\CoverMap.cpp" />
     <ClCompile Include="..\lib\Detours\detours.cpp" />
     <ClCompile Include="..\lib\Detours\disasm.cpp" />
     <ClCompile Include="..\lib\Detours\modules.cpp" />
@@ -248,6 +264,13 @@
     <ClInclude Include="..\src\core\FrameRateManager.h" />
     <ClInclude Include="..\src\core\GameEventManager.h" />
     <ClInclude Include="..\src\core\GameMenuManager.h" />
+    <ClInclude Include="..\src\core\Sm6Pass.h" />
+    <ClInclude Include="..\src\core\DxvkCompute.h" />
+    <ClInclude Include="..\src\core\HiZ.h" />
+    <ClInclude Include="..\src\core\Upscaler.h" />
+    <ClInclude Include="..\src\core\PixelInspector.h" />
+    <ClInclude Include="..\src\core\ShaderCounters.h" />
+    <ClInclude Include="..\src\core\NvrDxvkExt.h" />
     <ClInclude Include="..\src\core\GpuProfiler.h" />
     <ClInclude Include="..\src\core\ImGuiManager.h" />
     <ClInclude Include="..\src\core\Hooks\FormsCommon.h" />
@@ -296,6 +319,8 @@
     <ClInclude Include="..\src\effects\PointShadows2.h" />
     <ClInclude Include="..\src\effects\POM.h" />
     <ClInclude Include="..\src\effects\Rain.h" />
+    <ClInclude Include="..\src\effects\GpuParticles.h" />
+    <ClInclude Include="..\src\effects\GpuGrass.h" />
     <ClInclude Include="..\src\effects\SMAA.h" />
     <ClInclude Include="..\src\effects\FXAA.h" />
     <ClInclude Include="..\src\effects\TAA.h" />
@@ -316,6 +341,7 @@
     <ClInclude Include="..\src\effects\VolumetricClouds.h" />
     <ClInclude Include="..\src\effects\BloodFlow.h" />
     <ClInclude Include="..\src\effects\BloodFlowBoxes.h" />
+    <ClInclude Include="..\src\effects\BloodFluid.h" />
     <ClInclude Include="..\src\effects\BounceLight.h" />
     <ClInclude Include="..\src\effects\BounceLightMath.h" />
     <ClInclude Include="..\src\effects\Skin.h" />
@@ -332,6 +358,7 @@
     <ClInclude Include="..\src\effects\Water.h" />
     <ClInclude Include="..\src\effects\WaterLens.h" />
     <ClInclude Include="..\src\effects\WetWorld.h" />
+    <ClInclude Include="..\src\effects\CoverMap.h" />
     <ClInclude Include="..\lib\Bink\bink.h" />
     <ClInclude Include="..\lib\Bink\radbase.h" />
     <ClInclude Include="..\lib\Detours\detours.h" />

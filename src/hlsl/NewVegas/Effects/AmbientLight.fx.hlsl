@@ -1,3 +1,4 @@
+
 float4 TESR_AmbientLightData;
 float4 TESR_AmbientLightData2;
 float4 TESR_ReciprocalResolution;
@@ -87,12 +88,14 @@ float3 SunShadowApply(float3 color, float2 uv) {
 }
 
 float3 PositionFromLinear(float2 uv, float linear01) {
+	uv = rectToScreen(uv);
 	float z = projectedDepthFromLinear(linear01);
 	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, z, 1.0f), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
 }
 
 float3 PositionFromViewZ(float2 uv, float z) {
+	uv = rectToScreen(uv);
 	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
 }
 
@@ -136,8 +139,8 @@ float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
 			if (k == 0) continue;
 			float dist = abs((float)k) * spacing;
 			float2 tapUV = uv + axis * (k * spacing) * NVR_ALLayout.zw;
-			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
-			tapUV = saturate(tapUV);
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, TESR_RenderScale.x) * step(0.0f, tapUV.y) * step(tapUV.y, TESR_RenderScale.y);
+			tapUV = clamp(tapUV, 0.0f, TESR_RenderScale.xy);
 			float tapZ; float3 tapNormal;
 			if (alongY) { float4 t = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)); tapNormal = t.xyz; tapZ = t.w; }
 			else { float4 t = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)); tapZ = t.x; tapNormal = OctDecode(Unpack2(t.y)); }
@@ -194,11 +197,11 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 		[unroll] for (int k = 0; k < STEPS; k++) {
 			float s = (k + frac(noise.y + k * 0.618034f)) / STEPS;
 			s *= s;
-			float2 offset = omega * screenRadius * max(s, 2.0f * NVR_ALLayout.z);
+			float2 offset = omega * screenRadius * max(s, 2.0f * NVR_ALLayout.z) * TESR_RenderScale.xy;
 			[unroll] for (int side = 0; side < 2; side++) {
 				float2 sampleUV = uv + (side == 0 ? offset : -offset);
-				float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, 1.0f) * step(0.0f, sampleUV.y) * step(sampleUV.y, 1.0f);
-				sampleUV = (floor(saturate(sampleUV) / NVR_ALLayout.zw) + 0.5f) * NVR_ALLayout.zw;
+				float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, TESR_RenderScale.x) * step(0.0f, sampleUV.y) * step(sampleUV.y, TESR_RenderScale.y);
+				sampleUV = (floor(clamp(sampleUV, 0.0f, TESR_RenderScale.xy) / NVR_ALLayout.zw) + 0.5f) * NVR_ALLayout.zw;
 				float4 texel = tex2Dlod(NVR_ALPrep, float4(sampleUV, 0.0f, 0.0f));
 				float3 delta = PositionFromViewZ(sampleUV, texel.x) - origin;
 				float dist = length(delta) + 1e-4f;
@@ -233,6 +236,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	[unroll] for (int i = 1; i < 4; i++) {
 		[unroll] for (int side = -1; side <= 1; side += 2) {
 			float2 tapUV = IN.UVCoord + axis * NVR_ALLayout.zw * (i * side * BlurStep);
+			tapUV = clampToRectIfOn(tapUV, NVR_ALLayout.zw);
 			float dz = abs(readDepthLod(tapUV) - depth);
 			float2 w = weights[i] * saturate(1.0f - dz / float2(tolerance, looseTolerance));
 			float4 tap = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f));
@@ -257,7 +261,8 @@ AccumulateOut Accumulate(VSOUT IN) {
 	float4 clip = mul(float4(origin, 1.0f), NVR_ALReproject);
 	float w = max(clip.w, 0.001f);
 	float3 last = float3(clip.x / w * 0.5f + 0.5f, 0.5f - clip.y / w * 0.5f, clip.w);
-	float2 position = last.xy / NVR_ALLayout.zw - 0.5f;
+	float2 lastUV = screenToRect(last.xy);
+	float2 position = lastUV / NVR_ALLayout.zw - 0.5f;
 	float2 base = floor(position);
 	float2 f = position - base;
 	float2 t00 = tex2Dlod(NVR_ALOcclusionHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).rg;
@@ -278,7 +283,7 @@ AccumulateOut Accumulate(VSOUT IN) {
 	float margin = (high - low) * 0.25f;
 	occlusionHistory = clamp(occlusionHistory, low - margin, high + margin);
 	float inside = all(last.xy > 0.0f) && all(last.xy < 1.0f) && last.z > NearFade;
-	float moved = length((last.xy - uv) / NVR_ALLayout.zw);
+	float moved = length((lastUV - uv) / NVR_ALLayout.zw);
 	float keep = NVR_ALTemporal.x / (1.0f + moved / NVR_ALTemporal.y) * saturate(found * 2.0f) * inside;
 	OUT.occlusion = float4(lerp(current.a, occlusionHistory, keep), viewZ, 0.0f, 1.0f);
 	return OUT;
@@ -359,8 +364,8 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float3 view = mul(float4(centre, 0.0f), TESR_ViewTransform).xyz;
 	[branch] if (view.z < 0.5f * size) return OUT;
 	float3 screen = projectPosition(view);
-	[branch] if (any(screen.xy < 0.0f) || any(screen.xy > 1.0f)) return OUT;
-	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z);
+	[branch] if (outsideRect(screen.xy)) return OUT;
+	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z) * TESR_RenderScale.xy;
 	float3 low = centre - 0.5f * size;
 	float4 sh = 0.0f, colour = 0.0f;
 	float3 axes = 0.0f;
@@ -368,7 +373,7 @@ ScreenOut ScreenInject(VSOUT IN) {
 	[loop] for (int j = 0; j < 4; j++) {
 		[loop] for (int i = 0; i < 4; i++) {
 			float2 uv = screen.xy + ((float2(i, j) + 0.5f) / 4.0f * 2.0f - 1.0f) * extent;
-			if (any(uv < 0.0f) || any(uv > 1.0f)) continue;
+			if (outsideRect(uv)) continue;
 			float depth = readDepthLod(uv);
 			float3 p = toWorld(uv) * depth;
 			float3 inCell = p - low;
@@ -576,7 +581,7 @@ float4 StatsSample(VSOUT IN) : COLOR0 {
 	float2 cell = floor(IN.UVCoord * StatsSize);
 	float3 sum = 0.0f;
 	[unroll] for (int j = 0; j < 2; j++) {
-		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f));
+		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt(screenToRect((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f)));
 	}
 	return float4(sum, 1.0f);
 }
@@ -602,7 +607,7 @@ float2 SkyFactorAt(float2 uv, float depth) {
 	float weights = 0.0f;
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
-			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, 1.0f - 0.5f * NVR_ALLayout.zw);
+			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, TESR_RenderScale.xy - 0.5f * NVR_ALLayout.zw);
 			float3 tap = tex2Dlod(NVR_ALSkyVis, float4(tapUV, 0.0f, 0.0f)).rgb;
 			float weight = (x ? fraction.x : 1.0f - fraction.x) * (y ? fraction.y : 1.0f - fraction.y);
 			weight /= 1.0f + abs(tap.y - depth) / max(TESR_AmbientOcclusionData.z, 0.001f);
@@ -632,7 +637,7 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	float weights = 1.0e-5f;
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
-			float2 tapUV = (base + float2(x, y) + 0.5f) * NVR_ALLayout.zw;
+			float2 tapUV = clampToRectIfOn((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, NVR_ALLayout.zw);
 			float tapDepth = readDepthLod(tapUV);
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;

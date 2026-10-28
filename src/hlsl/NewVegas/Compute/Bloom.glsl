@@ -1,0 +1,166 @@
+
+layout(push_constant) uniform Push {
+    vec4 data;
+    vec4 resolution;
+    vec4 glow;
+    vec4 glowExtra;
+    uint samplerIndex;
+    uint pad[3];
+} pc;
+
+vec4 tap(texture2D tex, sampler smp, vec2 p) {
+    return texture(sampler2D(tex, smp), p);
+}
+
+vec4 DownsampleBox13(texture2D buf, sampler smp, vec2 uv, vec2 texelSize) {
+    const float x = texelSize.x;
+    const float y = texelSize.y;
+
+    vec4 a = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y + 2.0 * y));
+    vec4 b = tap(buf, smp, vec2(uv.x, uv.y + 2.0 * y));
+    vec4 c = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y + 2.0 * y));
+
+    vec4 d = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y));
+    vec4 e = tap(buf, smp, vec2(uv.x, uv.y));
+    vec4 f = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y));
+
+    vec4 g = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y - 2.0 * y));
+    vec4 h = tap(buf, smp, vec2(uv.x, uv.y - 2.0 * y));
+    vec4 i = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y - 2.0 * y));
+
+    vec4 j = tap(buf, smp, vec2(uv.x - x, uv.y + y));
+    vec4 k = tap(buf, smp, vec2(uv.x + x, uv.y + y));
+    vec4 l = tap(buf, smp, vec2(uv.x - x, uv.y - y));
+    vec4 m = tap(buf, smp, vec2(uv.x + x, uv.y - y));
+
+    const vec2 weights = vec2(0.125, 0.5);
+
+    vec4 boxes[5];
+    boxes[0] = (a + b + d + e) * 0.25;
+    boxes[1] = (b + c + e + f) * 0.25;
+    boxes[2] = (d + e + g + h) * 0.25;
+    boxes[3] = (e + f + h + i) * 0.25;
+    boxes[4] = (j + k + l + m) * 0.25;
+
+    return boxes[0] * weights[0] + boxes[1] * weights[0] + boxes[2] * weights[0] + boxes[3] * weights[0] + boxes[4] * weights[1];
+}
+
+float GlowAmount(vec3 c, float threshold) {
+    float peak = max(c.r, max(c.g, c.b));
+    float saturation = 1.0 - min(c.r, min(c.g, c.b)) / max(peak, 1.0e-4);
+    float brightness = mix(dot(c, vec3(0.2126, 0.7152, 0.0722)), peak, saturation);
+    return clamp((brightness - threshold) / threshold, 0.0, 1.0);
+}
+
+vec3 GlowLinear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
+vec3 GlowEncode(vec3 c) {
+    vec3 s1 = sqrt(c), s2 = sqrt(s1), s3 = sqrt(s2);
+    return max(0.662002687 * s1 + 0.684122060 * s2 - 0.323583601 * s3 - 0.0225411470 * c, vec3(0.0));
+}
+vec4 GlowTap(vec4 c, float threshold) {
+    vec3 lin = GlowLinear(max(c.rgb, vec3(0.0)));
+    lin *= 1.0 + pc.glow.z * GlowAmount(lin, threshold);
+    return vec4(pc.glowExtra.y > 0.0 ? lin : GlowEncode(lin), c.a);
+}
+
+vec4 DownsampleFirst(texture2D buf, sampler smp, vec2 uv) {
+    const float x = pc.resolution.z;
+    const float y = pc.resolution.w;
+
+    vec4 a = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y + 2.0 * y));
+    vec4 b = tap(buf, smp, vec2(uv.x, uv.y + 2.0 * y));
+    vec4 c = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y + 2.0 * y));
+
+    vec4 d = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y));
+    vec4 e = tap(buf, smp, vec2(uv.x, uv.y));
+    vec4 f = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y));
+
+    vec4 g = tap(buf, smp, vec2(uv.x - 2.0 * x, uv.y - 2.0 * y));
+    vec4 h = tap(buf, smp, vec2(uv.x, uv.y - 2.0 * y));
+    vec4 i = tap(buf, smp, vec2(uv.x + 2.0 * x, uv.y - 2.0 * y));
+
+    vec4 j = tap(buf, smp, vec2(uv.x - x, uv.y + y));
+    vec4 k = tap(buf, smp, vec2(uv.x + x, uv.y + y));
+    vec4 l = tap(buf, smp, vec2(uv.x - x, uv.y - y));
+    vec4 m = tap(buf, smp, vec2(uv.x + x, uv.y - y));
+
+    if (pc.glow.z > 0.0 || pc.glowExtra.y > 0.0) {
+        float t = max(pc.glow.w, 0.002);
+        a = GlowTap(a, t); b = GlowTap(b, t); c = GlowTap(c, t); d = GlowTap(d, t); e = GlowTap(e, t); f = GlowTap(f, t); g = GlowTap(g, t);
+        h = GlowTap(h, t); i = GlowTap(i, t); j = GlowTap(j, t); k = GlowTap(k, t); l = GlowTap(l, t); m = GlowTap(m, t);
+    }
+
+    vec4 boxes[5];
+    boxes[0] = (a + b + d + e) * 0.25;
+    boxes[1] = (b + c + e + f) * 0.25;
+    boxes[2] = (d + e + g + h) * 0.25;
+    boxes[3] = (e + f + h + i) * 0.25;
+    boxes[4] = (j + k + l + m) * 0.25;
+
+    if (pc.glowExtra.x > 0.0) {
+        const float weights[5] = float[5](0.125, 0.125, 0.125, 0.125, 0.5);
+        vec4 sum = vec4(0.0);
+        float total = 0.0;
+        for (int n = 0; n < 5; n++) {
+            float w = weights[n] / (1.0 + max(dot(boxes[n].rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0));
+            sum += boxes[n] * w;
+            total += w;
+        }
+        return sum / total;
+    }
+    const vec2 weights = vec2(0.125, 0.5);
+    return boxes[0] * weights[0] + boxes[1] * weights[0] + boxes[2] * weights[0] + boxes[3] * weights[0] + boxes[4] * weights[1];
+}
+
+vec4 Downsample(texture2D buf, sampler smp, vec2 uv) {
+    return DownsampleBox13(buf, smp, uv, vec2(pc.resolution.z, pc.resolution.w));
+}
+
+vec4 UpsampleTent9(texture2D buf, sampler smp, vec2 uv, vec2 filterRadius) {
+    float x = filterRadius.x;
+    float y = filterRadius.y;
+
+    vec4 a = tap(buf, smp, vec2(uv.x - x, uv.y + y));
+    vec4 b = tap(buf, smp, vec2(uv.x, uv.y + y));
+    vec4 c = tap(buf, smp, vec2(uv.x + x, uv.y + y));
+
+    vec4 d = tap(buf, smp, vec2(uv.x - x, uv.y));
+    vec4 e = tap(buf, smp, vec2(uv.x, uv.y));
+    vec4 f = tap(buf, smp, vec2(uv.x + x, uv.y));
+
+    vec4 g = tap(buf, smp, vec2(uv.x - x, uv.y - y));
+    vec4 h = tap(buf, smp, vec2(uv.x, uv.y - y));
+    vec4 i = tap(buf, smp, vec2(uv.x + x, uv.y - y));
+
+    vec4 upsample = e * 4.0;
+    upsample += (b + d + f + h) * 2.0;
+    upsample += (a + c + g + i);
+    upsample *= 1.0 / 16.0;
+
+    return upsample;
+}
+
+vec4 Upsample(texture2D buf, texture2D addBuf, sampler smp, vec2 uv) {
+    vec4 upsample = UpsampleTent9(buf, smp, uv, vec2(pc.data.x, pc.data.y));
+    vec4 nextMip = tap(addBuf, smp, uv);
+
+    if (pc.data.z > 0.0) {
+        return vec4(mix(nextMip.rgb, upsample.rgb, pc.data.z), 1.0);
+    } else {
+        return vec4(upsample.rgb * pc.glow.x + nextMip.rgb, 1.0);
+    }
+}
+
+vec4 UpsampleLast(texture2D buf, texture2D addBuf, sampler smp, vec2 uv) {
+    vec4 upsample = UpsampleTent9(buf, smp, uv, vec2(pc.data.x, pc.data.y));
+    vec4 nextMip = tap(addBuf, smp, uv);
+
+    vec3 result;
+    if (pc.data.z > 0.0) {
+        result = mix(nextMip.rgb, upsample.rgb, pc.data.z);
+    } else {
+        result = (upsample.rgb * pc.glow.x + nextMip.rgb) * pc.glow.y;
+    }
+    if (pc.glowExtra.y > 0.0) result = delinearize(max(result, vec3(0.0)));
+    return vec4(result, 1.0);
+}

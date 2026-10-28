@@ -19,7 +19,7 @@ float4 DepthBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, 
 	[unroll]
     for (int i = 0; i < cKernelSize; i++)
     {
-		float2 uv = IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius;
+		float2 uv = clampToRectIfOn(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy);
 		float4 color2 = tex2D(buffer,  uv);
 		float depth2 = readDepth(uv);
 		float diff = abs(float(depth1 - depth2));
@@ -46,7 +46,7 @@ float4 DepthBlurFullValue(float2 uv, uniform sampler2D buffer, uniform float2 Of
 	[unroll]
     for (int i = 0; i < cKernelSize; i++)
     {
-		float2 tapUV = uv + (BlurOffsets[i] * OffsetMask) * blurRadius;
+		float2 tapUV = clampToRectIfOn(uv + (BlurOffsets[i] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy);
 		float4 color2 = tex2Dlod(buffer, float4(tapUV, 0, 0));
 		float depth2 = readDepthLod(tapUV);
 		float diff = abs(float(depth1 - depth2));
@@ -74,7 +74,7 @@ float4 DepthBlurKeep(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMa
 	float4 spread = 0;
 	[unroll]
 	for (int t = 0; t < cKernelSize; t++) {
-		taps[t] = tex2Dlod(buffer, float4(IN.UVCoord + (BlurOffsets[t] * OffsetMask) * blurRadius, 0, 0));
+		taps[t] = tex2Dlod(buffer, float4(clampToRectIfOn(IN.UVCoord + (BlurOffsets[t] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy), 0, 0));
 		spread = max(spread, abs(taps[t] - center));
 	}
 	[branch] if (max(spread.r, spread.g) < 0.0001f) return float4(center.rgb, 1);
@@ -86,7 +86,7 @@ float4 DepthBlurKeep(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMa
 	[unroll]
     for (int i = 0; i < cKernelSize; i++)
     {
-		float depth2 = readDepthLod(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius);
+		float depth2 = readDepthLod(clampToRectIfOn(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy));
 		float diff = abs(float(depth1 - depth2));
 
 		int useForBlur = (diff <= depthDrop);

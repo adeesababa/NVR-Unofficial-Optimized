@@ -24,6 +24,13 @@ float4 TESR_SunAmount; // x: isDaytime
 float4 TESR_PBRData; // z: direct light scale, w: ambient scale -- shared with objects for tonal consistency
 float4 TESR_SkyIrradiance[9]; // order-2 SH sky irradiance, linear radiance (Sky.cpp, only fresh while Shaders.Sky is enabled)
 float4 TESR_SkyIrradianceGame[9];
+#if NVR_SM6
+float4 TESR_FogSkyLook;
+float4 TESR_SkyLook;
+#define NVR_FOG_SKY_LOOK(c) c = SkyLook(c, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_SkyLook.x, 1, 0, 0))
+#else
+#define NVR_FOG_SKY_LOOK(c)
+#endif
 
 // sun shadow cascade data -- registered globally by ShadowsExteriorEffect, same constants
 // SunShadows.fx.hlsl consumes. Declared here independently since each .fx effect compiles on
@@ -584,6 +591,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 #if PHYSICAL_SKY_ON
 		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
 #endif
+		NVR_FOG_SKY_LOOK(skyColor.rgb);
 
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
@@ -625,6 +633,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	nightAmountOut = LegacyFogAmount;
 }
 
+//
 void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false, bool classic = false)
 {
 	VSOUT IN = (VSOUT)0;
@@ -735,6 +744,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		}
 	}
 
+	// default values used by interiors
 	float distantFog = 0.0, distantHeightFade = 0.0;
 	float4 skyColor = pureFogColor;
 	float4 sun = black;
@@ -754,6 +764,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 			[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
 		}
 #endif
+		NVR_FOG_SKY_LOOK(skyColor.rgb);
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
@@ -948,6 +959,7 @@ technique PackedFog
 	}
 }
 
+//
 sampler2D TESR_PointShadowBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 float4 NVR_FogLayout;
 sampler2D NVR_FogBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -994,7 +1006,7 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false
 	float2 fraction = frac(position);
 	float2 baseUV = (floor(position) + 0.5) * texel;
 	float2 minUV = texel * 0.5;
-	float2 maxUV = 1 - minUV;
+	float2 maxUV = TESR_RenderScale.xy - minUV;
 
 	float2 uv00 = clamp(baseUV, minUV, maxUV);
 	float2 uv10 = clamp(baseUV + float2(texel.x, 0), minUV, maxUV);
@@ -1084,7 +1096,7 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	const bool sky = NVR_CompositeFlags.z > 0.5;
 	[unroll] for (int y = 0; y < 2; ++y) {
 		[unroll] for (int x = 0; x < 2; ++x) {
-			float2 sampleUV = clamp((base + float2(x, y) + 0.5) * texel, 0.5 * texel, 1 - 0.5 * texel);
+			float2 sampleUV = clampToRect((base + float2(x, y) + 0.5) * texel, texel);
 			float2 aoSample = tex2Dlod(NVR_AOBuffer, float4(sampleUV, 0, 0)).rg;
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1 + abs(aoSample.y - depth) / max(blurDrop, 0.001);
@@ -1406,20 +1418,22 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 	eyeVector *= depth;
 	float3 worldPos = eyeVector + TESR_CameraPosition.xyz;
 
-	float normalizedDepth = length(eyeVector) / farZ;
+	float normalizedDepth = length(eyeVector) / farZ; // make sure depth is the same at the center and edges of the screen
 	float fogPower = lerp(1, FogPower, saturate(WeatherImpact));
 	float fogDepth = pows(normalizedDepth, fogPower) * farZ;
 
 	float isSky = getSky(IN.UVCoord);
-	float skyMaskFactor = lerp(1.0, 1.0 - isSky, WeatherFilterBlend);
+	float skyMaskFactor = lerp(1.0, 1.0 - isSky, WeatherFilterBlend); // weather can disable the sky exclusion so fog blends fully into an overcast sky
 	skyMaskFactor = lerp(skyMaskFactor, 1.0, nightFactor * NightDisableSkyMask);
 
 	float isSkyDome = depth / farZ >= 0.9961;
 
+	// ---- vanilla-anchored density, derived from the active weather's own authored fog shape ----
 	float vanillaStrength = pows((saturate(1 - farFog / farZ) + saturate(1 - nearFog / farZ)) / 2, 2) / (FogPower + 1);
 
+	// ---- NVR-driven density: time-of-day curve, sunrise/sunset boost, animated 3D noise ----
 	float sunsetBump = sin(saturate(TESR_SunAmount.x) * PI) * isExterior;
-	float noonTrough = 1 - saturate(abs(TESR_GameTime.y - 12) / 6);
+	float noonTrough = 1 - saturate(abs(TESR_GameTime.y - 12) / 6); // 0 at 6am/6pm, 1 at solar noon
 	float timeOfDayScale = lerp(1.0, lerp(1.0, 1.0 - MorningFogDip, noonTrough), isExterior);
 	float nightDensityScale = lerp(1.0, NightDensityScale, nightFactor);
 
@@ -1434,6 +1448,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 
 	float strength = max(0, nvrDensity + WeatherImpact * vanillaStrength);
 
+	// ---- shadow-coupled sun in-scattering, sampled once per pixel at the fog's terminating point ----
 	float3 worldNormal = GetWorldNormal(IN.UVCoord);
 	float shadowVisibility = 1.0;
 	[branch]
@@ -1441,10 +1456,12 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 		shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
 	}
 
+	// default values used by interiors
 	float distantFog = 0.0, distantHeightFade = 0.0;
 	float4 skyColor = pureFogColor;
 	float4 sun = black;
 
+	// sun/sky/distant fog coloring specific to exteriors
 	if (isExterior){
 		float3 up = blue.xyz;
 		float sunHeight = shade(TESR_SunPosition.xyz, up);
@@ -1455,6 +1472,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
 
+		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
 
@@ -1466,6 +1484,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));
 	}
 
+	// ---- sky ambient in-scattering (SH-reconstructed, or flat fallback), unshadowed ----
 	float3 ambientColor = SkyAmbientAvailable > 0.5
 		? SkyIrradianceGameLinear(float3(0, 0, 1))
 		: linearize(TESR_SkyColor).rgb;
@@ -1498,6 +1517,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 	float3 fogged = color.rgb * saturate(1 - finalExt) + fogColorFinal.rgb * saturate(finalIns);
 	float4 finalColor = float4(lerp(color.rgb, fogged, skyMaskFactor), 1);
 
+	// ---- aerial perspective: mid-to-far distance tint on non-sky terrain ----
 	float aerialDayFade = smoothstep(0.1, AerialDayFadeStart, TESR_SunAmount.x);
 	float aerialFactor = smoothstep(AerialRangeStart, 1.0, normalizedDepth) * (1.0 - isSkyDome) * isExterior;
 	float3 aerialTint = lerp(ambientColor, linearize(TESR_VolumetricFogAerialTint).rgb, AerialTintBlend);
@@ -1505,6 +1525,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 	float3 aerialTintClamped = saturate(aerialTint);
 	finalColor.rgb = lerp(finalColor.rgb, finalColor.rgb * aerialTintClamped, aerialFactor * AerialStrength * skyMaskFactor * aerialDayFade);
 
+	// ---- distant fog: horizon Z-fighting/sky-seam matte ----
 	finalColor = lerp(finalColor, skyColor, distantFog * saturate(DistantFogBlend) * distantHeightFade * isExterior);
 
 	finalColor.rgb = lerp(finalColor.rgb, skyColor.rgb, isSky * EdgeAA * isExterior);

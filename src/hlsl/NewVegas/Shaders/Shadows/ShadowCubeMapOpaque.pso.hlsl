@@ -1,3 +1,4 @@
+
 float4 TESR_ShadowData : register(c0);
 sampler2D DiffuseMap : register(s0);
 

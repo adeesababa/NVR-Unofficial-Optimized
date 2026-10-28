@@ -1,5 +1,22 @@
 #pragma once
 
+
+struct SpecularUniforms {
+	float viewTransform[16], projectionTransform[16];
+	float shadowNear[16], shadowMiddle[16], shadowFar[16], shadowLod[16];
+	float reciprocalResolution[4], specularData[4], specularEffects[4], sunDirection[4], sunColor[4], skyColor[4], horizonColor[4];
+	float waterSettings[4], shadowFade[4], bounceData[4], bounceLayout[4], specularExtra[4];
+	float depthConstants[4], cameraData[4], cameraPosition[4];
+	float smoothedSunDir[4], shadowFormatData[4], shadowBlur[4];
+	float shadowNearCenter[4], shadowMiddleCenter[4], shadowFarCenter[4], shadowLodCenter[4];
+};
+
+struct SpecularPush {
+	UInt32 pointSampler;
+	UInt32 linearSampler;
+	UInt32 pad[2];
+};
+
 class SpecularEffect : public EffectRecord
 {
 public:
@@ -45,4 +62,18 @@ public:
 	bool	CanTakeBounce();
 	bool	RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		IDirect3DTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout);
+
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	bool	ExtRenderBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+		IDirect3DBaseTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout);
+
+private:
+	ExtPass					extPrep, extLight, extAdd, extBounce;
+	ExtUniformBuffer		extUniforms;
+	IDirect3DBaseTexture9*	extraSkyVisibility = nullptr;
+	IDirect3DBaseTexture9*	extraSunFar = nullptr;
+	D3DXVECTOR4				extraValues = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	const void*				ConstantValue(const char* name);
+	IDirect3DBaseTexture9*	TextureOf(const char* name);
+	bool					FillUniforms(SpecularUniforms& uniforms);
 };

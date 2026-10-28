@@ -1,4 +1,5 @@
 #include "ImageAdjust.h"
+#include "../core/DxvkCompute.h"
 
 void ImageAdjustEffect::UpdateConstants() {
 	Constants.Data.x = TheShaderManager->GetTransitionValue(Settings.Main.Brightness, Settings.Night.Brightness, Settings.Interiors.Brightness);
@@ -64,3 +65,14 @@ bool ImageAdjustEffect::ShouldRender() {
 		Constants.DarkColor.x != 1.0f || Constants.DarkColor.y != 1.0f || Constants.DarkColor.z != 1.0f ||
 		Constants.LightColor.x != 1.0f || Constants.LightColor.y != 1.0f || Constants.LightColor.z != 1.0f;
 }
+
+bool ImageAdjustEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 data, darkColor, lightColor; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.data = Constants.Data;
+	push.darkColor = Constants.DarkColor;
+	push.lightColor = Constants.LightColor;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "ImageAdjust", textures, _countof(textures), &push, sizeof(push), 48);
+}
+

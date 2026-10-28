@@ -413,6 +413,7 @@ static void LookAt(int id, const D3DXVECTOR3& eye, const D3DXVECTOR3& at) {
 	SetCameraAt(eye, D3DXToDegree(atan2f(d.x, d.y)), -D3DXToDegree(atan2f(d.z, sqrtf(d.x * d.x + d.y * d.y))));
 }
 
+
 struct ReflSettings { float dry, wet, rough, wetRough, rayLength, steps, thickness, temporal, blur, sky, drawDistance; };
 static Target trace, rbuffer, temp, history, outFull;
 static IDirect3DVertexBuffer9* halfQuad;

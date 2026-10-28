@@ -119,6 +119,8 @@ namespace BarrelHaze {
 class BarrelHazeEffect : public EffectRecord {
 public:
     BarrelHazeEffect() : EffectRecord("BarrelHaze") {}
+    bool ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+    ExtPass extPass;
     bool ShouldRender() override {
         return BarrelHaze::Captured && GetTickCount64() - BarrelHaze::Captured < 200 &&
             (BarrelHaze::Data.x > 0.001f || BarrelHaze::Blast.x > 0.01f);

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+
 struct CubeLUT {
 	unsigned N = 0;
 	std::vector<float> RGB;

@@ -43,7 +43,7 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     NiD3DPixelShaderEx* PixelShader = Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr;
     const UInt16 PassType = *(UInt16*)0x011F91E4;
 
-    const bool NVRSkin = TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
+    const bool NVRSkin = TheShaderManager->Shaders.Skin->Active() && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     const bool SkinPixelShader = PixelShader && PixelShader->Name && !memcmp(PixelShader->Name, "SKIN", 4);
     SkinScatteringEffect* Blur = TheShaderManager->Effects.SkinScattering;
     const bool BlurRuns = Blur && Blur->Enabled && Blur->Supported && Blur->ScreenSpace;
@@ -120,6 +120,6 @@ void InstallFaceGenInteriorPatch() {
 
 void UpdateFaceGenInteriorFlag() {
     const UInt8 Interior = *(UInt8*)0x011F9427;
-    const bool NVRSkin = TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
+    const bool NVRSkin = TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Active() && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     FaceGenInteriorFlag = NVRSkin ? 0 : Interior;
 }

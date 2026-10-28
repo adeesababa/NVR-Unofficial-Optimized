@@ -306,6 +306,8 @@ int main(int argc, char** argv) {
 	const bool groundFit = !getenv("BLOOD_GROUND") || atoi(getenv("BLOOD_GROUND")) != 0;
 	const float poolDz = getenv("BLOOD_POOL_DZ") ? (float)atof(getenv("BLOOD_POOL_DZ")) : 0.0f;
 	vec("TESR_BloodFlowGround", groundFit ? 1.0f : 0.0f, 3.0f, 0.0f, getenv("BLOOD_UNSEEN") && atoi(getenv("BLOOD_UNSEEN")) ? 1.0f : 0.0f);
+	if (getenv("BLOOD_OLDLOOK") && atoi(getenv("BLOOD_OLDLOOK"))) vec("TESR_BloodFlowLook", 1.0f, 1.0f, 0.0f, 0.0f);
+	else vec("TESR_BloodFlowLook", 0.45f, 0.25f, 0.6f, lin(0.2f));
 	BloodFlowBoxes::SplatUp() = groundFit ? 1.2f + 2.4f * 1.0f : 1.0f;
 	BloodFlowBoxes::PoolUp() = groundFit ? 1.25f : 0.3f;
 

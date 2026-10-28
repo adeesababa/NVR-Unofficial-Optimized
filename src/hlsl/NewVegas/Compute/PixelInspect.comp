@@ -1,0 +1,27 @@
+
+#version 450
+#extension GL_EXT_samplerless_texture_functions : enable
+
+layout(local_size_x = 3, local_size_y = 3, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform texture2D t_src;
+
+layout(set = 2, binding = 0, std430) buffer Records {
+    vec4 v[];
+} o;
+
+layout(push_constant) uniform Push {
+    vec2 uv;
+    uint stage;
+    uint pad;
+} pc;
+
+void main() {
+    ivec2 size = textureSize(t_src, 0);
+    ivec2 centre = clamp(ivec2(floor(pc.uv * vec2(size))), ivec2(0), size - 1);
+    ivec2 lid = ivec2(gl_LocalInvocationID.xy);
+    ivec2 p = clamp(centre + lid - 1, ivec2(0), size - 1);
+    uint base = pc.stage * 10u;
+    o.v[base + uint(lid.y * 3 + lid.x)] = texelFetch(t_src, p, 0);
+    if (lid.x == 0 && lid.y == 0) o.v[base + 9u] = vec4(vec2(size), vec2(centre));
+}

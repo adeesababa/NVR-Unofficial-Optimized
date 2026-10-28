@@ -1,5 +1,11 @@
 #include "CombineDepth.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
+static const D3DXVECTOR4* Registered(const char* name) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+}
 
 void CombineDepthEffect::UpdateConstants() {
 	NiCamera* Camera = WorldSceneGraph->camera;
@@ -92,6 +98,7 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 	if (mergedNormalsFailed || TheSettingManager->SettingsMain.Main.DisableMergedNormals ||
 		!Enabled || !Effect || !ShouldRender() || !NormalsSurface || !Textures.CombinedDepthSurface)
 		return false;
+	if (DxvkCompute::PassesOn() && !ExtFailed && ExtDepthNormals(Device, NormalsSurface)) return true;
 	D3DXHANDLE technique = TechniqueHandle(techDepthNormals, "DepthNormals");
 	D3DSURFACE_DESC depthDesc = {}, normalsDesc = {};
 	const D3DCAPS9* caps = TheRenderManager->DeviceCaps();
@@ -134,6 +141,7 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 			result = Effect->BeginPass(0);
 			if (SUCCEEDED(result)) {
 				if (check) LogMergedState(Device, *caps, depthDesc, normalsDesc, depthStencil);
+				RenderRect::ApplyViewport(Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}
@@ -172,5 +180,58 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 		reported = true;
 	}
 	renderTime = timer.LogTime("CombineDepth::RenderWithNormals");
+	return true;
+}
+
+bool CombineDepthEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0 || ClearRenderTarget) return false;
+	const D3DXVECTOR4* depthConstants = Registered("TESR_DepthConstants");
+	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
+	if (!depthConstants || !cameraData || !TheTextureManager->DepthTexture || !TheTextureManager->DepthTextureViewModel) return false;
+
+	struct Push { D3DXVECTOR4 depthConstants; D3DXVECTOR4 cameraData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.depthConstants = *depthConstants;
+	push.cameraData = *cameraData;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->DepthTexture, TheTextureManager->DepthTextureViewModel };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "CombineDepth", textures, _countof(textures), &push, sizeof(push), 32, true);
+}
+
+bool CombineDepthEffect::ExtDepthNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface) {
+	auto timer = TimeLogger();
+	D3DSURFACE_DESC depthDesc = {}, normalsDesc = {};
+	if (FAILED(Textures.CombinedDepthSurface->GetDesc(&depthDesc)) || FAILED(NormalsSurface->GetDesc(&normalsDesc)) ||
+		depthDesc.Width != normalsDesc.Width || depthDesc.Height != normalsDesc.Height)
+		return false;
+	const D3DXVECTOR4* depthConstants = Registered("TESR_DepthConstants");
+	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
+	const D3DXVECTOR4* reciprocal = Registered("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* invProjection = Registered("TESR_InvProjectionTransform");
+	if (!depthConstants || !cameraData || !reciprocal || !invProjection || !TheTextureManager->DepthTexture || !TheTextureManager->DepthTextureViewModel) return false;
+
+	struct Push { D3DXVECTOR4 reciprocalResolution; D3DXVECTOR4 cameraData; D3DXVECTOR4 depthConstants; D3DXMATRIX invProjection; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.reciprocalResolution = *reciprocal;
+	push.cameraData = *cameraData;
+	push.depthConstants = *depthConstants;
+	memcpy(&push.invProjection, invProjection, sizeof(D3DXMATRIX));
+
+	if (!extPassDepthNormals.Tried) {
+		extPassDepthNormals.Tried = true;
+		const NVR_EXT_BINDING_DESC bindings[] = {
+			{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+			{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+			{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 112 },
+		};
+		extPassDepthNormals.Pipeline = DxvkCompute::CreateGraphicsPipeline("DepthNormals", bindings, _countof(bindings), sizeof(push), true, 2);
+	}
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!extPassDepthNormals.Pipeline || !point) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[3] = {};
+	resources[0].Slot = 0; resources[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[0].pResource = TheTextureManager->DepthTexture;
+	resources[1].Slot = 1; resources[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[1].pResource = TheTextureManager->DepthTextureViewModel;
+	resources[2].Slot = 0; resources[2].Type = NVR_EXT_BIND_SAMPLER; resources[2].pResource = point;
+	IDirect3DSurface9* targets[2] = { Textures.CombinedDepthSurface, NormalsSurface };
+	if (!ExtDrawTo(extPassDepthNormals.Pipeline, targets, 2, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;
+	renderTime = timer.LogTime("CombineDepth::RenderWithNormals (NVR DXVK)");
 	return true;
 }

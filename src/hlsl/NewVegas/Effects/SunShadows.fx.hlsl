@@ -11,6 +11,8 @@ float4 TESR_ViewSpaceLightDir;
 float4 TESR_ShadowData; // x: quality, y: darkness, z: texel size
 float4 TESR_ShadowFormatData; // x: mode, y: format bits per pixels
 float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistance, w: intensity
+float4 TESR_ShadowScreenSpaceFade;
+float ContactNearFade(float z) { return TESR_ShadowScreenSpaceFade.y > 0.0f ? smoothstep(TESR_ShadowScreenSpaceFade.x, TESR_ShadowScreenSpaceFade.y, z) : 1.0f; }
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
 // Injected as a D3DXMACRO by EffectRecord from [Shaders.ShadowsExteriors.Main] ForwardShadows,
@@ -303,8 +305,8 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 		// if (screen_pos.x > 0 && screen_pos.x < 1.0 && screen_pos.y > 0 && screen_pos.y <1){
 		float2 depth = {pos1.z, pos2.z};
 		float2 depthCompare = {
-			readDepth(projectPosition(pos1).xy),
-			readDepth(projectPosition(pos2).xy),
+			readDepth(clampToRectIfOn(projectPosition(pos1).xy, TESR_ReciprocalResolution.xy)),
+			readDepth(clampToRectIfOn(projectPosition(pos2).xy, TESR_ReciprocalResolution.xy)),
 		};
 
 		float2 depthDelta = depth - depthCompare;
@@ -315,7 +317,7 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 		total += 1/step1 + 1/step2; // weight samples inversely with distance
 	}
 
-    occlusion = pows(occlusion / total, 0.3) * facing; // get an average shading based on total weights
+    occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);
 	
 
     // save result of SSS in red channel, and fade contribution with distance
@@ -350,8 +352,8 @@ float4 ScreenSpaceShadowFast(VSOUT IN) : COLOR0
 			float3 pos2 = pos1 + step2 * step;
 			float2 depth = {pos1.z, pos2.z};
 			float2 depthCompare = {
-				readDepthLod(projectPosition(pos1).xy),
-				readDepthLod(projectPosition(pos2).xy),
+				readDepthLod(clampToRectIfOn(projectPosition(pos1).xy, TESR_ReciprocalResolution.xy)),
+				readDepthLod(clampToRectIfOn(projectPosition(pos2).xy, TESR_ReciprocalResolution.xy)),
 			};
 			float2 depthDelta = depth - depthCompare;
 			occlusion += (depthDelta.x > bias && depthDelta.x < SSS_THICKNESS)/step1;
@@ -359,7 +361,7 @@ float4 ScreenSpaceShadowFast(VSOUT IN) : COLOR0
 			pos = pos2;
 			total += 1/step1 + 1/step2;
 		}
-		occlusion = pows(occlusion / total, 0.3) * facing;
+		occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);
 		color.r = lerp(1.0f - occlusion, 1.0, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z));
 		result = color;
 	}
@@ -437,12 +439,12 @@ float4 SharpContactShadow(VSOUT IN) : COLOR0
 	[unroll] for (int i = 1; i <= SHARP_STEPS; i++) {
 		float t = i / (float)SHARP_STEPS;
 		float rayZ = 1.0f / lerp(invZ0, invZ1, t);
-		float delta = rayZ - readDepthLod(lerp(uv, endUV, t));
+		float delta = rayZ - readDepthLod(clampToRectIfOn(lerp(uv, endUV, t), TESR_ReciprocalResolution.xy));
 		float w = 1.0f / (1.0f + t * 4.0f);
 		occlusion += (delta > bias && delta < SSS_THICKNESS) * w;
 		total += w;
 	}
-	occlusion = pows(occlusion / total, 0.3) * facing;
+	occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);
 	return float4(lerp(1.0f - occlusion, 1.0f, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z)), color.g, 0, 1);
 }
 

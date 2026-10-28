@@ -126,6 +126,12 @@ public:
 	static void	BeginWorldScene();
 	static void	EndWorldScene();
 	void	PrepareBlending();
+	void	PrepareDisplaceDepth();
+
+private:
+	bool	CopySceneDepth();
+
+public:
 	static void	NoteWorldBind() { if (BlendDepthState == 1) BindsBeforeCopy++; }
 
 private:

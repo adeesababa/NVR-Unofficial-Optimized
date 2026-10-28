@@ -22,3 +22,18 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
 
     return color;
 }
+
+#ifdef SKY_VIEW_DIRECTION
+float3 SkyViewDirection(float2 vpos) {
+    float2 s01 = (vpos + 0.5f) * TESR_ReciprocalResolution.xy * TESR_RenderScale.zw;
+    float2 ndc = float2(s01.x * 2.0f - 1.0f, 1.0f - s01.y * 2.0f);
+    float4 view = mul(float4(ndc, 0.5f, 1.0f), TESR_InvProjectionTransform);
+    return normalize(mul(float4(view.xyz / view.w, 0.0f), TESR_InvViewTransform).xyz);
+}
+#endif
+
+float3 SkyLook(float3 color, float up, float3 tint, float3 horizonTint, float4 look) {
+    if (look.x != 1.0f) color = max(lerp(luma(color).xxx, color, look.x), 0.0f);
+    float overhead = smoothstep(0.0f, look.y, saturate(up));
+    return color * tint * lerp(horizonTint, 1.0f, overhead);
+}

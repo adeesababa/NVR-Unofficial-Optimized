@@ -1,4 +1,5 @@
 #include "MotionBlur.h"
+#include "../core/DxvkCompute.h"
 
 void MotionBlurEffect::UpdateConstants() {
 	static unsigned lastFrame = ~0u;
@@ -59,3 +60,18 @@ bool MotionBlurEffect::ShouldRender()
 {
 	return Constants.Data.x || Constants.Data.y; 
 };
+
+bool MotionBlurEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 reciprocalResolution, blurParams, blurData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.reciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	push.blurParams = Constants.BlurParams;
+	push.blurData = Constants.Data;
+	for (int pass = 0; pass < 2; pass++) {
+		IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture };
+		if (!ExtTexturePass(Device, RenderTarget, pass ? TheTextureManager->RenderedSurface : RenderedSurface, SourceBuffer, extPass, "MotionBlur", textures, _countof(textures), &push, sizeof(push), 48,
+			false, 0, false, pass == 1))
+			return pass == 1;
+	}
+	return true;
+}

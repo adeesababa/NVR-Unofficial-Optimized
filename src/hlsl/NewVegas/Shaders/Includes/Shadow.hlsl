@@ -90,7 +90,7 @@ sampler2D TESR_ShadowAtlasOld : register(SHADOW_OLD_ATLAS_SAMPLER_REG) = sampler
 // variants. Must match [_Shaders.ShadowsExteriors.ShadowMaps] Mode.
 //   0 = VSM, 1 = EVSM2, 2 = EVSM4 (toml default)
 #ifndef SHADOW_FIXED_MODE
-    #define SHADOW_FIXED_MODE 2
+    #define SHADOW_FIXED_MODE 3
 #endif
 
 static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
@@ -285,6 +285,9 @@ static float ShadowSlopeBias = 0.0f;
 #endif
 #if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL || SHADOW_SLACK_CAP_ACTOR
     #define SHADOW_SLACK_CAP 1
+    #ifndef SHADOW_REACH_ALONG_RAY
+        #define SHADOW_REACH_ALONG_RAY 1
+    #endif
     static float ShadowSlackCap = 1.0e9f;
     #define SHADOW_SLACK(n) min((n) * ShadowSlopeBias, ShadowSlackCap)
     #define SHADOW_SLACK_WIDE(n) SHADOW_SLACK(n)
@@ -605,6 +608,21 @@ float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadr
 }
 #endif
 
+#if FORWARD_SHADOWS
+float SunShadowCoarse(float3 worldPos) {
+#if SHADOW_FIXED_MODE == 0
+    const float bias = 0.00001f;
+#elif SHADOW_FIXED_MODE == 3
+    const float bias = 0.0002f;
+#else
+    const float bias = 0.01f;
+#endif
+    const bool near = length(worldPos - TESR_ShadowNearCenter.xyz) < TESR_ShadowNearCenter.w;
+    const float4x4 lightTransform = near ? TESR_ShadowCameraToLightTransformNear : TESR_ShadowCameraToLightTransformMiddle;
+    return saturate(SampleShadowAtlas(mul(float4(worldPos, 1.0f), lightTransform), near ? float2(0.0f, 0.0f) : float2(0.5f, 0.0f), bias, near ? 0.1f : 0.2f));
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Camera-relative world position from clip space. Call in the VS and interpolate: it is exact
 // under perspective-correct interpolation and costs one interpolator.
@@ -622,6 +640,7 @@ float3 GetShadowWorldPos(float4 clipPos) {
 //
 // MUST be called from the top level of the pixel shader: ddx/ddy are illegal inside dynamic
 // flow control.
+// ---------------------------------------------------------------------------
 float3 GetShadowGeometricNormal(float3 worldPos) {
     float3 n = normalize(cross(ddx(worldPos), ddy(worldPos)));
 
@@ -643,6 +662,7 @@ float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 nor
     return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
 }
 
+
 float2 ShadowEncodeNormal(float3 n) {
     n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-6f);
     float2 e = n.xy;
@@ -654,6 +674,10 @@ float3 ShadowDecodeNormal(float2 e) {
     float t = saturate(-n.z);
     n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
     return normalize(n);
+}
+
+float3 ShadowPlainNormal(float2 xy, float zColor) {
+    return float3(xy, zColor * 2.0f - 1.0f);
 }
 
 float3 ShadowFacingNormal(float3 n, float3 worldPos) {
@@ -680,7 +704,9 @@ float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float offset, 
 }
 #endif
 
+// ---------------------------------------------------------------------------
 // 1.0 in full light, towards 0 in shadow. Multiply the SUN term by it, before ambient.
+// ---------------------------------------------------------------------------
 float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // Nonzero SUPPRESSES the forward path; SunShadows.fx reads the same constant and takes
     // over deferred. A missing constant reads zero and leaves forward running.
@@ -719,7 +745,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 #if SHADOW_SLACK_CAP
     [flatten] if (SHADOW_CHARACTER_REACH > 0.0f) {
         offsetDistance = min(offsetDistance, SHADOW_CHARACTER_REACH * radii / max(radii.x, 0.001f));
-        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f));
+        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f) * ((SHADOW_REACH_ALONG_RAY) ? max(NdotL, 0.2f) : 1.0f));
     }
 #endif
 #endif
@@ -746,6 +772,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
         length(worldPos - TESR_ShadowLodCenter.xyz));
 
     // matrix transforms on every shadowed pixel, and the forward path pays that per object.
+    //
     // Legal here only because SampleShadowAtlas uses tex2Dlod -- a gradient instruction under
     // dynamic flow control is X3528 in ps_3_0. The atlas has no mipmaps, so LOD 0 is exact.
 #if CONTACT_HARDENING
@@ -767,6 +794,28 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     float offsetHere = cascade < 0.5f ? lerp(offsetDistance.x, offsetDistance.y, fade) : cascade < 1.5f ? lerp(offsetDistance.y, offsetDistance.z, fade) :
                        cascade < 2.5f ? lerp(offsetDistance.z, offsetDistance.w, fade) : offsetDistance.w;
     float slackScale = cascade < 0.5f ? lerp(radii.x / max(radii.y, 0.001f), 1.0f, fade) : 1.0f;
+#if defined(NVR_NO_SM3_LIMITS) && NVR_NO_SM3_LIMITS
+    float shadow = 1.0f;
+    [branch] if (cascade >= 0.0f && cascade < 3.5f) {
+        shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetHere, bias);
+        [branch] if (fade > 0.0f) {
+            float next = 1.0f;
+            [branch] if (cascade < 2.5f) {
+                float slopeBiasHere = ShadowSlopeBias;
+                ShadowSlopeBias *= slackScale;
+#if CONTACT_HARDENING
+                ShadowSoftnessCap = slackScale;
+#endif
+                next = SunCascadeTap(cascade + 1.0f, worldPos, worldNormal, offsetHere, bias);
+                ShadowSlopeBias = slopeBiasHere;
+#if CONTACT_HARDENING
+                ShadowSoftnessCap = 1.0f;
+#endif
+            }
+            shadow = lerp(shadow, next, fade);
+        }
+    }
+#else
     float3 hashP = frac(worldPos * 7.1031f);
     hashP += dot(hashP, hashP.yzx + 33.33f);
     float dither = frac((hashP.x + hashP.y) * hashP.z);
@@ -783,6 +832,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     ShadowSlopeBias = slopeBiasHere;
 #if CONTACT_HARDENING
     ShadowSoftnessCap = 1.0f;
+#endif
 #endif
 #else
     // Initialised: a point beyond the last cascade falls through every branch.

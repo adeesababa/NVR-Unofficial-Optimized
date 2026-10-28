@@ -1,3 +1,4 @@
+
 #define SHADOW_INVPROJ_REG c180
 #define SHADOW_INVVIEW_REG c184
 #include "includes/Shadow.hlsl"

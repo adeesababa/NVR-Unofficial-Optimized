@@ -1,0 +1,137 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "GpuGrass.glsl"
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std140) uniform Frame { GG_FRAME_BLOCK } f;
+layout(set = 0, binding = 1, std430) readonly buffer Tufts { vec4 tufts[]; };
+layout(set = 0, binding = 2, std430) readonly buffer TuftDraw { uint tuftDraw[]; };
+layout(set = 0, binding = 3, std430) readonly buffer Draws { GGDraw draws[]; };
+layout(set = 0, binding = 4, std430) writeonly buffer Blades { GGBlade blades[]; };
+layout(set = 0, binding = 5, std430) buffer Args {
+    uint nearArgs[4];
+    uint farArgs[4];
+    uint stats[8];
+};
+
+void main() {
+    const uint tuftCount = uint(f.cam.w);
+    const uint maxClumps = max(uint(ceil(f.fade.z)), 1u);
+    const uint id = gl_GlobalInvocationID.x;
+    if (id >= tuftCount * maxClumps) return;
+    const uint t = id / maxClumps;
+    const uint c = id - t * maxClumps;
+
+    const vec4 inst = tufts[t];
+    const uint di = tuftDraw[t];
+    const GGDraw d = draws[di];
+    uint seed = ggSeed(inst.xy, c * 7919u + 13u);
+
+    if (c > 0u && ggRand(seed) >= f.fade.z - float(c)) return;
+
+    vec3 rel = inst.xyz - f.cam.xyz;
+
+    vec4 clip = vec4(dot(f.rows[0].xyz, rel) + f.rows[0].w, dot(f.rows[1].xyz, rel) + f.rows[1].w,
+                     dot(f.rows[2].xyz, rel) + f.rows[2].w, dot(f.rows[3].xyz, rel) + f.rows[3].w);
+    const uint flags = uint(d.scaleMask.w + 0.5);
+    if ((flags & 1u) != 0u && length(vec3(clip.xy, clip.w)) > f.fade.x) {
+        if (c == 0u) atomicAdd(stats[4], 1u);
+        return;
+    }
+
+    const vec4 fr = fract(inst);
+    const float lightScale = fr.w * 0.75 + 0.25;
+    const vec3 orient = normalize((fr.xyz - 0.5) * 2.0 + vec3(0.0, 0.0, 1e-4));
+    const vec3 up = (flags & 2u) != 0u ? normalize(vec3(0.0, 0.0, 1.0) + orient) : vec3(0.0, 0.0, 1.0);
+    const vec3 scale = (0.01 * inst.w) * d.scaleMask.xyz + 1.0;
+
+    if (c > 0u) {
+        float r = f.fade.w * sqrt(ggRand(seed));
+        float a = ggRand(seed) * 6.2831853;
+        vec2 o = vec2(cos(a), sin(a)) * r;
+        rel += vec3(o, -(orient.x * o.x + orient.y * o.y) / max(orient.z, 0.3));
+    }
+
+    const float plantH = d.shape.x * scale.z * f.shape.x * (c > 0u ? 0.8 + 0.4 * ggRand(seed) : 1.0);
+    const float halfW = d.shape.y * scale.x;
+
+    const vec3 centre = rel + up * (plantH * 0.5);
+    const float radius = max(plantH, halfW * f.shape2.x) + 64.0;
+    for (int i = 0; i < 4; i++) {
+        if (dot(f.planes[i].xyz, centre) + f.planes[i].w < -radius) {
+            atomicAdd(stats[1], 1u);
+            return;
+        }
+    }
+
+    const float dist = length(rel);
+    const float s = clamp((dist - f.lod.x) * f.lod.y, 0.0, 1.0);
+    const float kf = max(mix(f.lod.z, f.lod.w, s) * d.sun.w, 1.0);
+    const uint k = uint(ceil(kf));
+    const bool far = dist >= f.shape3.w;
+    const uint cap = uint(f.misc.y);
+
+    uint base = far ? atomicAdd(farArgs[1], k) : atomicAdd(nearArgs[1], k);
+    atomicAdd(stats[0], 1u);
+    if (base >= cap) { atomicAdd(stats[3], k); return; }
+    const uint count = min(k, cap - base);
+    if (count < k) atomicAdd(stats[3], k - count);
+    atomicAdd(stats[2], count);
+    base += far ? cap : 0u;
+
+    const float meanLen = 0.5 * (1.0 + f.shape.z);
+    const float area = d.ambient.w * scale.x * scale.z * f.shape.y;
+    const float coverWidth = area / max(kf * plantH * meanLen * 0.66, 1.0);
+    const float pixelWidth = f.shape3.y * dist * f.shape3.z;
+
+    float phase = (inst.x + inst.y) * 0.0078125 + f.wind.w;
+    phase = fract(phase * 0.159154937 + 0.5) * 6.28318548 - 3.14159274;
+    const bool fieldWind = dot(f.lanes.xy, f.lanes.xy) > 0.0;
+
+    const float sunAmount = clamp(dot(orient, f.sunDir.xyz), 0.0, 1.0) * lightScale * f.sunDir.w;
+    const uint lightPacked = packHalf2x16(vec2(lightScale, sunAmount));
+
+    for (uint i = 0u; i < count; i++) {
+        uint bs = ggSeed(inst.xy + vec2(float(c) * 3.7, float(c) * 1.9), i * 2654435761u + 1u);
+        const float h1 = ggRand(bs), h2 = ggRand(bs), h3 = ggRand(bs), h4 = ggRand(bs), h5 = ggRand(bs);
+        const float keep = clamp(kf - float(i), 0.0, 1.0);
+
+        const float len = mix(f.shape.z, 1.0, h1);
+        const float height = max(plantH * len * keep, 0.5);
+        const float hb = len * 4.0 - 0.5;
+        const float rsil = hb < 1.0 ? mix(d.ramp[0].w, d.ramp[1].w, clamp(hb, 0.0, 1.0))
+                         : hb < 2.0 ? mix(d.ramp[1].w, d.ramp[2].w, hb - 1.0)
+                                    : mix(d.ramp[2].w, d.ramp[3].w, clamp(hb - 2.0, 0.0, 1.0));
+        const float rTip = halfW * rsil * f.shape2.x * (0.5 + 0.5 * h3);
+        const float ang = h2 * 6.2831853;
+        const vec3 away = vec3(cos(ang), sin(ang), 0.0);
+        const vec3 outDir = normalize(away - up * dot(away, up));
+        const vec3 side = normalize(cross(up, outDir));
+        const vec3 root = rel + outDir * (halfW * f.shape.w * h4);
+
+        const float weight = clamp(d.shape.z + d.shape.w * height / scale.z, 0.0, 1.0);
+        const vec3 flutter = side * (sin(phase * 2.3 + h2 * 6.2831853) * f.wind.z * f.shape3.x * weight);
+        vec3 wind = fieldWind
+            ? ggWindMove(inst, f.lanes, f.misc.x, sin(phase), f.wind, weight, height)
+            : vec3(f.wind.xy * (sin(phase + h1 * 1.5) * f.wind.z * weight), 0.0);
+        wind += flutter;
+
+        const float droop = f.shape2.z * clamp(rTip / height - 0.5, 0.0, 1.0) * height;
+        const vec3 tip = up * (height - droop) + outDir * rTip + wind;
+        const vec3 ctrl = up * (height * 0.6) + outDir * (rTip * f.shape2.w) + wind * 0.3;
+        const float width = max(coverWidth * (0.6 + 0.8 * h4) * keep, pixelWidth);
+
+        const uint angleQ = uint(h2 * 63.0 + 0.5) & 63u;
+        const uint seedQ = uint(h5 * 63.0 + 0.5) & 63u;
+        const uint lenQ = uint(len * 255.0 + 0.5) & 255u;
+
+        GGBlade b;
+        b.a = vec4(root, width);
+        b.tip = tip;
+        b.packed = (di & 0xFFFu) | (angleQ << 12) | (seedQ << 18) | (lenQ << 24);
+        b.ctrl = ctrl;
+        b.light = lightPacked;
+        blades[base + i] = b;
+    }
+}

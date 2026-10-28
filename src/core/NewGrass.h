@@ -619,7 +619,8 @@ namespace NewGrass {
 
 	inline void ReadSettings() {
 		const char* s = "Shaders.Grass.NewGrass";
-		S.Enabled = TheSettingManager->GetSettingI(s, "Enabled") != 0;
+		S.Enabled = false;
+		if (!S.Enabled) return;
 		S.KeepCards = TheSettingManager->GetSettingI(s, "KeepCards") != 0;
 		S.TipReach = TheSettingManager->GetSettingF(s, "TipReach");
 		S.Kink = TheSettingManager->GetSettingF(s, "Kink");

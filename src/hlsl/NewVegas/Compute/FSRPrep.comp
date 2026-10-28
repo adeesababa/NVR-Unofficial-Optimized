@@ -1,0 +1,63 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "Common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform texture2D t_depth;
+layout(set = 1, binding = 1) uniform texture2D t_viewmodel;
+layout(set = 1, binding = 2, rg16f) writeonly uniform image2D o_motion;
+layout(set = 1, binding = 3, rg32f) writeonly uniform image2D o_depth;
+
+layout(set = 2, binding = 0, std140) uniform Constants {
+    mat4 projectionTransform;
+    mat4 viewTransform;
+    mat4 prevViewTransform;
+    vec4 cameraData;
+    vec4 prevProjection;
+    vec4 cameraDelta;
+    vec4 size;
+} cb;
+
+layout(push_constant) uniform Push {
+    uint pointIndex;
+} pc;
+
+#define POINT_S NVR_SAMPLER(pc.pointIndex)
+#define nearZ cb.cameraData.x
+#define farZ cb.cameraData.y
+
+vec3 toWorld(vec2 tex) {
+    vec3 v = vec3(cb.viewTransform[0][2], cb.viewTransform[1][2], cb.viewTransform[2][2]);
+    v += (1.0 / cb.projectionTransform[0][0] * (2.0 * tex.x - 1.0)) * vec3(cb.viewTransform[0][0], cb.viewTransform[1][0], cb.viewTransform[2][0]);
+    v += (-1.0 / cb.projectionTransform[1][1] * (2.0 * tex.y - 1.0)) * vec3(cb.viewTransform[0][1], cb.viewTransform[1][1], cb.viewTransform[2][1]);
+    return v;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(cb.size.xy)))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / cb.size.xy;
+
+    float linear01 = texelFetch(sampler2D(t_depth, POINT_S), pixel, 0).x;
+    bool weapon = texelFetch(sampler2D(t_viewmodel, POINT_S), pixel, 0).x > 0.0;
+
+    vec3 cameraVector = toWorld(uv) * (linear01 * farZ);
+    vec3 fromPrevCamera = cameraVector + cb.cameraDelta.xyz;
+    vec3 prevRight   = vec3(cb.prevViewTransform[0][0], cb.prevViewTransform[1][0], cb.prevViewTransform[2][0]);
+    vec3 prevUp      = vec3(cb.prevViewTransform[0][1], cb.prevViewTransform[1][1], cb.prevViewTransform[2][1]);
+    vec3 prevForward = vec3(cb.prevViewTransform[0][2], cb.prevViewTransform[1][2], cb.prevViewTransform[2][2]);
+    float viewZ = dot(fromPrevCamera, prevForward);
+    vec2 ndc = vec2(dot(fromPrevCamera, prevRight) * cb.prevProjection.x,
+                    dot(fromPrevCamera, prevUp) * cb.prevProjection.y) / max(viewZ, 1e-4);
+    vec2 prevUV = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+
+    vec2 motion = prevUV - uv;
+    if (weapon || cb.size.z > 0.5 || viewZ <= 0.0) motion = vec2(0.0);
+
+    float z = max(linear01 * farZ, nearZ);
+    float device = clamp(farZ / (farZ - nearZ) * (1.0 - nearZ / z), 0.0, 1.0);
+
+    imageStore(o_motion, pixel, vec4(motion, 0.0, 0.0));
+    imageStore(o_depth, pixel, vec4(weapon ? 0.0 : device, weapon ? cb.size.w : 0.0, 0.0, 0.0));
+}

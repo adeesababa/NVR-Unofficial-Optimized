@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_SunDirection;
 float4 TESR_SunColor;

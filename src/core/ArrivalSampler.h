@@ -341,7 +341,7 @@ namespace ArrivalSampler {
 
 	inline DWORD WINAPI ThreadMain(void*) {
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-		HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 , TIMER_ALL_ACCESS);
+		HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002, TIMER_ALL_ACCESS);
 		if (Out) fprintf(Out, "I timer %s\n", timer ? "high-resolution waitable timer, 1 ms" : "NONE (Sleep(1) at the system timer resolution)");
 		ScanModules();
 		LastModuleScan = LastTotals = Qpc();

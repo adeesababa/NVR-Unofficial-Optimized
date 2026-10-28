@@ -1,5 +1,6 @@
 // A collection of functions that allow to query depth of a given pixel and also to reconstruct/project a point from screen to view space
 // requires the shader to get access to the TESR_DepthBuffer sampler before the include.
+#include "Includes/RenderRect.hlsl"
 
 float4x4 TESR_ProjectionTransform;
 float4x4 TESR_InvProjectionTransform;
@@ -32,8 +33,9 @@ float readDepthLod(float2 coord)
 
 float3 reconstructPosition(float2 uv)
 {
-    float x = uv.x * 2 - 1;
-    float y = (1 - uv.y) * 2 - 1;
+    float2 s01 = rectToScreen(uv);
+    float x = s01.x * 2 - 1;
+    float y = (1 - s01.y) * 2 - 1;
     float z = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, uv).x);
     float4 clipSpace = float4(x, y, z, 1.0f);
 
@@ -50,13 +52,15 @@ float3 projectPosition(float3 position){
 
 	projection.x = projection.x * 0.5 + 0.5;
 	projection.y = 0.5 - 0.5 * projection.y;
+	projection.xy = screenToRect(projection.xy);
 
 	return projection.xyz;
 }
 
 
-float3 toWorld(float2 tex)
+float3 toWorld(float2 uv)
 {
+	float2 tex = rectToScreen(uv);
 	float3 v = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
 	v += (1 / TESR_ProjectionTransform[0][0] * (2 * tex.x - 1)).xxx * float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
 	v += (-1 / TESR_ProjectionTransform[1][1] * (2 * tex.y - 1)).xxx * float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
@@ -70,8 +74,9 @@ float getHomogenousDepth(float2 uv){
 }
 
 float4 reconstructWorldPosition(float2 uv, out float viewDepth){
-    float x = uv.x * 2 - 1;
-    float y = (1 - uv.y) * 2 - 1;
+    float2 s01 = rectToScreen(uv);
+    float x = s01.x * 2 - 1;
+    float y = (1 - s01.y) * 2 - 1;
     float z = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, uv).x);
     float4 clipSpace = float4(x, y, z, 1.0f);
 
@@ -87,8 +92,9 @@ float4 reconstructWorldPosition(float2 uv, out float viewDepth){
 }
 
 float4 reconstructWorldPositionLod(float2 uv, out float viewDepth){
-    float x = uv.x * 2 - 1;
-    float y = (1 - uv.y) * 2 - 1;
+    float2 s01 = rectToScreen(uv);
+    float x = s01.x * 2 - 1;
+    float y = (1 - s01.y) * 2 - 1;
     float z = projectedDepthFromLinear(tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x);
     float4 viewSpace = mul(float4(x, y, z, 1.0f), TESR_InvProjectionTransform);
 

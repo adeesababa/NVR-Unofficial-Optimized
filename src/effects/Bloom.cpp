@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <cstddef>
 
 #include "Bloom.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
 void BloomEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloomData", &Constants.Data);
@@ -134,9 +137,97 @@ void BloomEffect::RenderPass(IDirect3DDevice9* Device, UINT techniqueIndex, bool
 	}
 }
 
+struct BloomExtPush {
+	D3DXVECTOR4	data;
+	D3DXVECTOR4	resolution;
+	D3DXVECTOR4	glow;
+	D3DXVECTOR4	glowExtra;
+	UInt32		samplerIndex;
+	UInt32		pad[3];
+};
+
+bool BloomEffect::RenderBloomExt(IDirect3DDevice9* Device, int passes) {
+	auto make = [](ExtPass& pass, const char* spvName, UINT textureCount) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[3] = {};
+		for (UINT i = 0; i < textureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[textureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[textureCount].Slot = 0; bindings[textureCount].PushOffset = (UINT)offsetof(BloomExtPush, samplerIndex);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, textureCount + 1, sizeof(BloomExtPush), true);
+	};
+	make(extDownFirst, "BloomDownFirst", 1);
+	make(extDown, "BloomDown", 1);
+	make(extUp, "BloomUp", 2);
+	make(extUpLast, "BloomUpLast", 2);
+	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
+	if (!extDownFirst.Pipeline || !extDown.Pipeline || !extUp.Pipeline || !extUpLast.Pipeline || !sampler) return false;
+
+	if (!extLevelsTried) {
+		extLevelsTried = true;
+		for (int i = 0; i < MaxPasses - 1; i++) {
+			std::string name = "NVR_BloomLevel" + std::to_string(i);
+			TheTextureManager->InitTexture(name.c_str(), &extLevels.Texture[i], &extLevels.Surface[i], (int)Settings.Resolution[i].x, (int)Settings.Resolution[i].y, D3DFMT_A16B16G16R16F);
+		}
+	}
+	for (int i = 0; i < passes - 1; i++) {
+		if (!extLevels.Texture[i] || !extLevels.Surface[i]) return false;
+	}
+
+	auto levelTexture = [&](int i) -> IDirect3DBaseTexture9* { return i < passes - 1 ? extLevels.Texture[i] : Textures.BloomTexture[i]; };
+	auto levelSurface = [&](int i) -> IDirect3DSurface9* { return i < passes - 1 ? extLevels.Surface[i] : Textures.BloomSurface[i]; };
+
+	auto draw = [&](ExtPass& pass, IDirect3DBaseTexture9* const* textures, UINT textureCount, IDirect3DSurface9* target, const BloomExtPush& push) {
+		NVR_EXT_RESOURCE_BINDING resources[3] = {};
+		for (UINT i = 0; i < textureCount; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i]; }
+		resources[textureCount].Slot = 0; resources[textureCount].Type = NVR_EXT_BIND_SAMPLER; resources[textureCount].pResource = sampler;
+		return ExtDrawTo(pass.Pipeline, &target, 1, resources, textureCount + 1, &push, sizeof(push), nullptr, ExtUv::TexelCentre);
+	};
+	auto pushConstants = [this]() {
+		BloomExtPush push = {};
+		push.data = Constants.Data;
+		push.resolution = Constants.Resolution;
+		push.glow = Constants.Glow;
+		push.glowExtra = Constants.GlowExtra;
+		return push;
+	};
+
+	for (int i = 0; i < passes; i++) {
+		Constants.Resolution = Settings.Resolution[i];
+		IDirect3DBaseTexture9* textures[1] = { i == 0 ? TheTextureManager->RenderedTexture : levelTexture(i - 1) };
+		if (!draw(i == 0 ? extDownFirst : extDown, textures, 1, levelSurface(i), pushConstants())) return false;
+	}
+
+	for (int i = passes - 2; i >= 0; i--) {
+		if (Constants.Data.z > 0.0f) {
+			Constants.Data.x = Settings.Resolution[i + 1].z; // Pixel size x axis of the upsampled texture.
+			Constants.Data.y = Settings.Resolution[i + 1].w; // Pixel size y axis of the upsampled texture.
+		}
+		Constants.Resolution = Settings.Resolution[i];
+		IDirect3DBaseTexture9* textures[2] = { Textures.BloomTexture[i + 1], levelTexture(i) };
+		if (!draw(i == 0 ? extUpLast : extUp, textures, 2, Textures.BloomSurface[i], pushConstants())) return false;
+	}
+	return true;
+}
+
 /*
 * Renders the final bloom buffer by iteratively downsampling and upsampling with intermediary blur.
 */
+IDirect3DVertexBuffer9* BloomEffect::LevelQuad(int i) {
+	if (!RenderRect::Active()) return Textures.BloomVertexBuffer[i];
+	const UINT w = (UINT)Settings.Resolution[i].x, h = (UINT)Settings.Resolution[i].y;
+	const D3DXVECTOR3 key(RenderRect::ScaleX, RenderRect::ScaleY, (float)w);
+	if (!RectVertexBuffer[i] || RectVertexKey[i] != key) {
+		if (RectVertexBuffer[i]) { RectVertexBuffer[i]->Release(); RectVertexBuffer[i] = nullptr; }
+		TheShaderManager->CreateFrameVertex(w, h, &RectVertexBuffer[i], RenderRect::ScaleX, RenderRect::ScaleY);
+		RectVertexKey[i] = key;
+	}
+	const D3DVIEWPORT9 port = { 0, 0, (std::max)(1u, RenderRect::Width(w)), (std::max)(1u, RenderRect::Height(h)), 0.0f, 1.0f };
+	TheRenderManager->device->SetViewport(&port);
+	return RectVertexBuffer[i] ? RectVertexBuffer[i] : Textures.BloomVertexBuffer[i];
+}
+
 void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 	if (!Enabled) {
 		renderTime = 0.0f;
@@ -150,12 +241,19 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	const int passes = std::clamp((int) TheShaderManager->GetTransitionValue(Settings.Main.Passes, Settings.Night.Passes, Settings.Interiors.Passes), 2, 8);
 
+	if (!ExtFailed && DxvkCompute::PassesOn() && RenderBloomExt(Device, passes)) {
+		Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS));
+		Device->SetRenderTarget(0, RenderTarget);
+		renderTime = timer.LogTime("EffectRecord::ExtRender Bloom");
+		return;
+	}
+
 	int passNumber = 0;
 
 	//progressively blur & downsample
 	for (int i = 0; i < passes; i++) {
-		Device->SetStreamSource(0, Textures.BloomVertexBuffer[i], 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution.
 		Device->SetRenderTarget(0, Textures.BloomSurface[i]);  // Render to correct bloom buffer.
+		Device->SetStreamSource(0, LevelQuad(i), 0, sizeof(FrameVS));
 
 		Constants.Resolution = Settings.Resolution[i];
 		RenderPass(Device, passNumber, true);
@@ -166,8 +264,8 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	//progressively blur & upsample and combine
 	for (int i = passes - 2; i >= 0; i--) {
-		Device->SetStreamSource(0, Textures.BloomVertexBuffer[i], 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution.
 		Device->SetRenderTarget(0, Textures.BloomSurface[i]);  // Render to correct bloom buffer.
+		Device->SetStreamSource(0, LevelQuad(i), 0, sizeof(FrameVS));
 
 		if (Constants.Data.z > 0.0f) {
 			Constants.Data.x = Settings.Resolution[i+1].z; // Pixel size x axis of the upsampled texture.
@@ -180,6 +278,7 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS)); // Reset vertex buffer for other effects.
 	Device->SetRenderTarget(0, RenderTarget);  // Reset render target for other effects.
+	RenderRect::RescaleAfterUpscale(Textures.BloomSurface[0]);
 
 	renderTime = timer.LogTime("EffectRecord::Render Bloom");
 }

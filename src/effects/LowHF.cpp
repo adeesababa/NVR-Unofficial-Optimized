@@ -1,4 +1,5 @@
 #include "LowHF.h"
+#include "../core/DxvkCompute.h"
 
 void LowHFEffect::UpdateConstants() {
 	float PlayerHealthPercent = (float)Player->GetActorValue(Actor::ActorVal::kActorVal_Health) / (float)Player->GetBaseActorValue(Actor::ActorVal::kActorVal_Health);
@@ -40,3 +41,12 @@ void LowHFEffect::RegisterConstants() {
 bool LowHFEffect::ShouldRender() {
 	return Constants.Data.x; 
 };
+
+bool LowHFEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 lowHFData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.lowHFData = Constants.Data;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "LowHF", textures, _countof(textures), &push, sizeof(push), 16);
+}
+

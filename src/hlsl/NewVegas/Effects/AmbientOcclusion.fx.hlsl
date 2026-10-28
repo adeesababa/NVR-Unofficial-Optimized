@@ -315,7 +315,7 @@ float2 PackedSSAOValues(float2 uv)
 
 		float3 pointX = origin + sampleX * uRadius;
 		float3 pointY = origin + sampleY * uRadius;
-		float2 sampleDepth = float2(readDepth(projectPosition(pointX).xy), readDepth(projectPosition(pointY).xy));
+		float2 sampleDepth = float2(readDepth(clampToRectIfOn(projectPosition(pointX).xy, TESR_ReciprocalResolution.xy)), readDepth(clampToRectIfOn(projectPosition(pointY).xy, TESR_ReciprocalResolution.xy)));
 		float2 actualDepth = float2(pointX.z, pointY.z);
 		float2 distance = abs(actualDepth - sampleDepth);
 		float2 influence = (sampleDepth < actualDepth) * (distance < uRadius);
@@ -331,6 +331,7 @@ float2 PackedSSAOValues(float2 uv)
 
 float3 GTAOPosition(float2 uv)
 {
+	uv = clampToRectIfOn(uv, TESR_ReciprocalResolution.xy);
 	return reconstructPosition((floor(uv / TESR_ReciprocalResolution.xy) + 0.5) * TESR_ReciprocalResolution.xy);
 }
 
@@ -342,7 +343,7 @@ float GTAOValue(float2 uv)
 	float3 N = normalize(GetNormal(uv));
 	N = dot(N, V) < 0.0 ? -N : N;
 	float radius = abs(AOrange);
-	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]);
+	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) * TESR_RenderScale.xy;
 	radiusUV *= min(1.0, TESR_AmbientOcclusionGTAO.w * TESR_ReciprocalResolution.x / max(radiusUV.x, 1e-6));
 	float3 noise = random(uv);
 	float falloffMul = -1.0 / (0.615 * radius);
@@ -444,7 +445,7 @@ float4 PackedBlur(VSOUT IN, uniform float2 axis) : COLOR0
 	float sum = center.x * 0.114725602f;
 	float weights = 0.114725602f;
 	[unroll] for (int i = 0; i < cKernelSize; ++i) {
-		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6);
+		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6) * TESR_RenderScale.xy;
 		float2 sample = tex2D(TESR_RenderedBuffer, PackedUV(uv)).rg;
 		float weight = BlurWeights[i] * (abs(center.y - sample.y) <= depthTolerance);
 		sum += sample.x * weight;
@@ -557,7 +558,7 @@ technique PackedAO
 
 float2 DedicatedUV(float2 uv)
 {
-	return clamp(uv, 0.5 * NVR_AOLayout.zw, 1 - 0.5 * NVR_AOLayout.zw);
+	return clamp(uv, 0.5 * NVR_AOLayout.zw, TESR_RenderScale.xy - 0.5 * NVR_AOLayout.zw);
 }
 
 float4 DedicatedBlur(VSOUT IN, uniform float2 axis) : COLOR0
@@ -570,7 +571,7 @@ float4 DedicatedBlur(VSOUT IN, uniform float2 axis) : COLOR0
 	float sum = center.x * 0.114725602f;
 	float weights = 0.114725602f;
 	[unroll] for (int i = 0; i < cKernelSize; ++i) {
-		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6);
+		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6) * TESR_RenderScale.xy;
 		float2 sample = tex2D(NVR_AOBuffer, DedicatedUV(uv)).rg;
 		float weight = BlurWeights[i] * (abs(center.y - sample.y) <= depthTolerance);
 		sum += sample.x * weight;
@@ -673,7 +674,7 @@ float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal, float3 rnd[
 
 		float3 pointX = origin + sampleX * uRadius;
 		float3 pointY = origin + sampleY * uRadius;
-		float2 sampleDepth = float2(readDepthLod(projectPosition(pointX).xy), readDepthLod(projectPosition(pointY).xy));
+		float2 sampleDepth = float2(readDepthLod(clampToRectIfOn(projectPosition(pointX).xy, TESR_ReciprocalResolution.xy)), readDepthLod(clampToRectIfOn(projectPosition(pointY).xy, TESR_ReciprocalResolution.xy)));
 		float2 actualDepth = float2(pointX.z, pointY.z);
 		float2 distance = abs(actualDepth - sampleDepth);
 		float2 influence = (sampleDepth < actualDepth) * (distance < uRadius);
@@ -717,7 +718,7 @@ float4 DedicatedBlurFast(VSOUT IN, uniform float2 axis) : COLOR0
 	float sum = center.x * 0.114725602f;
 	float weights = 0.114725602f;
 	[unroll] for (int i = 0; i < cKernelSize; ++i) {
-		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6);
+		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6) * TESR_RenderScale.xy;
 		float2 sample = tex2Dlod(NVR_AOBuffer, float4(DedicatedUV(uv), 0, 0)).rg;
 		float weight = BlurWeights[i] * (abs(center.y - sample.y) <= depthTolerance);
 		sum += sample.x * weight;
@@ -736,9 +737,11 @@ technique DedicatedAOFast
 
 float3 GTAOPositionLod(float2 uv)
 {
+	uv = clampToRectIfOn(uv, TESR_ReciprocalResolution.xy);
 	float2 texel = (floor(uv / TESR_ReciprocalResolution.xy) + 0.5) * TESR_ReciprocalResolution.xy;
-	float x = texel.x * 2 - 1;
-	float y = (1 - texel.y) * 2 - 1;
+	float2 s01 = rectToScreen(texel);
+	float x = s01.x * 2 - 1;
+	float y = (1 - s01.y) * 2 - 1;
 	float z = projectedDepthFromLinear(tex2Dlod(TESR_DepthBuffer, float4(texel, 0, 0)).x);
 	float4 viewSpace = mul(float4(x, y, z, 1.0f), TESR_InvProjectionTransform);
 	viewSpace /= viewSpace.w;
@@ -751,7 +754,7 @@ float GTAOValueFast(float2 uv, float3 P, float3 normalRaw, float3 noise)
 	float3 N = normalize(normalRaw);
 	N = dot(N, V) < 0.0 ? -N : N;
 	float radius = abs(AOrange);
-	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]);
+	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) * TESR_RenderScale.xy;
 	radiusUV *= min(1.0, TESR_AmbientOcclusionGTAO.w * TESR_ReciprocalResolution.x / max(radiusUV.x, 1e-6));
 	float falloffMul = -1.0 / (0.615 * radius);
 	float falloffAdd = (1.0 - 0.615) / 0.615 + 1.0;

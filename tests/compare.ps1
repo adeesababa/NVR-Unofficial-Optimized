@@ -1,3 +1,5 @@
+# Side-by-side sheet of two cloud_preview output folders (tests\out\<left>, tests\out\<right>), the top 600 rows of each view.
+#   powershell -File tests\compare.ps1 <left> <right> <sheet.png> view1,view2,...
 param([string]$Left, [string]$Right, [string]$Out, [string[]]$Views)
 Add-Type -AssemblyName System.Drawing
 $root = Join-Path $PSScriptRoot "out"

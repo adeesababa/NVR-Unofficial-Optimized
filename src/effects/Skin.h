@@ -5,62 +5,51 @@ class SkinShaders : public ShaderCollection
 public:
 	SkinShaders() : ShaderCollection("Skin") {};
 
-	// Set from NewVegasReloaded/Main.cpp when VanillaPlusSkin.dll is detected, same soft-
-	// detection pattern as AmbientOcclusion's bNVAOLoaded. VPS ships its own skin lighting
-	// model (a subsurface-scattering LUT) through its own NVSE plugin, using the same vanilla
-	// shader names ("SKIN2000.vso" etc.) that this collection's own hand-authored/decompiled
-	// replacements are keyed on. Since the two can't blend at the file level, Templates()
-	// below routes every SKIN name to SkinVPSTemplate.hlsl instead when this is set, which
-	// reproduces VPS's own lighting model and adds NVR's forward sun-shadow atlas -- the one
-	// thing VPS's own shader has no access to.
 	bool bVPSLoaded = false;
 
+	bool UseVPS = false;
+	bool Decided = false;
+	bool Active() const { return !UseVPS; }
+
 	struct SkinStruct {
-		D3DXVECTOR4		SkinData;
-		D3DXVECTOR4		SkinColor;
-		D3DXVECTOR4		SkinDiffusion;
+		D3DXVECTOR4		Material;
+		D3DXVECTOR4		Look;
+		D3DXVECTOR4		Debug;
 	};
-	SkinStruct Constants;
-
-	static bool NewSkinEnabled() {
-		static int Setting = -1;
-		if (Setting < 0) Setting = TheSettingManager->GetSettingI("Shaders.Skin.NewSkin", "Enabled") ? 1 : 0;
-		return Setting != 0;
-	}
-
-	struct NewSkinStruct {
-		D3DXVECTOR4		LightData;
-		D3DXVECTOR4		LightExtra;
-		D3DXVECTOR4		DebugData;
-		D3DXVECTOR4		LightCS;
-	};
-	NewSkinStruct NewConstants = {};
+	SkinStruct Constants = {};
 
 	struct MaterialStruct {
 		float SpecularStrength;
 		float Roughness;
-		float VanillaMatchedHighlights;
-		float ShadowScatter;
+		float Scattering;
 		float Translucency;
-		float PerPixelWidth;
-		float FillLight;
+		float ShadowScatter;
+		float Sheen;
 	};
 	MaterialStruct Exterior = {};
 	MaterialStruct Interior = {};
-	float SkyReflectionScale = 1.0f;
+	float SkyReflection = 1.0f;
 	float RainWetness = 0.5f;
-	D3DXVECTOR4 CSDetails = {};
 
 	int DebugView = 0;
 	bool MuteGameHighlights = true;
 	bool BindFaceGenMaps = true;
+	bool LegacyFaceShadows = false;
 	static const int DebugViewCount = 10;
 	static const int FirstScatteringDebugView = 8;
 
 	std::map<std::string_view, ShaderTemplate> Templates() {
-		if (NewSkinEnabled()) return NewSkinTemplates();
-		if (!bVPSLoaded) return std::map<std::string_view, ShaderTemplate>();
+		if (!Decided) {
+			Decided = true;
+			UseVPS = bVPSLoaded && !TheSettingManager->GetSettingI("Shaders.Skin.Main", "OverrideVanillaPlusSkin");
+			if (UseVPS) Logger::Log("Skin: Vanilla Plus Skin's shaders (SkinVPSTemplate.hlsl, [Shaders.Skin.Main] OverrideVanillaPlusSkin off)");
+			else Logger::Log("Skin: SkinTemplate.hlsl for every SKIN shader%s", bVPSLoaded ? " (Vanilla Plus Skin is installed and overridden)" : "");
+		}
+		if (UseVPS) return VPSTemplates();
+		return SkinTemplates();
+	};
 
+	std::map<std::string_view, ShaderTemplate> VPSTemplates() {
 		return std::map<std::string_view, ShaderTemplate>{
 			// Vertex shaders: ADTS Base/SKIN family, plus AD's LIGHTS=3/SKIN (ONLY_LIGHT).
 			{ "SKIN2000.vso", ShaderTemplate{ "SkinVPSTemplate", {{"VS", ""}} } },
@@ -87,7 +76,7 @@ public:
 		};
 	};
 
-	std::map<std::string_view, ShaderTemplate> NewSkinTemplates() {
+	std::map<std::string_view, ShaderTemplate> SkinTemplates() {
 		return std::map<std::string_view, ShaderTemplate>{
 			{ "SKIN2000.vso", ShaderTemplate{ "SkinTemplate", {{"VS", ""}} } },
 			{ "SKIN2001.vso", ShaderTemplate{ "SkinTemplate", {{"VS", ""}, {"SKIN", ""}} } },

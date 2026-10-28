@@ -16,6 +16,13 @@ float4 TESR_SunsetColor: register(c14); // sunsetColor.w is sky strength multipl
 float4 TESR_HDRBloomData: register(c15);
 float4 TESR_SunDiskColor: register(c16);
 float4 TESR_SkyTint: register(c19);
+float4 TESR_SkyTintHorizon: register(c20);
+float4 TESR_SkyLook: register(c21);
+float4 TESR_ReciprocalResolution: register(c22);
+row_major float4x4 TESR_InvProjectionTransform: register(c23);
+row_major float4x4 TESR_InvViewTransform: register(c27);
+float4 TESR_RenderScale: register(c31);
+#define SKY_VIEW_DIRECTION
 #ifndef PHYSICAL_SKY_ON
     #define PHYSICAL_SKY_ON 0
 #endif
@@ -81,7 +88,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         skyColor = lerp(skyColor, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
     }
 #endif
-    skyColor *= TESR_SkyTint.rgb;
+    skyColor = SkyLook(skyColor, SkyViewDirection(IN.screen).z, TESR_SkyTint.rgb, TESR_SkyTintHorizon.rgb, TESR_SkyLook);
 
     OUT.color_0 = delinearize(float4(skyColor * TESR_SunsetColor.w, 1)) ; // multiply sky strength for HDR
 

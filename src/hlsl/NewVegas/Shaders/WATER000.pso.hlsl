@@ -23,6 +23,7 @@ float4 TESR_WaterShorelineParams : register(c22);
 float4 TESR_WaterLODColor : register(c23);
 float4 TESR_DebugVar : register(c24);
 float4 TESR_SunAmount : register(c25);
+float4 TESR_RenderScale : register(c26);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -83,7 +84,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // float water = max(waterDepth.y, 0.0000000001) * 4096;
     // float4 floorNormal = float4(normalize(float4(ddx(water), ddy(water), 1, 1).rgb) + eyeDirection.rgb, 1);
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 color = linearize(tex2Dproj(RefractionMap, float4(refractionPos.xy * TESR_RenderScale.xy, refractionPos.zw)));
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, color);
     color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color);

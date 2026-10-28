@@ -39,8 +39,8 @@
 float4 TESR_SMAAResolution;
 float4 TESR_SMAAData; // x edge threshold, y relative depth threshold, z max search steps, w subpixel shift
 float4 TESR_SMAADepthData; // x depth buffer texel offset, y local contrast adaptation factor
-float4 TESR_SMAAPred;
-float4 TESR_ToneMappingClip;
+float4 TESR_SMAAPred; // UNOFFICIAL aastab: x 1 = predicated luma threshold, y threshold scale, z strength, w 1 = judge luma without the tonemap dither
+float4 TESR_ToneMappingClip; // UNOFFICIAL aastab: y tonemap dither size, z its frame (Includes/DitherNoise.hlsl)
 
 #ifndef SMAA_RT_METRICS
 #define SMAA_RT_METRICS TESR_SMAAResolution
@@ -204,6 +204,9 @@ float4 DX9_SMAALumaDepthEdgeDetectionPS(float4 position : SV_POSITION,
     float2 lumaEdges = step(float2(SMAA_THRESHOLD, SMAA_THRESHOLD), delta);
     float2 depthEdges = SMAADepthEdges(texcoord, offset);
 
+    // Local contrast cannot turn a rejected luma edge back on. Most pixels
+    // stop here, avoiding the four distant color reads below while retaining
+    // depth-only edges exactly as before.
     if (dot(lumaEdges, float2(1.0, 1.0)) == 0.0) {
         if (dot(depthEdges, float2(1.0, 1.0)) == 0.0)
             discard;
@@ -221,6 +224,8 @@ float4 DX9_SMAALumaDepthEdgeDetectionPS(float4 position : SV_POSITION,
     return float4(max(lumaEdges, depthEdges), 0.0, 0.0);
 }
 
+// UNOFFICIAL aastab: one luma tap, judged on the picture without the tonemap's dither noise when TESR_SMAAPred.w asks for it
+// (decisions only; the blend still reads the dithered picture). pixel = the tap's pixel position (VPOS + the tap's offset).
 float SMAALumaTap(float2 uv, float2 pixel) {
     float l = dot(SMAASamplePoint(TESR_RenderedBuffer, uv).rgb, float3(0.2126, 0.7152, 0.0722));
     [branch] if (TESR_SMAAPred.w > 0.5)
@@ -228,6 +233,8 @@ float SMAALumaTap(float2 uv, float2 pixel) {
     return l;
 }
 
+// The same luma-or-depth edge detection with the two UNOFFICIAL aastab options (de-dithered luma, predicated threshold). Used only
+// when one of them is on ([Shaders.SMAA.Main] DeDither / Predication); with both off the original pass above runs, untouched.
 float4 DX9_SMAALumaDepthEdgeDetectionStablePS(float2 vpos : VPOS,
                                         float2 texcoord : TEXCOORD0,
                                         float4 offset[3] : TEXCOORD1) : COLOR {
@@ -236,11 +243,18 @@ float4 DX9_SMAALumaDepthEdgeDetectionStablePS(float2 vpos : VPOS,
     float Ltop = SMAALumaTap(offset[0].zw, vpos + float2(0.0, -1.0));
     float2 delta = abs(L - float2(Lleft, Ltop));
     float2 depthEdges = SMAADepthEdges(texcoord, offset);
+    // UNOFFICIAL aastab, predicated thresholding (Jimenez et al., "SMAA", Eurographics 2012, section on predication; the reference
+    // SMAA_PREDICATION code): the luma threshold is scaled by Scale * (1 - Strength * predicate), the predicate here = a depth edge
+    // (the relative test above). Where the depth is flat the threshold goes up (default x2), so the texture-contrast pairs near
+    // 0.05 that a +-1 step noise tips over and back are no longer edges; real geometry edges are untouched (they have the depth edge).
     float2 threshold = float2(SMAA_THRESHOLD, SMAA_THRESHOLD);
     [branch] if (TESR_SMAAPred.x > 0.5)
         threshold *= TESR_SMAAPred.y * (1.0 - TESR_SMAAPred.z * depthEdges);
     float2 lumaEdges = step(threshold, delta);
 
+    // Local contrast cannot turn a rejected luma edge back on. Most pixels
+    // stop here, avoiding the four distant color reads below while retaining
+    // depth-only edges exactly as before.
     if (dot(lumaEdges, float2(1.0, 1.0)) == 0.0) {
         if (dot(depthEdges, float2(1.0, 1.0)) == 0.0)
             discard;
@@ -285,7 +299,7 @@ technique LumaEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS;
+        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -303,7 +317,7 @@ technique ColorEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS;
+        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -321,7 +335,7 @@ technique DepthEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS;
+        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -339,7 +353,7 @@ technique LumaDepthEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS;
+        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -355,8 +369,9 @@ technique LumaDepthEdgeDetectionStable {
         AlphaBlendEnable = false;
         AlphaTestEnable = false;
 
+        // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS;
+        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;

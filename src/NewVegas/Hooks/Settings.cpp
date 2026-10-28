@@ -1,5 +1,13 @@
 #pragma once
 
+static int GameMSAAWarned = 0;
+void NvrMsaaWarningTick() {
+	static bool shown = false;
+	if (!GameMSAAWarned || shown || !Player || !Player->parentCell || !InterfaceManager) return;
+	shown = true;
+	InterfaceManager->ShowMessage("NVR: turn the game's anti-aliasing off (launcher options). With it on, NVR's shadows and effects get speckled.");
+}
+
 bool (__thiscall* ReadSetting)(INISettingCollection*, GameSetting*) = (bool (__thiscall*)(INISettingCollection*, GameSetting*))Hooks::ReadSetting;
 bool __fastcall ReadSettingHook(INISettingCollection* This, UInt32 edx, GameSetting* Setting) {
 	
@@ -19,6 +27,17 @@ bool __fastcall ReadSettingHook(INISettingCollection* This, UInt32 edx, GameSett
 		Setting->iValue = 0;
 	else if (!strcmp(Setting->Name, "iMultiSample:Display") && Setting->iValue < 2 && TheSettingManager->SettingsMain.Main.ForceMSAA)
 		Setting->iValue = 2;
+	else if (!strcmp(Setting->Name, "iMultiSample:Display") && Setting->iValue > 0 && !TheSettingManager->SettingsMain.Main.ForceMSAA) {
+		if (!GameMSAAWarned)
+			Logger::Log("WARNING: the game's own anti-aliasing is on (iMultiSample %d). NVR's effects read one depth sample per pixel, which with "
+				"MSAA disagrees with the colour: speckled cloud shadows on grass, broken shadows round the player, patches on characters. Turn "
+				"Antialiasing off in the game's launcher (Options); NVR's TAA / FSR / DLSS smooth the edges instead.", Setting->iValue);
+		GameMSAAWarned = Setting->iValue;
+	}
+	else if (!strcmp(Setting->Name, "b30GrassVS:Grass") && !Setting->iValue) {
+		Logger::Log("UNOFFICIAL b30GrassVS was 0 in the game's INI (the launcher writes 0 under DXVK): read as 1, so NVR's grass shaders are used");
+		Setting->iValue = 1;
+	}
 	else if (!strcmp(Setting->Name, "bDoHighDynamicRange:BlurShaderHDR"))
 		Setting->iValue = 1;
 	else if (!strcmp(Setting->Name, "bUseBlurShader:BlurShader"))

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <unordered_map>
 #include <cstring>
@@ -153,6 +154,49 @@ namespace LampFixtures {
 	}
 
 	inline int ModelIndexOf(const NiGeometry* geo) { auto it = ModelOf.find(geo); return it == ModelOf.end() ? -1 : it->second; }
+
+	inline std::vector<std::string> NoShadowWords;
+	inline std::string NoShadowFrom = "\x01";
+	inline void SetNoShadowWords(const std::string& text) {
+		if (text == NoShadowFrom) return;
+		NoShadowFrom = text;
+		NoShadowWords.clear();
+		std::string word;
+		for (size_t i = 0; i <= text.size(); i++) {
+			const char c = i < text.size() ? text[i] : ',';
+			if (c == ',' || c == ';') {
+				while (!word.empty() && isspace((unsigned char)word.back())) word.pop_back();
+				if (!word.empty()) NoShadowWords.push_back(word);
+				word.clear();
+			}
+			else if (c != '"' && !(word.empty() && isspace((unsigned char)c))) word += (char)tolower((unsigned char)c);
+		}
+	}
+	inline bool NoShadowLampModel(const NiGeometry* geo, const NiPoint3* at, float distance, std::unordered_map<int, int>& cache) {
+		if (NoShadowWords.empty()) return false;
+		auto it = ModelOf.find(geo);
+		if (it == ModelOf.end()) return false;
+		int& answer = cache[it->second];
+		if (!answer) {
+			const Model& m = Models[it->second];
+			const char* name = m.name ? m.name : "";
+			for (const char* c = name; *c; c++) if (*c == '\\' || *c == '/') name = c + 1;
+			char low[128]; size_t n = 0;
+			for (; name[n] && n < sizeof(low) - 1; n++) low[n] = (char)tolower((unsigned char)name[n]);
+			low[n] = 0;
+			bool named = false;
+			for (const std::string& w : NoShadowWords) if (strstr(low, w.c_str())) { named = true; break; }
+			const float dx = m.x - at->x, dy = m.y - at->y, dz = m.z - at->z;
+			const float edge = sqrtf(dx * dx + dy * dy + dz * dz) - m.radius;
+			answer = named && edge <= distance ? 1 : 2;
+			if (LogModels && named && LogModelLines < 400) {
+				LogModelLines++;
+				Logger::Log("LAMPMODEL light at %.0f %.0f %.0f: lamp model '%s' (radius %.0f) edge %.0f units: %s (NoShadowLampModels)",
+					at->x, at->y, at->z, m.name ? m.name : "", m.radius, edge, answer == 1 ? "casts NO shadow for it" : "too far, keeps its shadow");
+			}
+		}
+		return answer == 1;
+	}
 
 	inline bool NearLampModel(const NiGeometry* geo, const NiPointLight* light, const NiPoint3* at, float distance, std::unordered_map<int, int>& cache) {
 		auto it = ModelOf.find(geo);

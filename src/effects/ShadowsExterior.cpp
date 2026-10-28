@@ -1,6 +1,8 @@
 #include "ShadowsExterior.h"
 #include "../core/TestTools.h"
 #include "../core/LampFixtures.h"
+#include "../core/DxvkCompute.h"
+#include "../core/SunDepthFit.h"
 
 static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
 	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
@@ -51,6 +53,7 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		Constants.ShadowFade.z = usePointLights;
 		Constants.ShadowFade.y = Settings.Exteriors.Enabled && Enabled;
 		Constants.ShadowFade.w = Constants.ShadowMapRadius.w; //furthest distance for point lights shadows
+		if (SunDepthFit::Enabled && SunDepthFit::UnfittedRadiusW > 0.0f) Constants.ShadowFade.w = SunDepthFit::UnfittedRadiusW;
 
 		// Update constants used by shadow shaders: x=quality, y=darkness
 		Constants.Data.x = Settings.Exteriors.Quality;
@@ -171,8 +174,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	
 	// Custom settings.
 	if (quality < 0 || quality > 3) {
-		Settings.ShadowMaps.Mode = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode"), 0, Modes-1);
-		Settings.ShadowMaps.FormatBits = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Format"), 0, FormatBits-1);
+		Settings.ShadowMaps.FormatBits = 0;
 
 		Settings.ShadowMaps.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "Distance"), 100.0f);
 		Settings.ShadowMaps.CascadeLambda = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CascadeLambda"), 0.0f, 1.0f);
@@ -198,7 +200,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.CascadeResolution = cascadeRes;
 
-		Settings.ShadowMaps.MSAA = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "MSAA");
+		Settings.ShadowMaps.MSAA = 0;
 
 		// Mipmaps and anisotropy are disabled due to deferred shadows - derivatives are messed up and causing artifacts.
 		// https://aras-p.info/blog/2010/01/07/screenspace-vs-mip-mapping/
@@ -210,7 +212,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.Anisotropy = (std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Anisotropy"), 0, 2)) * 8;*/
 
-		Settings.ShadowMaps.Prefilter = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Prefilter");
+		Settings.ShadowMaps.Prefilter = 0;
 
 		for (int shadowType = 0; shadowType <= MapLod; shadowType++) {
 			char sectionName[256] = "Shaders.ShadowsExteriors.Forms";
@@ -296,34 +298,29 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		switch (quality) {
 		case 0:
-			Settings.ShadowMaps.Mode = 0;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 3000.0f;
 			Settings.ShadowMaps.CascadeResolution = 1024;
 			Settings.ShadowMaps.MSAA = 0;
 			break;
 		case 1:
-			Settings.ShadowMaps.Mode = 0;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 4000.0f;
 			Settings.ShadowMaps.CascadeResolution = 1024;
 			break;
 		case 2:
-			Settings.ShadowMaps.Mode = 1;
-			Settings.ShadowMaps.FormatBits = 1;
 			Settings.ShadowMaps.Distance = 4500.0f;
 			Settings.ShadowMaps.CascadeResolution = 2048;
 			break;
 		case 3:
-			Settings.ShadowMaps.Mode = 2;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 6000.0f;
 			Settings.ShadowMaps.CascadeResolution = 2048;
 			break;
 		}
 	}
 	
-	if (Settings.ShadowMaps.Mode == 3) { Settings.ShadowMaps.Prefilter = 0; Settings.ShadowMaps.MSAA = 0; }
+	Settings.ShadowMaps.Mode = 3;
+	Settings.ShadowMaps.FormatBits = 0;
+	Settings.ShadowMaps.Prefilter = 0;
+	Settings.ShadowMaps.MSAA = 0;
 	Settings.ShadowMaps.Format = Formats[Settings.ShadowMaps.Mode][Settings.ShadowMaps.FormatBits];
 
 	// Set clear color for clearing the cascades.
@@ -369,12 +366,16 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	return cascadeSettingsChanged;
 }
 
+static D3DXVECTOR4 ScreenSpaceFade(0.0f, 0.0f, 0.0f, 0.0f);
+
 void ShadowsExteriorEffect::UpdateSettings() {
 
 	Constants.ScreenSpaceData.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Enabled") && Enabled;
 	Constants.ScreenSpaceData.y = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "BlurRadius");
 	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
+	const float nearFade = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "NearFade"), 0.0f);
+	ScreenSpaceFade = D3DXVECTOR4(nearFade * 0.5f, nearFade, 0.0f, 0.0f);
 	Settings.ScreenSpace.Sharp = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Sharp") != 0;
 
 	// Sun smoothing settings.
@@ -411,6 +412,9 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ForwardData.w = Settings.ShadowMaps.HandoverBlend;
 	Settings.ShadowMaps.PlayerInNear = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNear"), 0.0f, 1400.0f);
 	Settings.ShadowMaps.PlayerInNearLog = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNearLog") != 0;
+	SunDepthFit::Enabled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepth") != 0;
+	SunDepthFit::DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepthDebug"), 0, 2);
+	SunDepthFit::Log = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepthLog") != 0;
 	{
 		const char* section = "Shaders.ShadowsExteriors.ShadowMaps";
 		Settings.ShadowMaps.CharacterMap = TheSettingManager->GetSettingI(section, "CharacterShadowMap") != 0;
@@ -540,6 +544,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.NormalOffset = TheSettingManager->GetSettingF(section, "NormalOffset");
 		forward.Softness = TheSettingManager->GetSettingF(section, "Softness");
 		forward.FadeIn = TheSettingManager->GetSettingF(section, "FadeIn");
+		forward.ShadowClusterEnabled = TheSettingManager->GetSettingI(section, "ShadowClusterEnabled") != 0;
+		forward.ShadowClusterDistance = (std::max)(0.0f, (std::min)(512.0f, TheSettingManager->GetSettingF(section, "ShadowClusterDistance")));
 		forward.CameraIndependent = TheSettingManager->GetSettingI(section, "CameraIndependent") != 0;
 		forward.KeepLampsInView = TheSettingManager->GetSettingI(section, "KeepLampsInView") != 0;
 		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));
@@ -556,6 +562,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.LampModelShadows = TheSettingManager->GetSettingI(section, "LampModelShadows") != 0;
 		forward.LampModelDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelDistance"), 0.0f, 512.0f);
 		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
+		{
+			SettingManager::Configuration::ConfigNode node;
+			LampFixtures::SetNoShadowWords(TheSettingManager->Config.FillNode(&node, section, "NoShadowLampModels") ?
+				std::string(node.LongValue.empty() ? node.Value : node.LongValue.c_str()) : std::string());
+		}
 		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
 		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
 		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;
@@ -600,6 +611,87 @@ bool ShadowsExteriorEffect::ShouldRender() {
 	return false;
 }
 
+struct ShadowsExteriorPush {
+	D3DXVECTOR4 viewColumn[4];
+	D3DXVECTOR4 cameraPosition;
+	D3DXVECTOR4 projectionFar;
+	D3DXVECTOR4 shadowFade;
+	D3DXVECTOR4 shadowData;
+	D3DXVECTOR4 waterSettings;
+	D3DXVECTOR4 sunFarApply;
+	D3DXVECTOR4 sunAmbient;
+	D3DXVECTOR4 skyColor;
+	UInt32		samplerIndex;
+	UInt32		pointSamplerIndex;
+	UInt32		pad[2];
+};
+
+static const D3DXVECTOR4* ShadowConstant(const char* name) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+}
+
+static IDirect3DBaseTexture9* ShadowTexture(const char* name) {
+	auto found = TheTextureManager->TextureNames.find(name);
+	return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
+}
+
+bool ShadowsExteriorEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	const D3DXMATRIX* view = (const D3DXMATRIX*)ShadowConstant("TESR_ViewTransform");
+	const D3DXMATRIX* projection = (const D3DXMATRIX*)ShadowConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* cameraPosition = ShadowConstant("TESR_CameraPosition");
+	const D3DXVECTOR4* cameraData = ShadowConstant("TESR_CameraData");
+	const D3DXVECTOR4* shadowFade = ShadowConstant("TESR_ShadowFade");
+	const D3DXVECTOR4* shadowData = ShadowConstant("TESR_ShadowData");
+	const D3DXVECTOR4* waterSettings = ShadowConstant("TESR_WaterSettings");
+	const D3DXVECTOR4* sunFarApply = ShadowConstant("TESR_SunFarApply");
+	const D3DXVECTOR4* sunAmbient = ShadowConstant("TESR_SunAmbient");
+	const D3DXVECTOR4* skyColor = ShadowConstant("TESR_SkyColor");
+	if (!view || !projection || !cameraPosition || !cameraData || !shadowFade || !shadowData || !waterSettings || !sunFarApply || !sunAmbient || !skyColor) return false;
+
+	ShadowsExteriorPush push = {};
+	for (int j = 0; j < 4; j++) push.viewColumn[j] = D3DXVECTOR4((*view)(0, j), (*view)(1, j), (*view)(2, j), (*view)(3, j));
+	push.cameraPosition = *cameraPosition;
+	push.projectionFar = D3DXVECTOR4((*projection)(0, 0), (*projection)(1, 1), cameraData->y, 0.0f);
+	push.shadowFade = *shadowFade;
+	push.shadowData = *shadowData;
+	push.waterSettings = *waterSettings;
+	push.sunFarApply = *sunFarApply;
+	push.sunAmbient = *sunAmbient;
+	push.skyColor = *skyColor;
+
+	IDirect3DBaseTexture9* textures[5] = {
+		TheTextureManager->RenderedTexture,
+		ShadowTexture("TESR_SunFarBuffer"),
+		ShadowTexture("TESR_PointShadowBuffer"),
+		ShadowTexture("TESR_DepthBuffer"),
+		ShadowTexture("TESR_NormalsBuffer") };
+	for (IDirect3DBaseTexture9* texture : textures) if (!texture) return false;
+
+	const UINT TextureCount = 5, SamplerCount = 2;
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[TextureCount + SamplerCount] = {};
+		for (UINT i = 0; i < TextureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[TextureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount].Slot = 0; bindings[TextureCount].PushOffset = 192;
+		bindings[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount + 1].Slot = 1; bindings[TextureCount + 1].PushOffset = 196;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("ShadowsExteriors", bindings, TextureCount + SamplerCount, sizeof(push), true);
+	}
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!extPass.Pipeline || !linear || !point) return false;
+	NVR_EXT_RESOURCE_BINDING resources[TextureCount + SamplerCount] = {};
+	for (UINT i = 0; i < TextureCount; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[TextureCount].Slot = 0; resources[TextureCount].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount].pResource = linear;
+	resources[TextureCount + 1].Slot = 1; resources[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount + 1].pResource = point;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass.Pipeline, resources, TextureCount + SamplerCount, &push, sizeof(push), true);
+}
+
 bool ShadowsExteriorEffect::FadedContactUnread() {
 #if NVR_TEST_TOOLS
 	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;
@@ -639,6 +731,7 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowForwardData", &Constants.ForwardData);
 	TheShaderManager->RegisterConstant("TESR_ShadowBlur", &Constants.ShadowBlur);
 	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceData", &Constants.ScreenSpaceData);
+	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceFade", &ScreenSpaceFade);
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_PointShadowNear", &Constants.PointShadowNear);
@@ -647,6 +740,10 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_LampContactBias", &LampContactBias);
 	TheShaderManager->RegisterConstant("TESR_LampContactNoise", &LampContactNoise);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitData", &SunDepthFit::Data);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitInfo", &SunDepthFit::Info);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitSplits", &SunDepthFit::Splits);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitOriginal", &SunDepthFit::Original);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
 	TheShaderManager->RegisterConstant("TESR_ShadowNearCenter", &ShadowMaps[MapNear].ShadowMapCascadeCenterRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowCameraToLightTransformNear", (D3DXVECTOR4*)&ShadowMaps[MapNear].ShadowCameraToLight);
@@ -1150,6 +1247,7 @@ void ShadowsExteriorEffect::GetCascadeDepths() {
 	float ratio = maxZ / minZ;
 
 	int cascadeCount = 4;
+	float splitDepth[4];
 
 	for (int i = 0; i < cascadeCount; ++i) {
 		float p = (i + 1) / static_cast<float>(cascadeCount);
@@ -1157,10 +1255,25 @@ void ShadowsExteriorEffect::GetCascadeDepths() {
 		float uniform = minZ + range * p;
 		float d = Settings.ShadowMaps.CascadeLambda * (log - uniform) + uniform;
 		ShadowMaps[i].ShadowMapRadius = (d - nearClip) / clipRange;
+		splitDepth[i] = d;
+	}
+
+	SunDepthFit::UnfittedRadiusW = ShadowMaps[MapLod].ShadowMapRadius * clipRange;
+	float nearStart = minZ;
+	{
+		bool airReaders = false;
+		if (SunDepthFit::Enabled) {
+			auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+			airReaders = draws(TheShaderManager->Effects.VolumetricLight) || draws(TheShaderManager->Effects.Sandstorm);
+		}
+		float fitted[4];
+		if (SunDepthFit::Choose(minZ, maxZ, Settings.ShadowMaps.CascadeLambda, splitDepth, fitted, nearStart, airReaders))
+			for (int i = 0; i < cascadeCount; ++i) ShadowMaps[i].ShadowMapRadius = (fitted[i] - nearClip) / clipRange;
+		else nearStart = minZ;
 	}
 
 	// Get Near distance for each cascade
-	ShadowMaps[MapNear].ShadowMapNear = 10.0f / clipRange;
+	ShadowMaps[MapNear].ShadowMapNear = nearStart > minZ ? (nearStart - nearClip) / clipRange : 10.0f / clipRange;
 	ShadowMaps[MapMiddle].ShadowMapNear = ShadowMaps[MapNear].ShadowMapRadius;
 	ShadowMaps[MapFar].ShadowMapNear = ShadowMaps[MapMiddle].ShadowMapRadius;
 	ShadowMaps[MapLod].ShadowMapNear = ShadowMaps[MapFar].ShadowMapRadius;

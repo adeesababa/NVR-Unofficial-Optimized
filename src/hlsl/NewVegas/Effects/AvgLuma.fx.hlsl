@@ -18,6 +18,8 @@ static const float2 center = float2(0.5, 0.5); // this shader is to be applied o
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 
+static const bool AvgLumaRectOn = TESR_RenderScale.x < 0.9999 || TESR_RenderScale.y < 0.9999;
+
 struct VSOUT
 {
 	float4 vertPos : POSITION;
@@ -73,11 +75,11 @@ float getFocalDistance() {
 	// gets the autofocus depth based on a local average, scaled with player movement speed (to avoid flicker during fast movement)
 	float2 speed = saturate(abs(float2(TESR_MotionBlurData.x, TESR_MotionBlurData.y))) + 0.1;
 
-	float centerDepth = readDepth(center);
+	float centerDepth = readDepth(screenToRect(center));
 	float depth = centerDepth;
 	float2 samplingRange = speed;
 	for (int i=0; i<12; i++){
-		depth += readDepth(center + 0.3 * taps[i] * samplingRange);
+		depth += readDepth(screenToRect(center + 0.3 * taps[i] * samplingRange));
 	}
 	depth /= 12;
 
@@ -97,12 +99,13 @@ float4 AvgLuma(VSOUT IN) : COLOR0
 	float total = 0;
 	for (float i = 0.05; i < 1; i+= 0.1){
 		for (float j = 0.05; j < 1; j+= 0.1){
-			color += linearize(tex2D(TESR_RenderedBuffer, float2(i, j)));
+			color += linearize(tex2D(TESR_RenderedBuffer, screenToRect(float2(i, j))));
 			total++;
 		}
 	}
 	for (i= 0 ; i < 12; i++){
-		color += linearize(tex2D(TESR_RenderedBuffer, center + taps[i]));
+		float2 p = center + taps[i];
+		color += linearize(tex2D(TESR_RenderedBuffer, AvgLumaRectOn ? screenToRect(saturate(p)) : p));
 		total++;
 	}
 	color /= total;

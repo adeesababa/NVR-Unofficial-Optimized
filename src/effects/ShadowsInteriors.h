@@ -21,4 +21,8 @@ public:
 	bool	DedicatedUsable(IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface);
 	bool	dedicatedFailed = false;
 	CachedHandle techDedicated;
+
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	ExtPass	extBlur, extApply;
 };

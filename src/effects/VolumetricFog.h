@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/Sm6Pass.h"
 
 class VolumetricFogEffect : public EffectRecord
 {
@@ -99,4 +100,28 @@ public:
 	void Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 		IDirect3DSurface9* SourceBuffer) override;
+
+	struct ExtFogPush {
+		UInt32		pointIndex, linearIndex, wrapIndex, mode;
+		UInt32		legacy, classic, interior, physicalSky;
+		D3DXVECTOR4	fogLayout, compositeFlags, compositeAOTexel, gridFlags, sunFarFlags;
+	};
+	ExtPass		extEstimate, extApply;
+	std::map<std::string, ExtPass> extVariants;
+	ExtUniformBuffer extUniforms;
+	IDirect3DBaseTexture9* noiseTexture = nullptr;
+	CachedHandle paramPhysSky;
+	IDirect3DBaseTexture9* ExtTextureOf(const char* name);
+	static const UINT ExtInputCount = 13;
+	bool	ExtSetup(IDirect3DBaseTexture9* (&inputs)[ExtInputCount], ExtFogPush& push);
+	bool	ExtApplyPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+		IDirect3DBaseTexture9* const (&inputs)[ExtInputCount], const ExtFogPush& push, bool last);
+	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* scene,
+		bool composite, const D3DXVECTOR4& layout, bool& grid);
+	bool	ExtShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture);
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	std::map<std::string, Sm6Pass> sm6Passes;
+	Sm6Pass*	Sm6For(D3DXHANDLE technique, UINT pass);
+	bool	sm6Logged = false;
 };

@@ -108,7 +108,7 @@ namespace LampScissor {
 		D3DVIEWPORT9 port;
 		NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
 		if (!camera || camera->Frustum.Ortho || FAILED(device->GetViewport(&port)) || port.X || port.Y ||
-			port.Width != TheRenderManager->width || port.Height != TheRenderManager->height) return unusual(CameraOff, -1);
+			!TAAEffect::IsWorldViewport(port)) return unusual(CameraOff, -1);
 		const NiMatrix33& rot = camera->m_worldTransform.rot;
 		const NiPoint3& eye = camera->m_worldTransform.pos;
 		const NiFrustum& frustum = camera->Frustum;

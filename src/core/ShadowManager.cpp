@@ -5,6 +5,7 @@
 #include "TestTools.h"
 #include "OrthoProbe.h"
 #include "SunShadowStats.h"
+#include "../effects/CoverMap.h"
 
 struct SkinnedBoundEntry { UInt32 frame; bool ok; NiBound bound; };
 static std::unordered_map<NiGeometry*, SkinnedBoundEntry> SkinnedBounds;
@@ -121,6 +122,9 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	if (!forwardSettings.LampModelShadows)
 		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
+	if (!LampFixtures::NoShadowWords.empty())
+		hash = (hash ^ (UInt64)std::hash<std::string>{}(LampFixtures::NoShadowFrom) ^ ((UInt64)LampFixtures::Generation << 40) ^
+			(UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 	const bool fast = FastCasterHashOn();
@@ -866,11 +870,12 @@ void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool is
 
 		if (!object) continue;
 		NiNode* Node = object->IsNiNode();
-		if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue;
+		if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling containers
 		m = bigEnough(Node, m);
 		if (!m) continue;
 
 		if (Node->IsKindOf<NiSwitchNode>()) {
+			// NiSwitchNode - only render active children (if exists) to the shadow map.
 			NiSwitchNode* SwitchNode = static_cast<NiSwitchNode*>(Node);
 			if (SwitchNode->m_iIndex < 0 || SwitchNode->m_iIndex >= Node->m_children.end)
 				continue;
@@ -887,7 +892,7 @@ void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool is
 
 		for (int i = 0; i < Node->m_children.end; i++) {
 			NiAVObject* child = Node->m_children.data[i];
-			if (!child || child->m_flags & NiAVObject::NiFlags::APP_CULLED) continue;
+			if (!child || child->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling children
 			unsigned cm = bigEnough(child, m);
 			if (!cm) continue;
 
@@ -906,7 +911,7 @@ void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool is
 			}
 			if (!cm) continue;
 
-			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue;
+			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
 				containers.emplace_back(child, cm);
@@ -918,7 +923,7 @@ void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool is
 
 void ShadowManager::WalkSunObject(NiAVObject* NiObject, unsigned mask, bool isLODLand) {
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
-	if (!geo->shader) return;
+	if (!geo->shader) return; // skip Geometry without a shader
 	if (!CheckShaderFlags(geo)) return;
 #if NVR_TEST_TOOLS
 	OrthoProbe::NoteGeometry(geo);
@@ -1204,6 +1209,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	const bool useGeometryList = Lights[LightIndex]->kGeometryList.start != nullptr;
 	cubeCasters.clear();
 	std::unordered_map<int, int> lampModelCache;
+	std::unordered_map<int, int> noShadowCache;
 	if (useGeometryList) {
 		// Since this is pure geometry, getting reference data will be difficult (read: slow)
 		for (auto iter = Lights[LightIndex]->kGeometryList.start; iter; iter = iter->next) {
@@ -1232,6 +1238,9 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 			if (!Settings->Forward.LampModelShadows && !TheShaderManager->GameState.isExterior &&
 				LampFixtures::NearLampModel(geo, pNiLight, LightPos, Settings->Forward.LampModelDistance, lampModelCache))
+				continue;
+			if (!TheShaderManager->GameState.isExterior &&
+				LampFixtures::NoShadowLampModel(geo, LightPos, Settings->Forward.LampModelDistance, noShadowCache))
 				continue;
 
 			bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);
@@ -1807,6 +1816,8 @@ void ShadowManager::RenderShadowMaps() {
 			float cascadeInner[4] = {};
 			unsigned flatCascades = 0;
 			auto drawCascade = [&](int i) {
+				static const char* const cascadeNames[] = { "Sun cascade 0 (near)", "Sun cascade 1 (middle)", "Sun cascade 2 (far)", "Sun cascade 3 (lod)" };
+				GpuDebug::LabelScope label(i >= 0 && i < 4 ? cascadeNames[i] : "Sun cascade");
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
 				const bool flat = (flatCascades >> i) & 1;
 				Shadows->Constants.ShadowViewProj = cascadeViewProj[i];
@@ -2110,6 +2121,7 @@ void ShadowManager::RenderShadowMaps() {
 				ShadowMap->CameraTranslation = newCameraTranslation;
 				++skyFramesSinceDraw;
 			}
+			if (!skyOnly) CoverMapOrthoFrame = TheFrameRateManager->FrameNumber;
 
 			OrthoData->x = Shadows->Settings.OrthoMap.Distance * 2;
 			OrthoData->y = ShadowMap->ShadowMapInverseResolution;

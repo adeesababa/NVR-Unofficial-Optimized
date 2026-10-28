@@ -1905,6 +1905,7 @@ static NiPoint3 PoleFlow(const NiPoint3& o, float d, float a, const NiPoint3& U,
 	return v;
 }
 
+
 static void NotePushes(const SmokeChain& c, const NiPoint3* before, float* stirIn, NiPoint3* stirDir, float dt) {
 	if (dt <= 0.0001f) return;
 	for (int i = 0; i < c.count; i++) {

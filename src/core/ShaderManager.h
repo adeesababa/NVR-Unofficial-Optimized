@@ -6,6 +6,7 @@
 #include "EffectRecord.h"
 #include "ShaderCollection.h"
 #include "../Effects/Effects.h"
+#include "RenderRect.h"
 
 struct ShaderConstants {
 	
@@ -62,7 +63,10 @@ public:
 	void					SetFinalEffect(const void* effect) { FinalEffect = effect; }
 	bool					IsDirectFinal(const void* effect) const { return Active && !GameTexture && GameTarget && FinalEffect == effect; }
 	IDirect3DSurface9*		FinalSurface() const { return GameTarget; }
-	void					CommitFinal() { FinalWritten = true; }
+	void					CommitFinal() { FinalWritten = true; Writes++; LastWrite = 2; }
+	bool					FinalIsWritten() const { return FinalWritten; }
+	UINT					WriteCount() const { return Writes; }
+	int						LastWriteKind() const { return LastWrite; }
 
 private:
 	void					ReclaimFinal();
@@ -86,6 +90,8 @@ private:
 	IDirect3DSurface9*		SavedSurface = nullptr;
 	const void*				FinalEffect = nullptr;
 	bool					FinalWritten = false;
+	UINT					Writes = 0;
+	int						LastWrite = 0;
 };
 
 __declspec(align(16)) class ShaderManager : public ShaderManagerBase { // Never disposed
@@ -100,7 +106,8 @@ public:
 	ShaderCollection*		GetShaderCollectionByName(const char* Name);
 	void					ClearShaderSamplers(const char* TextureName, size_t Length);
 	void					RegisterConstant(const char* Name, D3DXVECTOR4* FloatValue);
-	void					CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex);
+	void					RenderDepthAndNormals(IDirect3DSurface9* RenderTarget);
+	void					CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex, float ScaleX = 1.0f, float ScaleY = 1.0f);
 	void					InitializeConstants();
 	void					UpdateConstants();
 	void					GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPointLight* LightsList[], NiSpotLight* SpotLightList[]);
@@ -195,6 +202,7 @@ public:
 		bool					isDialog;
 		bool					isPersuasion;
 		bool					isCellChanged;
+		bool					isCameraCut;
 		bool					VATSIsOn;
 		bool					PipBoyIsOn;
 		bool					OverlayIsOn;
@@ -212,6 +220,8 @@ public:
 	CustomConstants			CustomConst;
 	std::map<std::string, D3DXVECTOR4*>	ConstantsTable;
 	IDirect3DVertexBuffer9*	FrameVertex;
+	IDirect3DVertexBuffer9*	FrameVertexRect = nullptr;
+	float					FrameVertexRectScale[2] = { 0.0f, 0.0f };
 	FrameChain				Chain;
 	NiD3DVertexShader*		WaterVertexShaders[51];
 	NiD3DPixelShader*		WaterPixelShaders[51];

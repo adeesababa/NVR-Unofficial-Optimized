@@ -2,6 +2,7 @@
 
 #include "VolumetricSmokeQuads.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
 
 namespace VolumetricSmoke {
     inline const int FetchMax = 720;
@@ -225,6 +226,10 @@ class VolumetricSmokeEffect : public EffectRecord {
 public:
     VolumetricSmokeEffect() : EffectRecord("VolumetricSmoke") {}
     void RegisterTextures() override;
+    bool ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+    bool ExtHaze(const D3DXVECTOR4& look);
+    bool ExtEnv(const D3DXVECTOR4& envInfo);
+    bool FillExtConstants(const D3DXVECTOR4& info, const D3DXVECTOR4& flash);
     bool ShouldRender() override { return VolumetricSmoke::Fetch() > 0; }
     void Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
         UINT technique, bool clear, IDirect3DSurface9* source) override {
@@ -260,6 +265,7 @@ public:
         D3DXVECTOR4 info = Info, flash = Flash;
         info.x = test == 1 ? -1.0f : 0.0f;
         if (test == 2) flash.w = 0.0f;
+        extReady = DxvkCompute::PassesOn() && !ExtFailed && FillExtConstants(info, flash);
         Effect->SetVector(fx.SmokeInfo, &info);
         Effect->SetVector(fx.SmokeParams, &Params);
         Effect->SetVector(fx.SmokeFlash, &flash);
@@ -354,23 +360,26 @@ public:
                 Effect->SetVectorArray(fx.HazeLook, HazeLook, HazeMax);
                 Effect->SetVector(fx.SmokeLook, &hazeLook);
                 if (HazeSurface) HazeState.Drawn(HazeSurface);
-                device->SetTexture(2, Texture);
-                device->SetTexture(4, LowSurface ? LowTexture : nullptr);
-                device->SetTexture(7, nullptr);
-                DWORD oldWriteMask1 = 0xF;
-                device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
-                if (CutSurface) {
-                    device->SetRenderTarget(1, CutSurface);
-                    device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+                bool drew = extReady && ExtHaze(hazeLook);
+                if (!drew) {
+                    device->SetTexture(2, Texture);
+                    device->SetTexture(4, LowSurface ? LowTexture : nullptr);
+                    device->SetTexture(7, nullptr);
+                    DWORD oldWriteMask1 = 0xF;
+                    device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
+                    if (CutSurface) {
+                        device->SetRenderTarget(1, CutSurface);
+                        device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+                    }
+                    drew = fullScreen(fx.HazeTechnique, HazeSurface);
+                    if (CutSurface) {
+                        device->SetRenderTarget(1, nullptr);
+                        device->SetRenderState(D3DRS_COLORWRITEENABLE1, oldWriteMask1);
+                    }
+                    device->SetTexture(2, nullptr);
+                    device->SetTexture(4, nullptr);
+                    if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 }
-                const bool drew = fullScreen(fx.HazeTechnique, HazeSurface);
-                if (CutSurface) {
-                    device->SetRenderTarget(1, nullptr);
-                    device->SetRenderState(D3DRS_COLORWRITEENABLE1, oldWriteMask1);
-                }
-                device->SetTexture(2, nullptr);
-                device->SetTexture(4, nullptr);
-                if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 Effect->SetVector(fx.SmokeLook, &Look);
             }
             {
@@ -386,7 +395,7 @@ public:
                     device->SetRenderTarget(0, EnvSurface);
                     device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
                 }
-                fullScreen(fx.EnvTechnique, EnvSurface);
+                if (!(extReady && ExtEnv(envInfo))) fullScreen(fx.EnvTechnique, EnvSurface);
             }
         }
         device->SetRenderTarget(0, previousTarget);
@@ -409,4 +418,16 @@ public:
         }
         if (!whole) device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
     }
+
+    struct ExtConstantsStruct {
+        D3DXMATRIX	InvView, InvProjection, Projection;
+        D3DXVECTOR4	ReciprocalResolution, SunDirection, SunColor, SunAmbient, CameraData, CameraPosition;
+        D3DXVECTOR4	Info, Params, Flash, FlashColor, Look, HazeInfo, BulletMove, EnvInfo;
+        D3DXVECTOR4	HazeShape[VolumetricSmoke::HazeMax], HazeLook[VolumetricSmoke::HazeMax];
+        D3DXVECTOR4	BulletFrom[VolumetricSmoke::BulletMax], BulletWay[VolumetricSmoke::BulletMax];
+    };
+    ExtConstantsStruct	extConstants = {};
+    bool				extReady = false;
+    ExtPass				extHazePass, extEnvPass, extCompositePass;
+    ExtUniformBuffer	extUniforms;
 };

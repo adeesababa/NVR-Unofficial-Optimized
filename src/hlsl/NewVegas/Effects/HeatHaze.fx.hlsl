@@ -1,3 +1,5 @@
+
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_HeatHazeData;
 float4 TESR_HeatHazeNoise;

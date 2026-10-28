@@ -3,6 +3,7 @@
 
 #include "SkinScattering.h"
 #include "../core/PassSums.h"
+#include "../core/DxvkCompute.h"
 
 static const float SkinScatterMMPerUnit = 14.2857f;
 
@@ -49,7 +50,7 @@ void SkinScatteringEffect::UpdateSettings() {
 }
 
 void SkinScatteringEffect::UpdateConstants() {
-	if (!SkinShaders::NewSkinEnabled()) return;
+	if (!TheShaderManager->Shaders.Skin->Active()) return;
 	const bool isInterior = !TheShaderManager->GameState.isExterior;
 	if (isInterior != ProfileIsInterior) {
 		ProfileIsInterior = isInterior;
@@ -134,6 +135,7 @@ void SkinScatteringEffect::CalculateKernel() {
 		K[i].z *= s.z;
 	}
 }
+
 
 void SkinScatteringEffect::ReleaseTarget() {
 	if (MSAASurface) { MSAASurface->Release(); MSAASurface = nullptr; }
@@ -381,10 +383,76 @@ void SkinScatteringEffect::Unbind() {
 }
 
 bool SkinScatteringEffect::ShouldRender() {
-	if (!SkinShaders::NewSkinEnabled()) return false;
+	if (!TheShaderManager->Shaders.Skin->Active()) return false;
 	if (!ScreenSpace || !SkinDrawn || !Texture || !TextureSurface || !AlbedoTextureSurface) return false;
 	if (SkinShaderDebug) return false;
+	if (TAAEffect::UpscaledThisFrame()) return false;
 	if (MSAASurface) TheRenderManager->device->StretchRect(MSAASurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
 	if (AlbedoMSAASurface) TheRenderManager->device->StretchRect(AlbedoMSAASurface, NULL, AlbedoTextureSurface, NULL, D3DTEXF_NONE);
+	return true;
+}
+
+namespace {
+	struct SkinScatterUniforms {
+		D3DXVECTOR4	Data;
+		D3DXVECTOR4	Kernel[SkinScatteringEffect::KernelSamples];
+		D3DXVECTOR4	ReciprocalResolution;
+		D3DXVECTOR4	Debug;
+		D3DXVECTOR4	CameraData;
+		D3DXMATRIX	Projection;
+		D3DXMATRIX	View;
+	};
+	const NVR_EXT_BINDING_DESC SkinScatterBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE,  3, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE,  4, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },
+	};
+	struct SkinScatterPush { UInt32 samplerIndex; UInt32 firstPass; UInt32 pad[2]; };
+}
+
+bool SkinScatteringEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0 || ClearRenderTarget) return false;
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	if (!Texture || !AlbedoTexture || !depth || !TheTextureManager->SourceTexture || !TheTextureManager->RenderedTexture) return false;
+
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("SkinScattering", SkinScatterBindings, _countof(SkinScatterBindings), sizeof(SkinScatterPush), true);
+	}
+	if (!extUniformsTried) {
+		extUniformsTried = true;
+		extUniforms = DxvkCompute::CreateBuffer(sizeof(SkinScatterUniforms), NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "SkinScattering constants");
+	}
+	ID3D9NvrExtSampler* sampler = DxvkCompute::PointClamp();
+	if (!extPass.Pipeline || !extUniforms || !sampler) return false;
+
+	SkinScatterUniforms uniforms = {};
+	uniforms.Data = Constants.Data;
+	memcpy(uniforms.Kernel, Constants.Kernel, sizeof(uniforms.Kernel));
+	uniforms.ReciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	uniforms.Debug = Constants.Debug;
+	uniforms.CameraData = TheRenderManager->CameraData;
+	uniforms.Projection = TheRenderManager->projMatrix;
+	uniforms.View = TheRenderManager->viewMatrix;
+	if (FAILED(DxvkCompute::Extension()->UpdateBuffer(extUniforms, 0, sizeof(uniforms), &uniforms))) return false;
+
+	for (UINT pass = 0; pass < 2; pass++) {
+		IDirect3DBaseTexture9* inputs[5] = { TheTextureManager->RenderedTexture, depth, Texture, AlbedoTexture, TheTextureManager->SourceTexture };
+		NVR_EXT_RESOURCE_BINDING resources[7] = {};
+		for (UINT i = 0; i < 5; i++) {
+			resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i];
+		}
+		resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[5].pResource = extUniforms;
+		resources[6].Slot = 0; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = sampler;
+		SkinScatterPush push = {};
+		push.firstPass = pass == 0 ? 1 : 0;
+		IDirect3DSurface9* surface = pass == 0 ? RenderedSurface : TheTextureManager->RenderedSurface;
+		if (!ExtFullScreen(Device, RenderTarget, surface, pass == 0 ? SourceBuffer : nullptr, extPass.Pipeline, resources, _countof(resources), &push, sizeof(push), pass == 1))
+			return pass == 1;
+	}
 	return true;
 }

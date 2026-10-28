@@ -1,4 +1,5 @@
 #include "ShaderRecord.h"
+#include "DxvkCompute.h"
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ShaderPrecompile.h"
@@ -164,6 +165,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 
 	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
 	AppendDefine("LAMP_REACH_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampReachSkip") ? "1" : "0");
+	AppendDefine("NO_SLOT_LIMIT", (TheSettingManager->GetSettingI("Shaders.PBR.Main", "DxvkLampBranches") &&
+		TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) ? "1" : "0");
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
 	{
 		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
@@ -213,33 +216,14 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// shader was compiled assuming EVSM4 regardless of Quality, so GetSunShadow's
 	// "TESR_ShadowFormatData.x != SHADOW_FIXED_MODE" check only ever matched at Quality 3/Full,
 	// and forward shadows silently no-op'd (return unshadowed) at every other quality level.
-	{
-		int quality = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality");
-		int shadowMode;
-		switch (quality) {
-		case 0:
-		case 1:
-			shadowMode = 0; // VSM
-			break;
-		case 2:
-			shadowMode = 1; // EVSM2
-			break;
-		case 3:
-			shadowMode = 2; // EVSM4
-			break;
-		default: // 4 (Custom), or an out-of-range value -- fall back to the raw setting.
-			shadowMode = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode");
-			if (shadowMode < 0) shadowMode = 0;
-			if (shadowMode > 3) shadowMode = 3;
-			break;
-		}
-		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
-	}
+	AppendDefine("SHADOW_FIXED_MODE", "3");
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CharacterObjectReach"))
 		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
 		AppendDefine("CHARACTER_SHADOW_MAP", "1");
 	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
+	if (TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement"))
+		AppendDefine("NVR_DISPLACE_DEPTH", "1");
 
 }
 
@@ -289,6 +273,12 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	if (!FileExists(ShaderSourcePath)) {
 		return ShaderProg;
 	}
+
+	if (!memcmp(Name, "GRASS23x00", 10) && (!strcmp(Name + 10, "4.vso") || !strcmp(Name + 10, "5.vso") || !strcmp(Name + 10, "6.vso") ||
+		!strcmp(Name + 10, "7.vso") || !strcmp(Name + 10, "1TMS.pso") || !strcmp(Name + 10, "3TMS.pso") ||
+		!strcmp(Name + 10, "1.pso") || !strcmp(Name + 10, "3.pso")) &&
+		!TheSettingManager->GetSettingI("Shaders.Grass.Main", "PointLights"))
+		return ShaderProg;
 
 	strcpy(ShaderPreprocessedPath, CacheDirectory);
 	strcat(ShaderPreprocessedPath, Name);
@@ -385,10 +375,13 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				HRESULT createResult = E_FAIL;
 				if (ShaderProfile[0] == 'v') {
 					ShaderProg = new ShaderRecordVertex(Name);
+					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreateVertexShader((const DWORD*)Function, &((ShaderRecordVertex*)ShaderProg)->ShaderHandle);
 				}
 				else {
 					ShaderProg = new ShaderRecordPixel(Name);
+					DxvkCompute::RegisterReplacement(Name, Function, D3DXGetShaderSize((const DWORD*)Function), Template.Name ? Template.Name : Name, Macros);
+					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreatePixelShader((const DWORD*)Function, &((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 				}
 				
@@ -502,6 +495,7 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 			if (!memcmp(ConstantDesc.Name, "TESR_DepthBuffer", 17)) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
 			if (!strcmp(ConstantDesc.Name, "TESR_TerrainBlendDepth")) HasTerrainBlendDepth = true;
+			if (!strcmp(ConstantDesc.Name, "TESR_DisplaceDepth")) HasDisplaceDepth = true;
 	
 			TextureIndex++;
 			break;
@@ -623,6 +617,7 @@ void ShaderRecord::SetCT() {
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	}
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	if (HasDisplaceDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareDisplaceDepth();
 	if (LandLight::Pending) LandLight::Read();
 	if (IsLandLight) LandLight::Pending = true;
 

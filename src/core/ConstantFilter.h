@@ -152,7 +152,20 @@ namespace ConstantFilter {
 		if (LinearPreDecode::Active) PreDecodeRefresh(device);
 	}
 
+	inline bool ResyncPending = false;
+	inline void DeferResync() {
+		if (LinearPreDecode::Shaders.empty()) return;
+		LinearPreDecode::CopiesValid = false;
+		ResyncPending = true;
+	}
+	inline void DeferredResync(IDirect3DDevice9* self) {
+		if (!ResyncPending || !PreDecodeThread()) return;
+		ResyncPending = false;
+		PreDecodeResync(self);
+	}
+
 	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
+		DeferredResync(self);
 		const HRESULT result = SendPixel(self, start, data, count);
 		if (data && count && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
 			if (start <= LinearPreDecode::CopyLast && start + count > LinearPreDecode::CopyFirst) LinearPreDecode::CopiesValid = false;
@@ -191,6 +204,7 @@ namespace ConstantFilter {
 		const HRESULT result = OrigSetPixelShader(self, shader);
 		if (SUCCEEDED(result) && PixelShaderObserver) PixelShaderObserver(shader);
 		if (SUCCEEDED(result) && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
+			ResyncPending = false;
 			LinearPreDecode::Active = LinearPreDecode::Is(shader);
 			if (LinearPreDecode::Active) PreDecodeRefresh(self);
 		}
@@ -203,7 +217,7 @@ namespace ConstantFilter {
 		const HRESULT result = OrigReset(self, parameters);
 		if (StateLostObserver) StateLostObserver();
 		Wipe();
-		PreDecodeResync(self);
+		DeferResync();
 		return result;
 	}
 
@@ -219,7 +233,7 @@ namespace ConstantFilter {
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigEndStateBlock(self, block);
 		if (StateLostObserver) StateLostObserver();
-		if (GetCurrentThreadId() == Thread) PreDecodeResync(self);
+		if (GetCurrentThreadId() == Thread) DeferResync();
 		return result;
 	}
 
@@ -228,10 +242,7 @@ namespace ConstantFilter {
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigApply(self);
 		if (StateLostObserver) StateLostObserver();
-		if (GetCurrentThreadId() == Thread) {
-			IDirect3DDevice9* device = nullptr;
-			if (SUCCEEDED(self->GetDevice(&device)) && device) { PreDecodeResync(device); device->Release(); }
-		}
+		if (GetCurrentThreadId() == Thread) DeferResync();
 		return result;
 	}
 

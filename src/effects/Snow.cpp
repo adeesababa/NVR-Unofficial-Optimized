@@ -32,3 +32,46 @@ bool SnowEffect::ShouldRender() {
 		TheShaderManager->GameState.isExterior &&
 		!TheShaderManager->GameState.isUnderwater;
 };
+
+static const D3DXVECTOR4* RegisteredConstant(const char* name) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+}
+
+bool SnowEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	const D3DXVECTOR4* shadowToLight = RegisteredConstant("TESR_ShadowCameraToLightTransformOrtho");
+	const D3DXVECTOR4* view = RegisteredConstant("TESR_ViewTransform");
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	const D3DXVECTOR4* gameTime = RegisteredConstant("TESR_GameTime");
+	const D3DXVECTOR4* sunColor = RegisteredConstant("TESR_SunColor");
+	const D3DXVECTOR4* sunAmbient = RegisteredConstant("TESR_SunAmbient");
+	if (!shadowToLight || !view || !projection || !cameraData || !gameTime || !sunColor || !sunAmbient) return false;
+
+	struct Push {
+		D3DXVECTOR4 shadowToLight[4];
+		D3DXVECTOR4 view[3];
+		D3DXVECTOR4 gameTime;
+		D3DXVECTOR4 snowData;
+		D3DXVECTOR4 sunColor;
+		D3DXVECTOR4 sunAmbient;
+		D3DXVECTOR4 projectionFar;
+		UInt32		samplerIndex;
+		UInt32		pad[3];
+	} push = {};
+	memcpy(push.shadowToLight, shadowToLight, sizeof(push.shadowToLight));
+	for (int c = 0; c < 3; c++)
+		push.view[c] = D3DXVECTOR4(((const float*)&view[0])[c], ((const float*)&view[1])[c], ((const float*)&view[2])[c], ((const float*)&view[3])[c]);
+	push.gameTime = *gameTime;
+	push.snowData = Constants.Data;
+	push.sunColor = *sunColor;
+	push.sunAmbient = *sunAmbient;
+	push.projectionFar = D3DXVECTOR4(projection[0].x, projection[1].y, cameraData->y, 0.0f);
+
+	IDirect3DBaseTexture9* textures[] = {
+		TheTextureManager->RenderedTexture,
+		TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr,
+		TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "Snow", textures, _countof(textures), &push, sizeof(push), 192);
+}

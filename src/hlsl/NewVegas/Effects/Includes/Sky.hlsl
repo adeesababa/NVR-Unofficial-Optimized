@@ -22,3 +22,9 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
 
     return color;
 }
+
+float3 SkyLook(float3 color, float up, float3 tint, float3 horizonTint, float4 look) {
+    if (look.x != 1.0f) color = max(lerp(luma(color).xxx, color, look.x), 0.0f);
+    float overhead = smoothstep(0.0f, look.y, saturate(up));
+    return color * tint * lerp(horizonTint, 1.0f, overhead);
+}

@@ -7,6 +7,13 @@
 
 #define TERRAIN
 
+#ifndef NVR_NO_SM3_LIMITS
+    #define NVR_NO_SM3_LIMITS 0
+#endif
+#ifndef NVR_SM4
+    #define NVR_SM4 0
+#endif
+
 #define REVERSED_DEPTH
 
 #ifndef TEX_COUNT
@@ -41,7 +48,7 @@
 #else
     #define TERRAIN_BLEND_ACTIVE 0
 #endif
-#if TEX_COUNT >= 7 && SKYLIGHTING_MODE
+#if TEX_COUNT >= 7 && SKYLIGHTING_MODE && !NVR_NO_SM3_LIMITS
     #define HEIGHT_EDGE2_CONTRAST 0
 #else
     #define HEIGHT_EDGE2_CONTRAST 1
@@ -123,7 +130,11 @@ struct PS_INPUT
     float3 viewPosition : TEXCOORD7_centroid;
     float4 sPosition : POSITION1;
 #if TERRAIN_BLEND_ACTIVE
+#if NVR_SM4
+    float4 screenPos4 : VPOS;
+#else
     float2 screenPos : VPOS;
+#endif
 #endif
 };
 
@@ -149,6 +160,13 @@ float4 FogColor : register(c37);
 float4 PointLightColor[NUM_PT_LIGHTS] : register(c39);
 float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
+#endif
+
+#if defined(NVR_DISPLACE_DEPTH) && TEX_COUNT < 7
+    #define DISPLACE_DEPTH_IN 1
+sampler2D TESR_DisplaceDepth : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#else
+    #define DISPLACE_DEPTH_IN 0
 #endif
 
 #if TERRAIN_BLEND_ACTIVE
@@ -265,11 +283,16 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
 
 #if TERRAIN_BLEND_ACTIVE
+#if NVR_SM4
+    const float2 screenPos = IN.screenPos4.xy - 0.5f;
+#else
+    const float2 screenPos = IN.screenPos;
+#endif
     float terrainKeep = -1.0f;
     float3 blendLandPos = IN.lPosition.xyz;
     float blendViewDepth = IN.lPosition.w;
     float3 blendNormal = normalize(IN.normal.xyz);
-    TerrainBlendGap blendGap = terrainBlendGap(IN.screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
+    TerrainBlendGap blendGap = terrainBlendGap(screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
         ddx(blendViewDepth), ddy(blendViewDepth), IN.viewPosition.xyz, blendNormal);
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
         terrainKeep = getTerrainBlend(blendGap, blendViewDepth, 1.0f - blendNormal.z);
@@ -322,7 +345,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)
         terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
-        clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+        clip(terrainKeep - terrainBlendNoise(screenPos));
 #endif
 #if TERRAIN_VARIATION
     StochasticOffsets stochasticNormals = stochastic;
@@ -384,6 +407,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     OUT.color_0.a = 1;
 #if TERRAIN_BLEND_ACTIVE
     if (TESR_TerrainBlendExtra.w > 0.5f && TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f) OUT.color_0.a = terrainKeep;
+#endif
+#if DISPLACE_DEPTH_IN
+    [branch] if (FogParam.z < -1.0e30f) finalColor += tex2Dlod(TESR_DisplaceDepth, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 #endif
     OUT.color_0.rgb = finalColor;
 

@@ -1,3 +1,4 @@
+
 #ifdef assert
 #undef assert
 #endif
@@ -170,6 +171,7 @@ technique Copy {
 		}
 	}
 
+
 	bool UsageFromLayout(uint32_t layout, resource_usage& usage) {
 		switch (layout) {
 		case 1: usage = resource_usage::general; return true;
@@ -307,6 +309,7 @@ technique Copy {
 	}
 #endif
 
+
 #if NVR_TEST_TOOLS
 	std::atomic<bool> ForceMenuForTest{ false };
 #endif
@@ -370,6 +373,7 @@ technique Copy {
 		Guard.paused.clear();
 	}
 
+
 	void SnapshotGameValues() {
 		GameValueSnapshot now;
 		if (Tes && Tes->sky) {
@@ -429,6 +433,7 @@ technique Copy {
 		}
 		GameValues.wasOn = on;
 	}
+
 
 	void OnInitRuntime(effect_runtime* runtime) { TakeRuntime(runtime); }
 
@@ -516,6 +521,7 @@ technique Copy {
 		Logger::Log("UNOFFICIAL ReShade: NVR registered as a ReShade add-on (API version %u, headers %u).", version, RESHADE_API_VERSION);
 		return true;
 	}
+
 
 	bool CreateDepthCopy(IDirect3DDevice9* Device) {
 		ID3DXBuffer* errors = nullptr;

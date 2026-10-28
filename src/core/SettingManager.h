@@ -26,6 +26,18 @@ struct SettingsMainStruct {
         bool    DisableChainGameTexture;
         bool    DisableMergedNormals;
         bool    SkipIdentityExposure;
+        bool    AvgLumaCompute;
+        int     AvgLumaComputeCheck;
+        bool    NvrDxvkPasses;
+        bool    NvrDxvkVariants;
+        bool    NvrDxvkStencil;
+        char    NvrDxvkTestSuffix[16];
+        char    NvrDxvkKeepD3D9[128];
+        bool    AmbientLightSmoothCompute;
+        bool    NvrDxvkReplacements;
+        bool    AmbientLightBlurCompute;
+        bool    NvrSm6Shaders;
+        int     SmoothNormals;
         bool    LampMaskScissor;
         bool    InteriorShadowFold;
         int     InteriorShadowFoldRound;

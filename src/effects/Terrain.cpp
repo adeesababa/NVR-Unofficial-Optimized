@@ -1,5 +1,6 @@
 #include "Terrain.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
 
 bool ParallaxLiteDistanceMigrationPending = false;
 
@@ -23,7 +24,8 @@ void TerrainShaders::BeginWorldScene() {
 	BlendWorldDepth = nullptr;
 	BindsBeforeCopy = 0;
 	TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
-	if (!terrain || !terrain->BlendingSettings.Enabled || !TheTextureManager->TerrainBlendDepthTexture || !TheShaderManager->GameState.isExterior) return;
+	const bool wanted = terrain && (terrain->BlendingSettings.Enabled || DxvkCompute::DisplaceDepthWanted());
+	if (!wanted || !TheTextureManager->TerrainBlendDepthTexture || !TheShaderManager->GameState.isExterior) return;
 	IDirect3DSurface9* depth = nullptr;
 	TheRenderManager->device->GetDepthStencilSurface(&depth);
 	if (!depth) return;
@@ -37,15 +39,14 @@ void TerrainShaders::EndWorldScene() {
 	BlendWorldDepth = nullptr;
 }
 
-void TerrainShaders::PrepareBlending() {
-	BlendingConstants.Data.x = 0.0f;
-	if (BlendDepthState == 0 || !BlendWorldDepth) return;
+bool TerrainShaders::CopySceneDepth() {
+	if (BlendDepthState == 0 || !BlendWorldDepth) return false;
 
 	IDirect3DSurface9* current = nullptr;
 	TheRenderManager->device->GetDepthStencilSurface(&current);
 	const bool mainScene = current && current == BlendWorldDepth;
 	if (current) current->Release();
-	if (!mainScene) return;
+	if (!mainScene) return false;
 
 	if (BlendDepthState == 1) {
 		static GpuTimer copyTimer("Terrain blend depth copy");
@@ -54,10 +55,29 @@ void TerrainShaders::PrepareBlending() {
 		BlendDepthState = 2;
 		static unsigned copies = 0;
 		if (copies < 3 || copies % 3600 == 0)
-			Logger::Log("Terrain blending: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,
+			Logger::Log("Terrain blending / displacement ObjectBlend: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,
 				BindsBeforeCopy ? "" : " (nothing drawn before the land: nothing to blend with)");
 		copies++;
 	}
+	return true;
+}
+
+void TerrainShaders::PrepareDisplaceDepth() {
+	const bool valid = CopySceneDepth();
+	float scaleX = 1.0f, scaleY = 1.0f;
+	if (valid) {
+		D3DVIEWPORT9 port = {};
+		if (SUCCEEDED(TheRenderManager->device->GetViewport(&port)) && TheRenderManager->width && TheRenderManager->height) {
+			scaleX = std::clamp((float)(port.X + port.Width) / (float)TheRenderManager->width, 0.0f, 1.0f);
+			scaleY = std::clamp((float)(port.Y + port.Height) / (float)TheRenderManager->height, 0.0f, 1.0f);
+		}
+	}
+	DxvkCompute::DisplaceSceneDepth(valid, scaleX, scaleY);
+}
+
+void TerrainShaders::PrepareBlending() {
+	BlendingConstants.Data.x = 0.0f;
+	if (!BlendingSettings.Enabled || !CopySceneDepth()) return;
 	BlendingConstants.Data.x = 1.0f;
 	if (BlendingConstants.Extra.w > 0.5f) {
 		NiDX9RenderState* state = TheRenderManager->renderState;
@@ -174,6 +194,8 @@ void TerrainShaders::UpdateSettings() {
 void TerrainShaders::UpdateConstants() {
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
+
+	DxvkCompute::DisplaceTick();
 
 	if (!TheShaderManager->GameState.isExterior) return;
 

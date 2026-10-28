@@ -1,6 +1,8 @@
 #include "VolumetricFog.h"
 #include "../core/GpuProfiler.h"
 #include "../core/TestTools.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
 static void BindSky(IDirect3DDevice9* Device, IDirect3DTexture9* sky) {
 	Device->SetTexture(12, sky);
@@ -18,6 +20,11 @@ static void BindSunFar(IDirect3DDevice9* Device, IDirect3DTexture9* factor) {
 	const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
 		{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
 	for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+}
+
+static GpuTimer* FogPassTimers() {
+	static GpuTimer timers[2] = { GpuTimer("  Fog estimate (half)"), GpuTimer("  Fog composite (full)") };
+	return timers;
 }
 
 IDirect3DTexture9* VolumetricFogEffect::SunFarFor(bool shadow) {
@@ -367,6 +374,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 	if (!technique || !flagsHandle || !aoTexelHandle || !scene || !RenderedSurface || (!shadow && !aoTexture) ||
 		(aoTexture && FAILED(aoTexture->GetLevelDesc(0, &ao))))
 		return false;
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtShadowAO(Device, RenderTarget, RenderedSurface, shadow, aoTexture)) return true;
 
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -392,6 +400,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 			Device->SetTexture(8, aoTexture);
 			BindSky(Device, sky);
 			if (sunFar) BindSunFar(Device, sunFar);
+			RenderRect::ApplyViewport(Device);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}
@@ -439,12 +448,30 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(fogSurface[0]->GetDesc(&fog)) ||
 		FAILED(fogSurface[1]->GetDesc(&fogAdd)) ||
 		original.X || original.Y ||
-		original.Width != target.Width || original.Height != target.Height ||
+		((original.Width != target.Width || original.Height != target.Height) && !RenderRect::Active()) ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
 		fog.Width != MaxQuality::Reduced(target.Width, 2) || fog.Height != MaxQuality::Reduced(target.Height, 2) ||
 		fogAdd.Width != fog.Width || fogAdd.Height != fog.Height || fogAdd.Format != fog.Format ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;
+	if (RenderRect::Active()) { original.Width = target.Width; original.Height = target.Height; }
+
+	Sm6Pass* sm6[2] = { nullptr, nullptr };
+	if (!targetOverride && !sceneOverride && Sm6Pass::On()) {
+		sm6[0] = Sm6For(technique, 0);
+		sm6[1] = Sm6For(technique, 1);
+		if (!sm6[0] || !sm6[1]) sm6[0] = sm6[1] = nullptr;
+	}
+
+	if (!sm6[0] && !targetOverride && !sceneOverride && !ExtFailed && DxvkCompute::PassesOn()) {
+		const D3DXVECTOR4 extLayout((float)fog.Width / original.Width, (float)fog.Height / original.Height, 1.0f / fog.Width, 1.0f / fog.Height);
+		bool extGrid = false;
+		if (ExtDedicated(Device, RenderTarget, RenderedSurface, scene, composite, extLayout, extGrid)) {
+			compositeApplied = composite;
+			gridApplied = extGrid;
+			return true;
+		}
+	}
 
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = !targetOverride && chain.Owns(RenderTarget, RenderedSurface);
@@ -498,7 +525,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		static GpuTimer passTimers[2] = { GpuTimer("  Fog estimate (half)"), GpuTimer("  Fog composite (full)") };
+		GpuTimer* passTimers = FogPassTimers();
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
 			GpuProfileScope gpuPass(passTimers[combine ? 1 : 0], Device);
@@ -521,7 +548,12 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 				if (composite && compositeAO && compositeAOTexture && compositeSkyTexture) BindSky(Device, compositeSkyTexture);
 				if (sunFar) BindSunFar(Device, sunFar);
 			}
-			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Sm6Pass* sm6Pass = sm6[0] ? sm6[p] : nullptr;
+			if (sm6Pass && sm6Pass->Draw(Device, combine ? &finalTarget : fogSurface, combine ? 1 : 2, combine ? ExtUv::ScreenQuad : ExtUv::TexelCentre)) result = D3D_OK;
+			else {
+				RenderRect::ApplyViewport(Device);
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			}
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
 		}
@@ -578,6 +610,13 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	return true;
 }
 
+Sm6Pass* VolumetricFogEffect::Sm6For(D3DXHANDLE technique, UINT pass) {
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !Effect || FAILED(Effect->GetTechniqueDesc(technique, &description)) || !description.Name) return nullptr;
+	Sm6Pass& sm6 = sm6Passes[std::string(description.Name) + "." + std::to_string(pass)];
+	return sm6.Prepare(this, description.Name, pass) ? &sm6 : nullptr;
+}
+
 UINT VolumetricFogEffect::PlainTechniqueIndex(UINT techniqueIndex) {
 	const char* name = referenceTest ? "FogReference" : IsLegacy() ? "VolumetricFogLegacy" : IsClassic() ? "VolumetricFogClassic" : nullptr;
 	if (!name || !Effect) return techniqueIndex;
@@ -605,6 +644,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		noise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
 		if (!noise) Logger::Log("[ERROR] VolumetricFog: Textures\\Effects\\NoiseVolume.dds is missing: the fog's patches are off.");
 	}
+	noiseTexture = noise;
 	struct NoiseBinding {
 		IDirect3DDevice9* device;
 		NoiseBinding(IDirect3DDevice9* d, IDirect3DBaseTexture9* t) : device(d) {
@@ -657,7 +697,8 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		FAILED(RenderedSurface->GetDesc(&scratch)) || original.X || original.Y ||
 		original.Width != target.Width || original.Height != target.Height ||
 		target.Width != scratch.Width || target.Height != scratch.Height ||
-		(target.Width & 1) || (target.Height & 1)) {
+		(target.Width & 1) || (target.Height & 1) ||
+		RenderRect::Active()) {
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, PlainTechniqueIndex(techniqueIndex), ClearRenderTarget, SourceBuffer);
 		return;
 	}
@@ -705,4 +746,230 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		reported = true;
 	}
 	renderTime = timer.LogTime("VolumetricFog::PackedRender");
+}
+
+namespace {
+	const char* const FogExtMatrixNames[] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
+		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod", "TESR_ViewTransform", "TESR_ProjectionTransform" };
+	const char* const FogExtVectorNames[] = { "TESR_FogColor", "TESR_FogData", "TESR_ReciprocalResolution", "TESR_GameTime", "TESR_SmoothedSunDir",
+		"TESR_SunPosition", "TESR_SunColor", "TESR_SunDiskColor", "TESR_SunAmbient", "TESR_HorizonColor", "TESR_SkyLowColor", "TESR_SkyColor",
+		"TESR_SkyData", "TESR_SunsetColor", "TESR_SunAmount", "TESR_PBRData",
+		"TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter", "TESR_ShadowFormatData", "TESR_ShadowBlur",
+		"TESR_ShadowFade",
+		"TESR_VolumetricFogDensity", "TESR_VolumetricFogShape", "TESR_VolumetricFogWind", "TESR_VolumetricFogScatter", "TESR_VolumetricFogWeather",
+		"TESR_VolumetricFogAerial", "TESR_VolumetricFogAerialTint", "TESR_VolumetricFogDistant", "TESR_VolumetricFogGlobal", "TESR_VolumetricFogNight",
+		"TESR_VolumetricFogNightScatter", "TESR_VolumetricFogSun", "TESR_VolumetricFogNightTint",
+		"TESR_PhysSky", "TESR_PhysSkySun",
+		"TESR_VolumetricLightData", "TESR_VolumetricLightData2", "TESR_VolumetricLightGridLayout", "TESR_VolumetricLightGridData",
+		"TESR_VolumetricFogLow", "TESR_VolumetricFogHigh", "TESR_VolumetricFogSimple", "TESR_VolumetricFogBlend", "TESR_VolumetricFogHeight",
+		"TESR_VolumetricFogData",
+		"TESR_ShadowData", "TESR_WaterSettings", "TESR_AmbientOcclusionAOData", "TESR_AmbientOcclusionData",
+		"TESR_CameraData", "TESR_CameraPosition" };
+	struct FogExtConstants {
+		D3DXMATRIX	Matrices[_countof(FogExtMatrixNames)];
+		D3DXVECTOR4	Vectors[_countof(FogExtVectorNames)];
+		D3DXVECTOR4	SkyIrradiance[9];
+		D3DXVECTOR4	SkyIrradianceGame[9];
+		D3DXVECTOR4	Linear[9];
+	};
+	const char* const FogExtLinearNames[] = { "TESR_FogColor", "TESR_SkyColor", "TESR_SkyLowColor", "TESR_HorizonColor", "TESR_SunDiskColor",
+		"TESR_SunsetColor", "TESR_SunAmbient", "TESR_VolumetricFogAerialTint", "TESR_SunColor" };
+
+	float FogLinear(float c) { return c <= 0.04045f ? c / 12.92f : powf(fabsf((c + 0.055f) / 1.055f), 2.4f); }
+
+	bool FogExtCopy(void* to, size_t bytes, const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		if (found == TheShaderManager->ConstantsTable.end() || !found->second) {
+			static bool logged = false;
+			if (!logged) {
+				logged = true;
+				Logger::Log("UNOFFICIAL NVR DXVK: VolumetricFog: %s is not registered; the D3D9 techniques are used", name);
+			}
+			return false;
+		}
+		memcpy(to, found->second, bytes);
+		return true;
+	}
+
+	UINT FogExtBindings(NVR_EXT_BINDING_DESC* bindings, UINT images) {
+		for (UINT i = 0; i < images; i++) {
+			bindings[i] = {};
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i;
+			bindings[i].ViewType = i == 5 ? NVR_EXT_VIEW_3D : NVR_EXT_VIEW_2D;
+		}
+		bindings[images] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 3; s++) {
+			bindings[images + 1 + s] = {};
+			bindings[images + 1 + s].Type = NVR_EXT_BIND_SAMPLER; bindings[images + 1 + s].Slot = s; bindings[images + 1 + s].PushOffset = s * 4;
+		}
+		return images + 4;
+	}
+
+	UINT FogExtResources(NVR_EXT_RESOURCE_BINDING* resources, IDirect3DBaseTexture9* const* textures, UINT images, ID3D9NvrExtBuffer* uniforms) {
+		ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::LinearWrap() };
+		for (UINT i = 0; i < images; i++) {
+			resources[i] = {};
+			resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+		}
+		resources[images] = {};
+		resources[images].Slot = 0; resources[images].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[images].pResource = uniforms;
+		for (UINT s = 0; s < 3; s++) {
+			if (!samplers[s]) return 0;
+			resources[images + 1 + s] = {};
+			resources[images + 1 + s].Slot = s; resources[images + 1 + s].Type = NVR_EXT_BIND_SAMPLER; resources[images + 1 + s].pResource = samplers[s];
+		}
+		return images + 4;
+	}
+}
+
+IDirect3DBaseTexture9* VolumetricFogEffect::ExtTextureOf(const char* name) {
+	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
+		ShaderTextureValue* sampler = &TextureShaderValues[c];
+		if (!sampler->Name || strcmp(sampler->Name, name) || !sampler->Texture) continue;
+		if (sampler->Texture->TextureRef) sampler->Texture->Texture = *sampler->Texture->TextureRef;
+		if (!sampler->Texture->Texture) sampler->Texture->BindTexture(sampler->Name);
+		return sampler->Texture->Texture;
+	}
+	return nullptr;
+}
+
+bool VolumetricFogEffect::ExtSetup(IDirect3DBaseTexture9* (&inputs)[ExtInputCount], ExtFogPush& push) {
+	IDirect3DBaseTexture9* depth = ExtTextureOf("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* atlas = ExtTextureOf("TESR_ShadowAtlas");
+	IDirect3DBaseTexture9* normals = ExtTextureOf("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* pointShadow = ExtTextureOf("TESR_PointShadowBuffer");
+	if (!depth || !atlas || !normals || !pointShadow || !noiseTexture) return false;
+	const bool physical = ParameterHandle(paramPhysSky, "TESR_PhysSky") != NULL;
+	SkyViewEffect* table = TheShaderManager->Effects.SkyView;
+	IDirect3DBaseTexture9* skyView = table && table->Textures.TableTexture && table->ShouldRender() ? table->Textures.TableTexture : nullptr;
+
+	FogExtConstants constants;
+	bool registered = true;
+	for (UINT i = 0; i < _countof(FogExtMatrixNames); i++) registered = FogExtCopy(&constants.Matrices[i], sizeof(D3DXMATRIX), FogExtMatrixNames[i]) && registered;
+	for (UINT i = 0; i < _countof(FogExtVectorNames); i++) registered = FogExtCopy(&constants.Vectors[i], sizeof(D3DXVECTOR4), FogExtVectorNames[i]) && registered;
+	registered = FogExtCopy(constants.SkyIrradiance, sizeof(constants.SkyIrradiance), "TESR_SkyIrradiance") && registered;
+	registered = FogExtCopy(constants.SkyIrradianceGame, sizeof(constants.SkyIrradianceGame), "TESR_SkyIrradianceGame") && registered;
+	for (UINT i = 0; i < _countof(FogExtLinearNames); i++) {
+		D3DXVECTOR4& c = constants.Linear[i];
+		registered = FogExtCopy(&c, sizeof(D3DXVECTOR4), FogExtLinearNames[i]) && registered;
+		c = D3DXVECTOR4(FogLinear(c.x), FogLinear(c.y), FogLinear(c.z), c.w);
+	}
+	if (!registered) return false;
+	const D3DXVECTOR4& physSky = constants.Vectors[36];
+	if (physical && !skyView && physSky.x > 0.0f && TheShaderManager->GameState.isExterior) return false;
+	ID3D9NvrExtBuffer* uniforms = ExtUniforms(extUniforms, &constants, sizeof(constants));
+	if (!uniforms) return false;
+
+	inputs[0] = nullptr;
+	inputs[1] = depth; inputs[2] = atlas; inputs[3] = normals; inputs[4] = pointShadow; inputs[5] = noiseTexture;
+	inputs[6] = skyView ? skyView : depth;
+	for (UINT i = 7; i < ExtInputCount; i++) inputs[i] = depth;
+	push = {};
+	push.physicalSky = physical ? 1 : 0;
+	return true;
+}
+
+bool VolumetricFogEffect::ExtApplyPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	IDirect3DBaseTexture9* const (&inputs)[ExtInputCount], const ExtFogPush& push, bool last) {
+	char suffix[32];
+	_snprintf_s(suffix, sizeof(suffix), _TRUNCATE, "m%ul%uc%up%u", push.mode, push.legacy, push.classic, push.physicalSky);
+	ID3D9NvrExtPipeline* pipeline = ExtVariant(extVariants, extApply, "VolumetricFogApply", suffix, [](const char* name) {
+		NVR_EXT_BINDING_DESC bindings[ExtInputCount + 4];
+		const UINT count = FogExtBindings(bindings, ExtInputCount);
+		return DxvkCompute::CreateGraphicsPipeline(name, bindings, count, sizeof(ExtFogPush), true);
+	});
+	if (!pipeline || !extUniforms.Buffer) return false;
+	for (UINT i = 0; i < ExtInputCount; i++) if (!inputs[i]) return false;
+	NVR_EXT_RESOURCE_BINDING resources[ExtInputCount + 4];
+	const UINT count = FogExtResources(resources, inputs, ExtInputCount, extUniforms.Buffer);
+	if (!count) return false;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pipeline, resources, count, &push, sizeof(push), last);
+}
+
+bool VolumetricFogEffect::ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* scene,
+	bool composite, const D3DXVECTOR4& layout, bool& grid) {
+	IDirect3DBaseTexture9* inputs[ExtInputCount];
+	ExtFogPush push;
+	if (!ExtSetup(inputs, push)) return false;
+	inputs[0] = scene;
+
+	push.legacy = IsLegacy() ? 1 : 0;
+	push.classic = IsClassic() ? 1 : 0;
+	push.interior = composite && compositeInteriorShadow ? 1 : 0;
+	push.mode = !composite ? 0 : compositeInteriorShadow ? 2 : 1;
+	push.fogLayout = layout;
+	const bool ao = composite && compositeAO && compositeAOTexture;
+	if (composite) {
+		push.compositeFlags = D3DXVECTOR4(compositeShadow ? 1.0f : 0.0f, ao ? 1.0f : 0.0f, (ao && compositeSkyTexture) ? 1.0f : 0.0f,
+			compositeInteriorShadow ? compositeRound : 0.0f);
+		IDirect3DTexture9* sunFar = compositeShadow && !compositeInteriorShadow ? SunFarFor(true) : SunFarFor(false);
+		push.sunFarFlags = D3DXVECTOR4(sunFar ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		if (sunFar) inputs[12] = sunFar;
+		D3DSURFACE_DESC aoDesc = {};
+		if (ao && SUCCEEDED(compositeAOTexture->GetLevelDesc(0, &aoDesc)))
+			push.compositeAOTexel = D3DXVECTOR4(1.0f / aoDesc.Width, 1.0f / aoDesc.Height, AmbientOcclusionEffect::SkyTakeComposite().x, AmbientOcclusionEffect::SkyTakeComposite().y);
+		if (ao) inputs[10] = compositeAOTexture;
+		if (ao && compositeSkyTexture) inputs[11] = compositeSkyTexture;
+	}
+	grid = gridTexture && ParameterHandle(paramGridFlags, "NVR_FogGridFlags");
+	push.gridFlags = grid ? D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f) : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	if (grid) inputs[7] = gridTexture;
+
+	char suffix[32];
+	_snprintf_s(suffix, sizeof(suffix), _TRUNCATE, "l%uc%ui%up%u", push.legacy, push.classic, push.interior, push.physicalSky);
+	ID3D9NvrExtPipeline* estimate = ExtVariant(extVariants, extEstimate, "VolumetricFogEstimate", suffix, [](const char* name) {
+		NVR_EXT_BINDING_DESC bindings[8 + 4];
+		const UINT count = FogExtBindings(bindings, 8);
+		return DxvkCompute::CreateGraphicsPipeline(name, bindings, count, sizeof(ExtFogPush), true, 2);
+	});
+	if (!estimate) return false;
+	NVR_EXT_RESOURCE_BINDING resources[8 + 4];
+	const UINT count = FogExtResources(resources, inputs, 8, extUniforms.Buffer);
+	if (!count) return false;
+	GpuTimer* passTimers = FogPassTimers();
+	{
+		GpuProfileScope gpuPass(passTimers[0], Device);
+		if (!ExtDrawTo(estimate, fogSurface, 2, resources, count, &push, sizeof(push))) return false;
+	}
+	inputs[8] = fogTexture[0];
+	inputs[9] = fogTexture[1];
+	GpuProfileScope gpuPass(passTimers[1], Device);
+	return ExtApplyPass(Device, RenderTarget, RenderedSurface, nullptr, inputs, push, false);
+}
+
+bool VolumetricFogEffect::ExtShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture) {
+	IDirect3DBaseTexture9* inputs[ExtInputCount];
+	ExtFogPush push;
+	if (!ExtSetup(inputs, push)) return false;
+	inputs[0] = TheTextureManager->RenderedTexture;
+	IDirect3DTexture9* sky = aoTexture ? compositeSkyTexture : nullptr;
+	push.mode = 3;
+	push.compositeFlags = D3DXVECTOR4(shadow ? 1.0f : 0.0f, aoTexture ? 1.0f : 0.0f, sky ? 1.0f : 0.0f, 0.0f);
+	IDirect3DTexture9* sunFar = SunFarFor(shadow);
+	push.sunFarFlags = D3DXVECTOR4(sunFar ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	if (sunFar) inputs[12] = sunFar;
+	D3DSURFACE_DESC aoDesc = {};
+	if (aoTexture && SUCCEEDED(aoTexture->GetLevelDesc(0, &aoDesc)))
+		push.compositeAOTexel = D3DXVECTOR4(1.0f / aoDesc.Width, 1.0f / aoDesc.Height, AmbientOcclusionEffect::SkyTakeComposite().x, AmbientOcclusionEffect::SkyTakeComposite().y);
+	if (aoTexture) inputs[10] = aoTexture;
+	if (sky) inputs[11] = sky;
+	return ExtApplyPass(Device, RenderTarget, RenderedSurface, nullptr, inputs, push, false);
+}
+
+bool VolumetricFogEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (ClearRenderTarget || (SourceBuffer && SourceBuffer == RenderTarget)) return false;
+	D3DXTECHNIQUE_DESC description = {};
+	D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
+	if (!technique || FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 1) return false;
+	const char* name = description.Name ? description.Name : "";
+	const bool legacy = !strcmp(name, "VolumetricFogLegacy"), classic = !strcmp(name, "VolumetricFogClassic");
+	if (*name && !legacy && !classic) return false;
+	IDirect3DBaseTexture9* inputs[ExtInputCount];
+	ExtFogPush push;
+	if (!ExtSetup(inputs, push)) return false;
+	inputs[0] = TheTextureManager->SourceTexture;
+	push.mode = 4;
+	push.legacy = legacy ? 1 : 0;
+	push.classic = classic ? 1 : 0;
+	return ExtApplyPass(Device, RenderTarget, RenderedSurface, SourceBuffer, inputs, push, true);
 }

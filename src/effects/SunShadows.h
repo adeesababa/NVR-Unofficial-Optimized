@@ -25,4 +25,13 @@ public:
 
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	bool	ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex, const D3DXTECHNIQUE_DESC& description,
+		IDirect3DTexture9* shadowTexture, IDirect3DSurface9* shadowSurface);
+	ExtPass	extPasses[5];
+	ExtUniformBuffer extUniforms;
+	unsigned extForwardGeneration = 0;
+	bool	extForwardCompiled = false;
+	bool	extCharCompiled = false;
+	std::map<std::string, ExtPass> extVariants;
 };

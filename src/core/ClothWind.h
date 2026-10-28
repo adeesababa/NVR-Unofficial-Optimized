@@ -1160,7 +1160,10 @@ namespace ClothWind {
 		device->SetVertexShaderConstantF(248, zero, 1);
 		NonZeroSent = false; GrassInC248 = false;
 	}
-	inline void AfterDraw(IDirect3DDevice9* device) { if (device) Zero(device); }
+	inline void AfterDraw(IDirect3DDevice9* device) {
+		if (GrassInC248) { ActiveWeights = nullptr; ActiveWalk = nullptr; ActiveSkin = nullptr; ActiveStill = nullptr; return; }
+		if (device) Zero(device);
+	}
 
 	inline const float* MotionOf(const NiAVObject* root) {
 		Motion& m = Motions[root];

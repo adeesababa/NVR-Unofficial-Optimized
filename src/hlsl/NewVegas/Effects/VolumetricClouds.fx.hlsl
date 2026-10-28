@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_SunDirection;
 float4 TESR_SunColor;
@@ -23,6 +24,7 @@ float4 TESR_CloudsMotion;
 float4 TESR_CloudsTint;
 float4 TESR_WaterSettings;
 float4 TESR_CloudsTower;
+float4 TESR_CloudsHistoryScale;
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -176,7 +178,7 @@ float Phase(float cosT, float g) {
 
 float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false, bool towers = false) {
 	float steps = max(Steps * stepScale, 4.0);
-	if (towers) steps = max(64.0 * stepScale, 4.0);
+	if (towers) steps = max(max(Steps, 64.0) * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
 	float tStart = ShellDistance(dir.z, baseAbove);
@@ -346,11 +348,12 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);
 	float weight = TESR_CloudsLayout.z;
 	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
-	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
-	if (any(previous < 0.0) || any(previous > 1.0)) return current;
+	float2 previous = screenToRect(clip.xy / clip.w * float2(0.5, -0.5) + 0.5);
+	if (outsideRect(previous)) return current;
 	float4 history = clamp(Sharpness > 0.0 ? SharpHistory(previous) : tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
 	return fresh ? lerp(current, history, weight) : history;
 }
+
 
 static const float ShadowStrength = TESR_CloudsExtra.x;
 static const float ShadowRange = max(TESR_CloudsExtra.y, 1000.0);
@@ -390,6 +393,24 @@ float4 ShadowMapPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 {
 	return float4(exp(-Extinction * opticalDepth), 0.0, 0.0, 1.0);
 }
 
+float4 ShadowMapPrefilterPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 at = ShadowCentre() + ((vpos + 0.5) / ShadowMapSize - 0.5) * ShadowRange;
+	float3 light = ShadowLight();
+	float stepLength = Thickness / light.z / 8.0;
+	float3 wind = float3(TESR_CloudsWind.xy, 0.0);
+	float opticalDepth = 0.0;
+	float spread = TESR_CloudsTower.w * ShadowRange / ShadowMapSize;
+	[loop] for (int t = 0; t < 4; t++) {
+		float2 o = t == 0 ? float2(-0.125, -0.375) : t == 1 ? float2(0.375, -0.125) : t == 2 ? float2(-0.375, 0.125) : float2(0.125, 0.375);
+		float2 tap = at + o * spread;
+		[loop] for (float i = 0.5; i < 8.0; i += 1.0) {
+			float3 p = float3(tap, Base) + light * (i * stepLength);
+			opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, true) * stepLength;
+		}
+	}
+	return float4(exp(-Extinction * opticalDepth * 0.25), 0.0, 0.0, 1.0);
+}
+
 float CloudShadowAt(float3 world) {
 	float3 light = ShadowLight();
 	float2 q = world.xy + light.xy * ((Base - world.z) / light.z);
@@ -401,6 +422,7 @@ float CloudShadowAt(float3 world) {
 
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
+	float2 huv = rectToScreen(uv);
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
 	[branch] if (depth < farZ * 0.996) {
@@ -425,16 +447,16 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	}
 	float4 clouds;
 	[branch] if (LowTexel.x < TESR_ReciprocalResolution.x * 0.99) {
-		float2 q = 0.25 * TESR_ReciprocalResolution.xy;
-		clouds = 0.25 * (tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, -q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + float2(q.x, -q.y), 0, 0)) +
-			tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + q, 0, 0)));
+		float2 q = 0.25 * TESR_ReciprocalResolution.xy * TESR_RenderScale.zw;
+		clouds = 0.25 * (tex2Dlod(TESR_CloudHistory, float4(huv + float2(-q.x, -q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(huv + float2(q.x, -q.y), 0, 0)) +
+			tex2Dlod(TESR_CloudHistory, float4(huv + float2(-q.x, q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(huv + q, 0, 0)));
 	}
-	else clouds = CatmullRom(uv);
+	else clouds = CatmullRom(huv);
 	[branch] if (Sharpness > 0.0) {
-		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(LowTexel.x, 0.0), 0, 0));
-		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(LowTexel.x, 0.0), 0, 0));
-		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(0.0, LowTexel.y), 0, 0));
-		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(0.0, LowTexel.y), 0, 0));
+		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(huv + float2(LowTexel.x, 0.0), 0, 0));
+		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(huv - float2(LowTexel.x, 0.0), 0, 0));
+		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(huv + float2(0.0, LowTexel.y), 0, 0));
+		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(huv - float2(0.0, LowTexel.y), 0, 0));
 		float4 lo = min(min(min(n0, n1), min(n2, n3)), clouds), hi = max(max(max(n0, n1), max(n2, n3)), clouds);
 		float4 sharpened = clouds + (clouds - 0.25 * (n0 + n1 + n2 + n3)) * (1.5 * Sharpness);
 		clouds = clamp(sharpened, lo, hi);
@@ -460,7 +482,7 @@ float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 
 	float2 at = clip.xy / max(clip.w, 1e-4) * float2(0.5, -0.5) + 0.5;
 	float2 edge = min(at, 1.0 - at);
 	float seen = clip.w > 0.0 ? saturate(min(edge.x, edge.y) * 20.0) : 0.0;
-	[branch] if (seen > 0.0) clouds = tex2Dlod(TESR_CloudHistory, float4(saturate(at), 0, 0));
+	[branch] if (seen > 0.0) clouds = tex2Dlod(TESR_CloudHistory, float4(saturate(at) * TESR_CloudsHistoryScale.xy, 0, 0));
 	[branch] if (seen < 1.0) {
 		float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(vpos / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
 		clouds = lerp(MarchRay(dir, jitter, 0.5, false, towers), clouds, seen);
@@ -559,6 +581,14 @@ technique ShadowMapTowers {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ShadowMapPS(true);
+		Texture[10] = <NoTexture>;
+	}
+}
+
+technique ShadowMapPrefilter {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ShadowMapPrefilterPS();
 		Texture[10] = <NoTexture>;
 	}
 }

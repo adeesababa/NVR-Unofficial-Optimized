@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_SunDirection;
 float4 TESR_SunColor;
@@ -17,6 +18,7 @@ float4 TESR_BloodFlowDryRatio;
 float4 TESR_BloodFlowBeads;
 float4 TESR_BloodFlowShape;
 float4 TESR_BloodFlowGround;
+float4 TESR_BloodFlowLook;
 float4x4 TESR_ViewProjectionTransform;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -166,6 +168,7 @@ float4 PathTexel(float column, float row) {
 	return tex2Dlod(TESR_BloodFlowPaths, float4((column + 0.5) / PathColumns, (row + 0.5) * TESR_BloodFlowProbe.x, 0.0, 0.0));
 }
 
+
 float4 TESR_BloodFlowSplat;
 
 float SegmentDistance(float2 p, float2 a, float2 b, out float t) {
@@ -249,6 +252,7 @@ float StreamTime(Stream s, float lengthMax, float run) {
 float PoolShift(float slope) { return 0.35 * saturate(slope * 2.0); }
 float PoolStretch(float slope) { return 1.0 + 0.9 * saturate(slope * 2.0); }
 
+
 float3 CameraRight() { return float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]); }
 float3 CameraUp() { return float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]); }
 float3 CameraForward() { return float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]); }
@@ -266,6 +270,7 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 	along = 0.0;
 	tol = 1.0;
 	if (s.z < nearZ * 2.0 || s.x < 0.002 || s.y < 0.002 || s.x > 0.998 || s.y > 0.998) return false;
+	s.xy = screenToRect(s.xy);
 	float4 uv = float4(s.xy, 0.0, 0.0);
 	float viewmodel = tex2Dlod(TESR_DepthBufferViewModel, uv).x;
 	if ((TESR_DepthConstants.z == 0 && viewmodel < 0.9) || (TESR_DepthConstants.z > 0 && viewmodel > 0.01)) return false;
@@ -283,6 +288,7 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 float Relief(float3 Q, float3 pos, float3 N, float limit) {
 	float3 s = ProjectRel(Q);
 	if (s.z < nearZ * 2.0 || s.x < 0.002 || s.y < 0.002 || s.x > 0.998 || s.y > 0.998) return 0.0;
+	s.xy = screenToRect(s.xy);
 	float depth = readDepthLod(s.xy);
 	if (depth >= farZ * 0.98) return -limit;
 	return clamp(dot(toWorld(s.xy) * depth - pos, N), -limit, limit);
@@ -505,6 +511,7 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 	return float4(valid > 0.5 ? seenBefore + 1.0 : 0.0, reached.w, fall, end);
 }
 
+
 float4 BoundsPS(PSIN IN) : COLOR0 {
 	float slot, pool, fresh;
 	DecodeSlot(IN.a.w, slot, pool, fresh);
@@ -556,6 +563,7 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 	}
 	return column < 0.5 ? float4(lo, 1.0) : float4(hi, 1.0);
 }
+
 
 struct Paint {
 	float cover;
@@ -927,6 +935,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float g = floor(gb / 256.0);
 		g += (gb - g * 256.0 >= 256.0) ? 1.0 : ((gb - g * 256.0 < 0.0) ? -1.0 : 0.0);
 		freshColour = linearize(saturate(float3(r, g, gb - g * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
+		freshColour *= max(1.0, TESR_BloodFlowLook.w / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4));
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
 		glintTint = 0.004 + 0.016 * freshColour / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4);
 	}
@@ -955,7 +964,8 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		}
 		float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
-		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
+		float3 sheenTint = lerp(1.0, saturate((glintTint - 0.004) / 0.016), TESR_BloodFlowLook.z);
+		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * (1.0 - rough) * 0.5 * TESR_BloodFlowLook.x) * gloss;
 	}
 	float3 drop = light * (freshColour * 0.7 + glintTint * TESR_BloodFlowFresh.w);
 	colour = lerp(colour, drop, p.air);
@@ -1098,7 +1108,8 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 	float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
 	float strength = TESR_BloodFlowBeads.x * IN.c.y;
-	float3 shine = (min(glints, 1.0) * 0.45 * min(light, 1.2) + fresnel * surroundings * 0.4) * h * strength;
+	float3 sheenTint = lerp(1.0, sceneLin / max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1e-4), TESR_BloodFlowLook.z);
+	float3 shine = (min(glints, 1.0) * 0.45 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * 0.4 * TESR_BloodFlowLook.x) * h * strength;
 	float darken = 1.0 - 0.3 * h * saturate(strength);
 	float3 under = sceneLin * darken;
 	return float4(max(delinearize(under + shine) - delinearize(under), 0.0), darken);
@@ -1396,6 +1407,7 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		float cg = floor(gb / 256.0);
 		cg += (gb - cg * 256.0 >= 256.0) ? 1.0 : ((gb - cg * 256.0 < 0.0) ? -1.0 : 0.0);
 		freshColour = linearize(saturate(float3(cr, cg, gb - cg * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
+		freshColour *= max(1.0, TESR_BloodFlowLook.w / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4));
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry) * lerp(1.0, 0.8 + 0.4 * valueNoise(q * R * 0.35 + seed * 31.0), dry);
@@ -1416,7 +1428,8 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		}
 		float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
-		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * 0.4) * gloss;
+		float3 sheenTint = lerp(1.0, albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-4), TESR_BloodFlowLook.z);
+		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * 0.4 * TESR_BloodFlowLook.x) * gloss;
 	}
 	float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);
 	colour = min(colour, ceiling);

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <vector>
 
+
 namespace {
 	const int N = 128;
 	const UInt32 ProcessListsAddress = 0x11E0E80;

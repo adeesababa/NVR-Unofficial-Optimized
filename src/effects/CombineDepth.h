@@ -25,4 +25,10 @@ public:
 	bool	RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
 	bool	mergedNormalsFailed = false;
 	CachedHandle techDepthNormals;
+
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+private:
+	bool	ExtDepthNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
+	ExtPass	extPass;
+	ExtPass	extPassDepthNormals;
 };

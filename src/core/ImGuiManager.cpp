@@ -5,6 +5,7 @@
 #include "imgui_impl_win32.h"
 #include "GpuProfiler.h"
 #include "TestTools.h"
+#include "PixelInspector.h"
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -1982,6 +1983,7 @@ static bool IsInertSetting(const char* section, const char* key) {
 	return strcmp(key, "Mipmaps") == 0 || strcmp(key, "Anisotropy") == 0;
 }
 
+
 enum class RestartRule { Changed, TurnOn };
 struct RestartSetting { const char* Section; const char* Key; RestartRule Rule; };
 static const RestartSetting kRestartSettings[] = {
@@ -1991,8 +1993,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Main.Main.Performance",                "ShaderWarmUp",       RestartRule::Changed },
 	{ "Main.Main.Performance",                "SlimDepthBuffer",    RestartRule::Changed },
 	{ "Shaders.ShadowsExteriors.Main",        "ForwardShadows",     RestartRule::TurnOn },
-	{ "Shaders.ShadowsExteriors.Main",        "Quality",            RestartRule::Changed },
-	{ "Shaders.ShadowsExteriors.ShadowMaps",  "Mode",               RestartRule::Changed },
+	{ "Main.Main.Performance",                "NvrDxvkDisplacement", RestartRule::TurnOn },
 	{ "Shaders.ShadowsExteriors.SunSmoothing","CrossFade",          RestartRule::Changed },
 	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },
@@ -2028,7 +2029,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.VolumetricClouds.Main",        "Resolution",         RestartRule::Changed },
 	{ "Shaders.VolumetricClouds.Main",        "HalfResolution",     RestartRule::Changed },
 	{ "Shaders.VolumetricClouds.Main",        "ShadowResolution",   RestartRule::Changed },
-	{ "Shaders.Skin.NewSkin",                 "Enabled",            RestartRule::Changed },
+	{ "Shaders.Skin.Main",                    "OverrideVanillaPlusSkin", RestartRule::Changed },
 };
 
 static std::unordered_map<std::string, float> s_startupValues;
@@ -2048,14 +2049,6 @@ static void CaptureStartupValues() {
 		s_startupValues[std::string(r.Section) + "." + r.Key] = NumericSetting(r.Section, r.Key);
 }
 
-static int ShadowModeFrom(float quality, float mode) {
-	const int q = (int)quality;
-	if (q == 0 || q == 1) return 0;
-	if (q == 2) return 1;
-	if (q == 3) return 2;
-	return std::clamp((int)mode, 0, 3);
-}
-
 static float RestartState(const RestartSetting& r, bool atStart) {
 	auto get = [atStart](const char* section, const char* key) {
 		if (!atStart) return NumericSetting(section, key);
@@ -2067,9 +2060,6 @@ static float RestartState(const RestartSetting& r, bool atStart) {
 		return (get("Shaders.PBR.Metal", "CubeReflections") > 0.0f || get("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f) ? 1.0f : 0.0f;
 	if (key == "HudDrops") return get(r.Section, r.Key) > 0.0f ? 1.0f : 0.0f;
 	if (key == "SmithCorrelated") return get(r.Section, r.Key) == 1.0f ? 1.0f : 0.0f;
-	if ((!strcmp(r.Section, "Shaders.ShadowsExteriors.Main") && key == "Quality") ||
-		(!strcmp(r.Section, "Shaders.ShadowsExteriors.ShadowMaps") && key == "Mode"))
-		return (float)ShadowModeFrom(get("Shaders.ShadowsExteriors.Main", "Quality"), get("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
 	return get(r.Section, r.Key);
 }
 
@@ -2121,10 +2111,6 @@ static bool IsDeadSetting(const char* section, const char* key) {
 	return false;
 }
 
-static int CurrentShadowMode() {
-	return ShadowModeFrom(NumericSetting("Shaders.ShadowsExteriors.Main", "Quality"), NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
-}
-
 static const char* InactiveReason(const char* section, const char* key) {
 	static char reason[256];
 	const std::string sec = section;
@@ -2140,23 +2126,10 @@ static const char* InactiveReason(const char* section, const char* key) {
 	if (shadowMaps || forms) {
 		const int quality = (int)NumericSetting("Shaders.ShadowsExteriors.Main", "Quality");
 		const bool custom = quality < 0 || quality > 3;
-		if (!custom && (forms || is({ "Mode", "Format", "Distance", "CascadeLambda", "SmoothFilter", "LimitFrequency", "CascadeResolution", "MSAA", "Prefilter" }))) {
+		if (!custom && (forms || is({ "Distance", "CascadeLambda", "SmoothFilter", "LimitFrequency", "CascadeResolution" }))) {
 			sprintf_s(reason, "Not used now: shadow Quality (Shadows Exteriors > Main) is %d, which sets this itself. Only Quality 4 (Custom) reads it.", quality);
 			return reason;
 		}
-		if (custom && shadowMaps) {
-			const int mode = std::clamp((int)NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"), 0, 3);
-			if (mode == 3 && is({ "Prefilter", "MSAA" }))
-				return "Not used in Mode 3 (PCF): PCF keeps depths and compares them when it reads, so there is nothing to blur "
-					"(Prefilter) or average (MSAA). For softer PCF edges use SmoothFilter; Prefilter works in Modes 0-2.";
-			if (mode == 3 && is({ "Format" })) return "Not used in Mode 3 (PCF): PCF always stores 32-bit depth.";
-			if (mode != 3 && is({ "SmoothFilter" })) return "Only used in Mode 3 (PCF). Modes 0-2 soften their edges with Prefilter.";
-		}
-	}
-	if (sec == "Shaders.ContactHardening.Main" && CurrentShadowMode() < 2) {
-		sprintf_s(reason, "Not used with the current sun shadows: contact hardening needs shadow Mode 2 (EVSM4) or 3 (PCF); "
-			"the current Quality/Mode give Mode %d.", CurrentShadowMode());
-		return reason;
 	}
 	if (sec == "Shaders.ShadowsExteriors.SunSmoothing" && is({ "CrossFade" }) && NumericSetting("Shaders.ShadowsExteriors.Main", "ForwardShadows") == 0.0f)
 		return "Only used with ForwardShadows on (Shadows Exteriors > Main).";
@@ -2229,7 +2202,7 @@ static bool IsOnOffInteger(const SettingManager::Configuration::ConfigNode& node
 		{ "Main.Main.Performance", "ArrivalSampler" }, { "Main.Main.Performance", "IOWorker2" },
 		{ "Main.Main.Performance", "FogReferenceTest" }, { "Main.Main.Performance", "LampMaskScissorCheck" },
 		{ "Main.Main.Performance", "CubeFaceViewCullCheck" },
-		{ "Shaders.Grass.NewGrass", "Log" }, { "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
+		{ "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
 		{ "Shaders.DitherBuster.Main", "DebugView" }, { "Shaders.PBR.Metal", "DebugView" },
 		{ "Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun" }, { "Shaders.ShadowsExteriors.SunSmoothing", "QuantizeSun" },
 		{ "Shaders.CloudShadows.Main", "HazardLog" }, { "Shaders.CloudShadows.Main", "FlickerWatch" },
@@ -2489,9 +2462,6 @@ static const char* kTonemappingModeNames[] = {
 static const char* kCinemaDofModeNames[] = {
 	"0 - Always", "1 - Not during dialog", "2 - Only during dialog", "3 - Disabled",
 };
-static const char* kShadowsModeNames[] = {
-	"0 - VSM", "1 - EVSM2", "2 - EVSM4", "3 - PCF (restart)",
-};
 // SleepingMode.Mode has no TOML comment; values derived from
 // src/core/Hooks/SleepingCommon.cpp's ShowSleepWaitMenuHook.
 static const char* kSleepingModeNames[] = {
@@ -2530,7 +2500,6 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.DepthOfField.ThirdPersonView.Mode",             ENUM_OPT(kCinemaDofModeNames) },
 	{ "Shaders.DepthOfField.VanityView.Mode",                  ENUM_OPT(kCinemaDofModeNames) },
 	{ "Main.SleepingMode.Main.Mode",                           ENUM_OPT(kSleepingModeNames) },
-	{ "Shaders.ShadowsExteriors.ShadowMaps.Mode",              ENUM_OPT(kShadowsModeNames) },
 	{ "Shaders.ShadowsExteriors.Main.Quality",                 ENUM_OPT(kShadowQualityNames) },
 	{ "Shaders.ShadowsExteriors.ShadowMaps.Format",            ENUM_OPT(kShadowFormatNames) },
 	{ "Shaders.ShadowsExteriors.ShadowMaps.CascadeResolution", ENUM_OPT(kShadowCascadeResolutionNames) },
@@ -2541,6 +2510,34 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 };
 
 #undef ENUM_OPT
+
+static const char* MenuKeyLabel(const char* section, const char* key) {
+	if (!strcmp(section, "Main.Main.Performance") && !strcmp(key, "NvrDxvkDisplacement")) return "NvrDxvkDisplacement (tessellation)##NvrDxvkDisplacement";
+	return key;
+}
+
+static bool IsRenderScaleSetting(const char* section, const char* key) {
+	return !strcmp(key, "RenderScale") && (!strcmp(section, "Shaders.TAA.FSR") || !strcmp(section, "Shaders.TAA.DLSS"));
+}
+static bool RenderScaleCombo(const char* section, const char* key, float& val) {
+	static const float scales[] = { 1.0f, 0.667f, 0.588f, 0.5f, 0.333f };
+	const bool dlss = !strcmp(section, "Shaders.TAA.DLSS");
+	const char* const names[] = { dlss ? "Native (DLAA)" : "Native (anti-aliasing only)", "Quality (67%)", "Balanced (59%)",
+		"Performance (50%)", "Ultra Performance (33%)" };
+	int current = -1;
+	for (int i = 0; i < 5; i++) if (fabsf(val - scales[i]) < 0.005f) current = i;
+	char custom[48];
+	sprintf_s(custom, "Custom (%.0f%%)", val * 100.0f);
+	bool picked = false;
+	if (ImGui::BeginCombo(key, current >= 0 ? names[current] : custom)) {
+		for (int i = 0; i < 5; i++) {
+			if (ImGui::Selectable(names[i], i == current)) { val = scales[i]; picked = true; }
+			if (i == current) ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	return picked;
+}
 
 struct FloatRange { float Min; float Max; const char* Format; };
 static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
@@ -2599,8 +2596,12 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	switch (node.Type) {
 	case NodeType::Boolean: {
 		bool val = (strcmp(node.Value, "1") == 0 || _stricmp(node.Value, "true") == 0);
-		if (ImGui::Checkbox(node.Key, &val)) {
+		if (ImGui::Checkbox(MenuKeyLabel(node.Section, node.Key), &val)) {
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
+			if (val && !strcmp(node.Key, "Enabled")) {
+				if (!strcmp(node.Section, "Shaders.TAA.FSR")) TheSettingManager->SetSetting("Shaders.TAA.DLSS", "Enabled", false);
+				else if (!strcmp(node.Section, "Shaders.TAA.DLSS")) TheSettingManager->SetSetting("Shaders.TAA.FSR", "Enabled", false);
+			}
 			TheSettingManager->LoadSettings();
 		}
 		mainHovered = ImGui::IsItemHovered();
@@ -2616,7 +2617,9 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	case NodeType::Float: {
 		float val = (float)atof(node.Value);
 		auto sliderIt = kFloatSliders.find(std::string(node.Section) + "." + node.Key);
-		bool edited = sliderIt != kFloatSliders.end()
+		const bool modes = IsRenderScaleSetting(node.Section, node.Key);
+		bool edited = modes ? RenderScaleCombo(node.Section, node.Key, val)
+			: sliderIt != kFloatSliders.end()
 			? ImGui::SliderFloat(node.Key, &val, sliderIt->second.Min, sliderIt->second.Max, sliderIt->second.Format)
 			: ImGui::DragFloat(node.Key, &val, 0.001f, 0.0f, 0.0f, "%.4f");
 		if (edited) {
@@ -2624,12 +2627,12 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->LoadSettings();
 		}
 		bool hovered = ImGui::IsItemHovered();
-		if (hovered && (s_plusPressed || s_minusPressed)) {
+		if (hovered && !modes && (s_plusPressed || s_minusPressed)) {
 			val += s_plusPressed ? s_shaderStepSize : -s_shaderStepSize;
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			TheSettingManager->LoadSettings();
 		}
-		if (isShader && DevOptionsShown()) {
+		if (isShader && DevOptionsShown() && !modes) {
 			ImGui::SameLine();
 			if (ImGui::SmallButton("-")) {
 				val -= s_shaderStepSize;
@@ -3392,12 +3395,27 @@ static bool LeadsToSelected(const std::string& path) {
 		if (SelectedSection == std::string("Shaders.") + m.name + ".Main" && (path == "Shaders" || path == std::string("Shaders.") + m.under)) return true;
 	return false;
 }
+struct MenuNest { const char* name; const char* under; };
+static const MenuNest kMenuNests[] = {
+	{ "SunFar", "ShadowsExteriors" },
+};
 static bool IsMovedShaderEntry(const std::string& name) {
 	for (const MenuMove& m : kMenuMoves) if (name == m.name) return true;
+	for (const MenuNest& n : kMenuNests) if (name == n.name) return true;
 	return false;
 }
 
 // Recursive sidebar tree — path is the full dotted section path, name is the display label.
+static std::string MenuEntryLabel(const std::string& name) {
+	if (name == "TAA") return "TAA / FSR / DLSS##TAA";
+	if (name == "SunFar") return "SunFar (mountain and flat-cloud shadow pass)##SunFar";
+	return name;
+}
+static std::string MenuSectionLabel(const std::string& path, const std::string& name) {
+	if (path == "Shaders.Terrain.Displacement") return "Tessellation (displacement)##" + name;
+	return name;
+}
+
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
 	if (!DevOptionsShown() && IsDevOnlySetting(path, std::string())) return;
@@ -3415,7 +3433,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		// Mute non-selected leaves so they read as lower-weight nav targets
 		// rather than siblings of the category/shader-toggle rows above them.
 		if (!selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
-		if (ImGui::Selectable(name.c_str(), selected))
+		if (ImGui::Selectable(MenuSectionLabel(path, name).c_str(), selected))
 			SelectedSection = path;
 		if (!selected) ImGui::PopStyleColor();
 		ImGui::PopID();
@@ -3439,12 +3457,12 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		ImGui::SameLine();
 		const SettingManager::MenuSwitch kind = TheSettingManager->GetMenuShaderSwitch(name.c_str());
 		if (kind == SettingManager::MenuSwitch::None) {
-			ImGui::TextUnformatted(name.c_str());
+			ImGui::TextUnformatted(MenuEntryLabel(name).c_str());
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s has no on/off switch of its own: the settings inside control it.", name.c_str());
 		}
 		else {
 			ImGui::BeginDisabled(forced);
-			if (ImGui::Checkbox(name.c_str(), &enabled)) {
+			if (ImGui::Checkbox(MenuEntryLabel(name).c_str(), &enabled)) {
 				TheShaderManager->SwitchShaderStatus(name.c_str());
 				TheSettingManager->LoadSettings();
 			}
@@ -3494,6 +3512,8 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 			if (!selected) ImGui::PopStyleColor();
 			ImGui::PopID();
 		}
+		for (const MenuNest& n : kMenuNests)
+			if (path == std::string("Shaders.") + n.under) RenderSectionNode(std::string("Shaders.") + n.name, n.name, true);
 		ImGui::TreePop();
 	}
 
@@ -3588,6 +3608,7 @@ void ImGuiManager::BuildUI() {
 	s_devOptions = TheSettingManager->GetSettingI("Main.Menu.Developer", "DeveloperOptions") != 0;
 	CfabUpdate();
 	if (s_screenshotMode) return;
+	PixelInspector::DrawUI();
 
 	// Dev Tools coc/cow picker's "visited this session" list -- see
 	// TrackVisitedInteriorCell's own comment for why this, not an engine

@@ -26,6 +26,8 @@ sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; 
 sampler2D TESR_PointShadowBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_SnowNormSampler : register(s6) < string ResourceName = "Precipitations\snow_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_BlueNoiseSampler : register(s7) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_CoverMapBuffer : register(s8) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#include "Includes/CoverMap.hlsl"
 
 static const int KernelSize = 24;
 static const float diffusePower = 0.56f * TESR_SnowAccumulationParams.z;
@@ -140,7 +142,7 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 {
 	// compute at quarter scale
     float2 uv = IN.UVCoord * 4;
-	if (uv.x > 1 || uv.y > 1) return white;
+	if (uv.x > TESR_RenderScale.x || uv.y > TESR_RenderScale.y) return white;
 	
     float depth;
     float4 world = reconstructWorldPosition(uv, depth);
@@ -171,7 +173,7 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 }
 
 
-float4 Snow( VSOUT IN ) : COLOR0
+float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	float3 world = toWorld(IN.UVCoord);
@@ -193,11 +195,21 @@ float4 Snow( VSOUT IN ) : COLOR0
 	float3 sunColor = linearize(TESR_SunColor).rgb;
 
 	float2 uv = worldPos.xy / 200.0f;
+	float4 cover = float4(0, 0, 0, 0);
+	float trodden = 0.0f;
+	if (persist)
+	{
+		float coverInside;
+		cover = CoverMapReadAll(camera_vector.xy, coverInside);
+		trodden = saturate(CoverMapTrodden(cover.w));
+	}
 	float3 localNorm = expand(tex2D(TESR_SnowNormSampler, uv).xyz);
+	if (persist) localNorm.xy *= 1.0f - 0.75f * trodden;
 	float3 surfaceNormal = normalize(float3(localNorm.xy + norm.xy, localNorm.z * norm.z));
 	float4 normal =  float4(surfaceNormal, 1);
 
 	float3 snow_tex = TESR_SnowAccumulationColor.rgb;
+	if (persist) snow_tex = lerp(snow_tex, luma(snow_tex) * float3(0.56f, 0.58f, 0.62f), 0.8f * trodden);
 
 	float fresnelCoeff = saturate(pow(1 - shade(eyeDirection, surfaceNormal), 5));
 	float3 snowSpec = pows(shades(normalize(TESR_SunDirection.xyz + eyeDirection), surfaceNormal), 20) * fresnelCoeff;
@@ -211,6 +223,11 @@ float4 Snow( VSOUT IN ) : COLOR0
 	float3 spec = snowSpec * sunColor * specularPower * shadow.r;
 	float3 fresnel = fresnelCoeff * sunColor * fresnelPower;
 	float3 sparkles = pows(shades(eyeDirection, normalize(expand(tex2D(TESR_BlueNoiseSampler, worldPos.xy / 200).rgb))), 1000) * 0.2 * shadow.r;
+	if (persist)
+	{
+		fresnel *= 1.0f - 0.6f * trodden;
+		sparkles *= 1.0f - trodden;
+	}
 
 	// float4 snowColor = float4(ambient + diffuse + spec + fresnel, 1);
 	float4 snowColor = float4(ambient + diffuse + spec + fresnel + sparkles, 1);
@@ -224,8 +241,10 @@ float4 Snow( VSOUT IN ) : COLOR0
 	}
 
 	// create a noisy pattern of accumulation over time
-	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * TESR_SnowAccumulationParams.w));
+	float snowAmount = persist ? cover.z : TESR_SnowAccumulationParams.w;
+	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * snowAmount));
 	coverage = saturate(smoothstep(0.2, 0.4, coverage));
+	if (persist) coverage *= smoothstep(0.0, 0.05, snowAmount) * (1.0f - smoothstep(0.5f, 0.9f, trodden * (0.7f + 0.6f * noise(worldPos.xyz / 18.0f))));
 	float vertical = smoothstep(0.5, 0.8, shade(float3(0, 0, 1), norm));
 
 	color = lerp(color, snowColor, coverage * min(vertical, ortho));
@@ -261,6 +280,35 @@ technique
 	pass
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 Snow();
+		PixelShader = compile ps_3_0 Snow(false);
+	}
+}
+
+technique PersistentTechnique
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 SnowCoverage();
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 Scale(TESR_RenderedBuffer, 4);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskH, TESR_SnowAccumulationParams.y, 3500, TESR_OrthoData.x);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskV, TESR_SnowAccumulationParams.y, 3500, TESR_OrthoData.x);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 Snow(true);
 	}
 }

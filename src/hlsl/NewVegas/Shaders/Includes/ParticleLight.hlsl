@@ -1,3 +1,4 @@
+
 #ifdef PARTICLE_VS
 
 float4 TESR_ParticleData : register(c200);

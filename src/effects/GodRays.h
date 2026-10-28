@@ -54,7 +54,13 @@ public:
 	IDirect3DSurface9* raysSurfaceLow[2] = {};
 
 	bool RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
-		IDirect3DSurface9* RenderedSurface);
+		IDirect3DSurface9* RenderedSurface, bool ext = false);
+	bool ExtPrepare(const D3DXVECTOR4& layout);
+	bool ExtDrawPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT pass,
+		IDirect3DTexture9* const* textures, IDirect3DSurface9* const* surfaces, const D3DXVECTOR4& skip, IDirect3DTexture9* reduced);
+	ExtPass extSkyMask, extLightMask, extBlur, extCombine, extReduce;
+	ExtUniformBuffer extUniforms;
+	bool extDrawing = false;
 	void Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 		IDirect3DSurface9* SourceBuffer) override;

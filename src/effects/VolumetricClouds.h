@@ -27,6 +27,8 @@ public:
 		float	Shadows;
 		float	ShadowRange;
 		float	WaterReflections;
+		bool	ShadowPrefilter;
+		float	ShadowSoftness;
 		bool	ShadowDebug;
 		int		ReflectionDebug;
 		float	FineDetail;
@@ -61,6 +63,7 @@ public:
 		D3DXVECTOR4	Motion;
 		D3DXVECTOR4	Tint;
 		D3DXVECTOR4	Tower;
+		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 	};
 	ConstantsStruct	Constants = {};
 
@@ -97,8 +100,13 @@ public:
 	float	ShadowStrengthForSunFar();
 	bool	shadowsViaSunFar = false;
 	void	TestSetCoverage(float value) { coverage = std::clamp(value, 0.0f, 1.0f); }
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	int		ExtMarchSteps = 48;
 
 private:
+	ExtPass		extPasses[4];
+	ExtUniformBuffer	extUniforms;
+	CachedHandle	physicalSkyCache;
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;
 	unsigned int	lastUpdateFrame = 0;
 	bool		updatedBefore = false;
@@ -108,6 +116,7 @@ private:
 	UINT		frame = 0, read = 0;
 	UINT		shadowMapFrame = UINT_MAX;
 	double		lastRenderTime = -1.0;
+	bool		lastRect = false;
 	UINT		lowWidth = 0, lowHeight = 0, blockWidth = 0, blockHeight = 0;
 	double		lastCloudTime = -1.0;
 	IDirect3DSurface9*	reflectTarget = nullptr;

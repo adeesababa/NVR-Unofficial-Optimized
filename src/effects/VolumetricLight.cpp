@@ -1,5 +1,6 @@
 #include "VolumetricLight.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
 
 static void ReadLook(const char* section, VolumetricLightEffect::LookStruct& look) {
 	look.Strength = std::clamp(TheSettingManager->GetSettingF(section, "Strength"), 0.0f, 10.0f);
@@ -94,12 +95,11 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 			Device->SetRenderTarget(0, target);
 			Render(Device, target, target, technique, false, target);
 		};
-		static IDirect3DBaseTexture9* noise = nullptr;
-		static bool noiseLoaded = false;
-		if (!noiseLoaded) {
-			noiseLoaded = true;
-			noise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
+		if (!fogNoiseLoaded) {
+			fogNoiseLoaded = true;
+			fogNoise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
 		}
+		IDirect3DBaseTexture9* noise = fogNoise;
 		const bool bindNoise = Constants.GridData.x > 0.5f && noise;
 		if (bindNoise) {
 			Device->SetTexture(9, noise);
@@ -126,6 +126,8 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const UINT now = TheFrameRateManager->FrameNumber;
 	const bool drewLastFrame = lastRenderedFrame + 1 == now;
 	bool usable = temporal && haveHistory && drewLastFrame;
+	if (RenderRect::ScaleChanged() || RenderRect::Active() != lastRect) usable = false;
+	lastRect = RenderRect::Active();
 	if (usable) {
 		const double dx = (double)invView._41 - lastInvView._41, dy = (double)invView._42 - lastInvView._42,
 			dz = (double)invView._43 - lastInvView._43;
@@ -171,4 +173,96 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	lastView = view;
 	lastInvView = invView;
 	lastProj = TheRenderManager->projMatrix;
+}
+
+namespace {
+	const char* const ExtMatrixNames[] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
+		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod", "TESR_VolumetricLightReproject",
+		"TESR_ViewTransform", "TESR_ProjectionTransform" };
+	const char* const ExtVectorNames[] = { "TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter",
+		"TESR_ShadowFormatData", "TESR_ShadowBlur", "TESR_SmoothedSunDir", "TESR_SunColor", "TESR_ReciprocalResolution", "TESR_CameraData",
+		"TESR_VolumetricLightData", "TESR_VolumetricLightData2", "TESR_VolumetricLightData3", "TESR_VolumetricLightLayout",
+		"TESR_VolumetricLightGridLayout", "TESR_VolumetricLightGridData", "TESR_FogData", "TESR_SunAmount", "TESR_GameTime",
+		"TESR_VolumetricFogDensity", "TESR_VolumetricFogShape", "TESR_VolumetricFogWind", "TESR_VolumetricFogScatter",
+		"TESR_VolumetricFogWeather", "TESR_VolumetricFogNight", "TESR_VolumetricFogNightScatter", "TESR_CameraPosition" };
+	struct ExtConstants {
+		D3DXMATRIX	Matrices[_countof(ExtMatrixNames)];
+		D3DXVECTOR4	Vectors[_countof(ExtVectorNames)];
+	};
+	struct ExtPush { UInt32 pointIndex, linearIndex, wrapIndex, pad; D3DXVECTOR2 axis; UInt32 pad2[2]; };
+
+	const D3DXVECTOR4* ExtRegistered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+}
+
+bool VolumetricLightEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (ClearRenderTarget || techniqueIndex > 8) return false;
+	static const char* const SpvNames[9] = { "VolumetricLightComposite", "VolumetricLightMarch", "VolumetricLightBlur", "VolumetricLightTemporal",
+		"VolumetricLightBlur", "VolumetricLightGridLight", "VolumetricLightGridRow", "VolumetricLightGridCarry", "VolumetricLightCompositeGrid" };
+	const bool frame = techniqueIndex == 0 || techniqueIndex == 8;
+	if (!frame && RenderTarget != RenderedSurface) return false;
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	IDirect3DTexture9* atlas = TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowAtlasTexture : nullptr;
+	IDirect3DBaseTexture9* textures[3] = {};
+	UINT count = 0;
+	switch (techniqueIndex) {
+	case 0: textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = Textures.BlurTexture; count = 3; break;
+	case 1: textures[0] = depth; textures[1] = atlas; count = 2; break;
+	case 2: textures[0] = Textures.TempTexture; count = 1; break;
+	case 3: textures[0] = Textures.MarchTexture; textures[1] = Textures.HistoryTexture; count = 2; break;
+	case 4: textures[0] = Textures.MarchTexture; count = 1; break;
+	case 5: textures[0] = atlas; textures[1] = fogNoise; count = 2; break;
+	case 6: textures[0] = Textures.GridTexture; count = 1; break;
+	case 7: textures[0] = Textures.GridTempTexture; count = 1; break;
+	case 8: textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = Textures.GridTexture; count = 3; break;
+	}
+	for (UINT i = 0; i < count; i++) if (!textures[i]) return false;
+
+	ExtPass& pass = extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[7] = {};
+		for (UINT i = 0; i < count; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i;
+			bindings[i].ViewType = techniqueIndex == 5 && i == 1 ? NVR_EXT_VIEW_3D : NVR_EXT_VIEW_2D;
+		}
+		bindings[count] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 3; s++) {
+			bindings[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; bindings[count + 1 + s].Slot = s; bindings[count + 1 + s].PushOffset = s * 4;
+		}
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvNames[techniqueIndex], bindings, count + 4, sizeof(ExtPush), true);
+	}
+	ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::LinearWrap() };
+	if (!pass.Pipeline || !samplers[0] || !samplers[1] || !samplers[2]) return false;
+
+	ExtConstants constants;
+	for (UINT i = 0; i < _countof(ExtMatrixNames); i++) {
+		const D3DXVECTOR4* value = ExtRegistered(ExtMatrixNames[i]);
+		if (!value) return false;
+		memcpy(&constants.Matrices[i], value, sizeof(D3DXMATRIX));
+	}
+	for (UINT i = 0; i < _countof(ExtVectorNames); i++) {
+		const D3DXVECTOR4* value = ExtRegistered(ExtVectorNames[i]);
+		if (!value) return false;
+		constants.Vectors[i] = *value;
+	}
+	ID3D9NvrExtBuffer* uniforms = ExtUniforms(extUniforms, &constants, sizeof(constants));
+	if (!uniforms) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[7] = {};
+	for (UINT i = 0; i < count; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms;
+	for (UINT s = 0; s < 3; s++) {
+		resources[count + 1 + s].Slot = s; resources[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; resources[count + 1 + s].pResource = samplers[s];
+	}
+	ExtPush push = {};
+	push.axis = techniqueIndex == 2 ? D3DXVECTOR2(1.0f, 0.0f) : D3DXVECTOR2(0.0f, 1.0f);
+
+	if (frame)
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, count + 4, &push, sizeof(push), true);
+	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, count + 4, &push, sizeof(push));
 }

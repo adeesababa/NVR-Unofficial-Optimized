@@ -31,6 +31,9 @@ public:
 		float	ReflectAdd;
 		float	SpecularOcclusion;
 		float	SpecularOcclusionLevel;
+		bool	HiZ;
+		bool	HiZSafeCells;
+		bool	HiZInteriorsTest;
 		float	ReflectivityExterior;
 		float	ReflectivityInterior;
 	};
@@ -93,7 +96,18 @@ public:
 	void	CaptureMaterial(IDirect3DDevice9* Device);
 	void	BindMaterial();
 
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	bool	HiZWanted() const;
+
 private:
+	ExtPass				extPasses[8];
+	ExtPass				extTraceHiZ;
+	bool				hizTraceFailed = false;
+	UINT				hizTraceFrames = 0;
+	ExtPass				extTraceHiZCount;
+	ExtUniformBuffer	extUniforms;
+	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	IDirect3DTexture9*	extSkyTexture = nullptr;
 	D3DXMATRIX	lastView, lastInvView, lastProj;
 	UINT		lastRenderedFrame = 0;
 	bool		haveHistory = false;

@@ -26,6 +26,7 @@ float4 TESR_DebugVar : register(c21);
 float4 TESR_ShadowLightPosition[12] : register(c22);
 float4 TESR_LightPosition[12] : register(c34);
 float4 TESR_LightColor[24] : register(c46);
+float4 TESR_RenderScale : register(c70);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -74,7 +75,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * interiorDepthModifier;
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 color = linearize(tex2Dproj(RefractionMap, float4(refractionPos.xy * TESR_RenderScale.xy, refractionPos.zw)));
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, color);
     color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, lightDir, eyeDirection, distance, linFogColor, color);

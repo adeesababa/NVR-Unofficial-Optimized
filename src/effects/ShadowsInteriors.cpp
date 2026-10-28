@@ -1,5 +1,7 @@
 #include "ShadowsInteriors.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
 void ShadowsInteriorsEffect::UpdateConstants() {}
 void ShadowsInteriorsEffect::UpdateSettings() {}
@@ -21,6 +23,65 @@ bool ShadowsInteriorsEffect::DedicatedUsable(IDirect3DSurface9* RenderTarget, ID
 		!TheShaderManager->Chain.Owns(RenderTarget, RenderedSurface));
 }
 
+struct ShadowsInteriorsBlurPush { D3DXVECTOR4 cameraData; D3DXVECTOR4 reciprocalResolution; D3DXVECTOR2 offsetMask; float maxDistance; UInt32 samplerIndex; };
+struct ShadowsInteriorsApplyPush { D3DXVECTOR4 cameraData; D3DXVECTOR4 shadowData; D3DXVECTOR4 shadowFade; D3DXMATRIX viewTransform; D3DXMATRIX projectionTransform; UInt32 samplerIndex; UInt32 pad[3]; };
+
+bool ShadowsInteriorsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (!DedicatedUsable(RenderTarget, RenderedSurface)) return false;
+	SunShadowsEffect* scratch = TheShaderManager->Effects.SunShadows;
+	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	if (!depth || !TheTextureManager->RenderedTexture) return false;
+
+	auto make = [](ExtPass& pass, const char* spvName, UINT textureCount, UINT samplerOffset, UINT pushSize) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[4] = {};
+		for (UINT i = 0; i < textureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[textureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[textureCount].Slot = 0; bindings[textureCount].PushOffset = samplerOffset;
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, textureCount + 1, pushSize, true);
+	};
+	make(extBlur, "ShadowsInteriorsBlur", 2, 44, sizeof(ShadowsInteriorsBlurPush));
+	make(extApply, "ShadowsInteriorsApply", 3, 176, sizeof(ShadowsInteriorsApplyPush));
+	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
+	if (!extBlur.Pipeline || !extApply.Pipeline || !sampler) return false;
+
+	ShadowsInteriorsBlurPush blur = {};
+	blur.cameraData = TheRenderManager->CameraData;
+	blur.reciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	blur.maxDistance = TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowFade.w;
+
+	IDirect3DBaseTexture9* mask = shadowTexture;
+	if (!skipBlur) {
+		const D3DXVECTOR2 offsetMasks[2] = { D3DXVECTOR2(1.0f, 0.0f), D3DXVECTOR2(0.0f, 1.0f) };
+		for (UINT p = 0; p < 2; p++) {
+			blur.offsetMask = offsetMasks[p];
+			IDirect3DBaseTexture9* textures[2] = { mask, depth };
+			NVR_EXT_RESOURCE_BINDING resources[3] = {};
+			for (UINT i = 0; i < 2; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i]; }
+			resources[2].Slot = 0; resources[2].Type = NVR_EXT_BIND_SAMPLER; resources[2].pResource = sampler;
+			IDirect3DSurface9* target = scratch->scratchSurface[p];
+			if (!ExtDrawTo(extBlur.Pipeline, &target, 1, resources, _countof(resources), &blur, sizeof(blur), nullptr, ExtUv::ScreenQuad)) return false;
+			mask = scratch->scratchTexture[p];
+		}
+	}
+
+	ShadowsInteriorsApplyPush apply = {};
+	apply.cameraData = TheRenderManager->CameraData;
+	apply.shadowData = TheShaderManager->Effects.ShadowsExteriors->Constants.Data;
+	apply.shadowFade = TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowFade;
+	apply.viewTransform = TheRenderManager->viewMatrix;
+	apply.projectionTransform = TheRenderManager->projMatrix;
+	IDirect3DBaseTexture9* inputs[3] = { TheTextureManager->RenderedTexture, mask, depth };
+	NVR_EXT_RESOURCE_BINDING resources[4] = {};
+	for (UINT i = 0; i < 3; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i]; }
+	resources[3].Slot = 0; resources[3].Type = NVR_EXT_BIND_SAMPLER; resources[3].pResource = sampler;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extApply.Pipeline, resources, _countof(resources), &apply, sizeof(apply), false);
+}
+
 void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
@@ -32,6 +93,15 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}
+	if (!ExtFailed && DxvkCompute::PassesOn()) {
+		auto extTimer = TimeLogger();
+		if (ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+			Device->SetRenderTarget(0, RenderTarget);
+			renderTime = extTimer.LogTime("ShadowsInteriors::Extension");
+			return;
+		}
+	}
+
 	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedInteriorShadows");
 
 	auto timer = TimeLogger();
@@ -54,6 +124,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 			if (FAILED(result)) break;
 			RebindSlotTextures();
 			Device->SetTexture(4, source);
+			RenderRect::ApplyViewport(Device);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;

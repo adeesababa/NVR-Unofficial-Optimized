@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_SpecularData;
 float4 TESR_SpecularEffects;
@@ -84,7 +85,7 @@ float4 SpecularLowPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	const float2 ring[16] = { float2(1, 0), float2(1, 1), float2(0, 1), float2(-1, 1), float2(-1, 0), float2(-1, -1), float2(0, -1), float2(1, -1),
 	                          float2(3, 1), float2(1, 3), float2(-1, 3), float2(-3, 1), float2(-3, -1), float2(-1, -3), float2(1, -3), float2(3, -1) };
 	[unroll] for (int k = 0; k < 16; k++) {
-		float4 s = tex2Dlod(TESR_SpecularNormals, float4(uv + ring[k] * lowPx, 0, 0));
+		float4 s = tex2Dlod(TESR_SpecularNormals, float4(clampToRectIfOn(uv + ring[k] * lowPx, lowPx), 0, 0));
 		float w = abs(s.a - depth) < tolerance ? 1.0 : 0.0;
 		sum += w * s.xyz;
 		weight += w;
@@ -145,9 +146,9 @@ bool AddSpecular(float2 uv, float depth, inout float3 lin) {
 	float2 at = (floor(p) + 0.5) * lowPx;
 	float4 w = float4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
 	float4 s00 = tex2Dlod(TESR_SpecularBuffer, float4(at, 0, 0));
-	float4 s10 = tex2Dlod(TESR_SpecularBuffer, float4(at + float2(lowPx.x, 0.0), 0, 0));
-	float4 s01 = tex2Dlod(TESR_SpecularBuffer, float4(at + float2(0.0, lowPx.y), 0, 0));
-	float4 s11 = tex2Dlod(TESR_SpecularBuffer, float4(at + lowPx, 0, 0));
+	float4 s10 = tex2Dlod(TESR_SpecularBuffer, float4(clampToRectIfOn(at + float2(lowPx.x, 0.0), lowPx), 0, 0));
+	float4 s01 = tex2Dlod(TESR_SpecularBuffer, float4(clampToRectIfOn(at + float2(0.0, lowPx.y), lowPx), 0, 0));
+	float4 s11 = tex2Dlod(TESR_SpecularBuffer, float4(clampToRectIfOn(at + lowPx, lowPx), 0, 0));
 	float4 off = abs(float4(s00.a, s10.a, s01.a, s11.a) - depth) / (0.05 * depth + 4.0);
 	off *= off;
 	w *= 1.0 / (1.0 + off * off) + 0.0001;

@@ -1,6 +1,9 @@
 #include "AmbientLight.h"
 #include "BounceLightMath.h"
 #include "../core/FlickerWatch.h"
+#include "../core/DxvkCompute.h"
+#include "../core/HiZ.h"
+#include "../core/RenderRect.h"
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -15,7 +18,7 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 12);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 13);
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
@@ -33,6 +36,13 @@ void AmbientLightEffect::UpdateSettings() {
 	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 64);
 	normalSmoothingWorld = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "NormalSmoothingWorld"), 0.0f, 64.0f);
 	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
+	hizLogQ = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "HiZ"), 0, 6);
+	computeGI = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGI") != 0;
+	giStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "ComputeGIStrength"), 0.0f, 4.0f);
+	giThickness = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "ComputeGIThickness"), 5.0f, 500.0f);
+	giQuality = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIQuality"), 0, 2);
+	giThinOcclusion = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIThinOcclusion") != 0;
+	giTest = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGITest"), 0, 2);
 }
 
 void AmbientLightEffect::EnsureBuffers() {
@@ -223,7 +233,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 	D3DXVECTOR4 data(gridBounce, gridSpread, gridSunTexel, colour && gridSunHasColor ? 1.0f : 0.0f);
 	const D3DXVECTOR4& sunColor = TheShaderManager->ShaderConst.sunColor;
 	D3DXVECTOR4 light(powf((std::max)(sunColor.x, 0.0f), 2.2f), powf((std::max)(sunColor.y, 0.0f), 2.2f), powf((std::max)(sunColor.z, 0.0f), 2.2f), 1.0f);
-	const bool keep = gridScreenValid && !TheShaderManager->GameState.isCellChanged;
+	const bool keep = gridScreenValid && !TheShaderManager->GameState.isCameraCut;
 	D3DXVECTOR4 shift(keep ? (float)((gridPendingOrigin[0] - gridScreenOrigin[0]) / gridCell) : 0.0f,
 		keep ? (float)((gridPendingOrigin[1] - gridScreenOrigin[1]) / gridCell) : 0.0f,
 		keep ? (float)((gridPendingOrigin[2] - gridScreenOrigin[2]) / gridCell) : 0.0f, keep ? 1.0f : 0.0f);
@@ -235,6 +245,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 		Effect->SetVector(h, &origin1);
 	}
 	Device->GetViewport(&original);
+	RenderRect::WholeViewport(Device, original);
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(originHandle, &origin);
@@ -279,19 +290,26 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 			clearStages();
 			const bool wallsKeep = walls && wallsHandle;
 			setWalls(wallsKeep, false, wallsKeep && gridWallsValid);
-			result = Device->SetRenderTarget(0, gridScreenSurface[write]);
-			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, gridScreenColorSurface[write]);
-			if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, wallsKeep ? gridScreenWallsSurface[write] : nullptr);
-			if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
-			if (SUCCEEDED(result)) result = Effect->BeginPass(0);
-			if (SUCCEEDED(result)) {
-				Device->SetTexture(1, TheTextureManager->RenderedTexture);
-				Device->SetTexture(6, gridScreen[read]);
-				Device->SetTexture(7, gridScreenColor[read]);
-				if (wallsKeep && gridWallsValid) Device->SetTexture(8, gridScreenWalls[read]);
-				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-				HRESULT endResult = Effect->EndPass();
-				if (SUCCEEDED(result)) result = endResult;
+			IDirect3DSurface9* extTargets[] = { gridScreenSurface[write], gridScreenColorSurface[write], wallsKeep ? gridScreenWallsSurface[write] : nullptr };
+			IDirect3DBaseTexture9* extTextures[] = { gridScreen[read], gridScreenColor[read], wallsKeep && gridWallsValid ? gridScreenWalls[read] : nullptr,
+				ExtFileTexture("TESR_DepthBuffer"), ExtFileTexture("TESR_NormalsBuffer"), TheTextureManager->RenderedTexture };
+			if (ExtOn() && ExtDraw(ExtScreen, extTargets, wallsKeep ? 3 : 2, extTextures, 0, atlas)) result = S_OK;
+			else {
+				result = Device->SetRenderTarget(0, gridScreenSurface[write]);
+				if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, gridScreenColorSurface[write]);
+				if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, wallsKeep ? gridScreenWallsSurface[write] : nullptr);
+				if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
+				if (SUCCEEDED(result)) result = Effect->BeginPass(0);
+				if (SUCCEEDED(result)) {
+					Device->SetTexture(1, TheTextureManager->RenderedTexture);
+					Device->SetTexture(6, gridScreen[read]);
+					Device->SetTexture(7, gridScreenColor[read]);
+					if (wallsKeep && gridWallsValid) Device->SetTexture(8, gridScreenWalls[read]);
+					RenderRect::ApplyViewport(Device);
+					result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+					HRESULT endResult = Effect->EndPass();
+					if (SUCCEEDED(result)) result = endResult;
+				}
 			}
 			if (SUCCEEDED(result)) {
 				gridScreenIndex = write;
@@ -313,12 +331,25 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 		}
 		for (int step = 0; step <= gridSteps && SUCCEEDED(result); step++) {
 			const int writeWave = step == 0 ? 0 : wave ^ 1, writeAccum = step == 0 ? 0 : accum ^ 1;
-			clearStages();
-			result = Device->SetRenderTarget(0, gridWaveSurface[writeWave]);
-			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum]);
 			D3DXVECTOR4 stepData(step == 1 ? 1.0f : 0.0f, gridBlocking, sun ? 1.0f : 0.0f, screen && gridScreenValid ? 1.0f : 0.0f);
 			Effect->SetVector(stepHandle, &stepData);
 			if (step <= 1) setWalls(false, step == 0 && wallsRead, false);
+			{
+				IDirect3DSurface9* extTargets[] = { gridWaveSurface[writeWave], step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum],
+					colour ? gridWaveColorSurface[writeWave] : nullptr, colour ? gridAccumColorSurface[writeAccum] : nullptr };
+				const bool screenIn = screen && gridScreenValid;
+				IDirect3DBaseTexture9* injectTextures[] = { sun ? gridSunTexture : nullptr, sun && gridSunHasColor ? gridSunColorTexture : nullptr,
+					screenIn ? gridScreen[gridScreenIndex] : nullptr, screenIn ? gridScreenColor[gridScreenIndex] : nullptr, wallsRead ? gridScreenWalls[gridScreenIndex] : nullptr };
+				IDirect3DBaseTexture9* spreadTextures[] = { gridGeometry, gridWave[wave], gridAccum[accum], colour ? gridWaveColor[wave] : nullptr, colour ? gridAccumColor[accum] : nullptr };
+				if (ExtOn() && ExtDraw(step == 0 ? ExtInject : ExtPropagate, extTargets, colour ? 4 : 2, step == 0 ? injectTextures : spreadTextures, 0, atlas)) {
+					wave = writeWave;
+					accum = writeAccum;
+					continue;
+				}
+			}
+			clearStages();
+			result = Device->SetRenderTarget(0, gridWaveSurface[writeWave]);
+			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum]);
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, colour ? gridWaveColorSurface[writeWave] : nullptr);
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(3, colour ? gridAccumColorSurface[writeAccum] : nullptr);
 			if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
@@ -334,6 +365,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 				Device->SetTexture(5, gridGeometry);
 				if (colour) { Device->SetTexture(13, gridWaveColor[wave]); Device->SetTexture(14, gridAccumColor[accum]); }
 			}
+			RenderRect::ApplyViewport(Device);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
@@ -374,9 +406,97 @@ bool AmbientLightEffect::ShouldRender() {
 	return Enabled && Effect && !TheShaderManager->GameState.isUnderwater;
 }
 
+#include "../core/DxvkCompute.h"
+
+namespace {
+	const NVR_EXT_BINDING_DESC SmoothBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, TRUE,  0 },
+	};
+	struct SmoothPush {
+		UINT32	width, height, tileRows, reachTexels;
+		float	reach, drawDistance, invWidth, invHeight, uvOffsetX, uvOffsetY, proj00, proj11;
+	};
+	const UINT SmoothRegionRows = 256;
+}
+
+void AmbientLightEffect::SmoothComputeRelease() {
+	DxvkCompute::Drop(smoothPipeline);
+	DxvkCompute::Drop(smoothResult);
+	smoothWidth = smoothHeight = 0;
+}
+
+bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height) {
+	if (!TheSettingManager->SettingsMain.Main.AmbientLightSmoothCompute || smoothComputeFailed || !DxvkCompute::Available()) return false;
+	if (RenderRect::Active()) return false;
+	if (normalSmoothing > SmoothComputeMaxReach || normalSmoothingWorld > 0.0f) {
+		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d (or NormalSmoothingWorld %.1f) is beyond the compute version (reach %d): the D3D9 passes are used.", normalSmoothing, normalSmoothingWorld, SmoothComputeMaxReach);
+		smoothComputeReachLogged = true;
+		return false;
+	}
+	if (!Width || !Height || !Target) return false;
+
+	if (!smoothPipeline) smoothPipeline = DxvkCompute::CreatePipeline("AmbientLightSmooth", SmoothBindings, _countof(SmoothBindings), sizeof(SmoothPush), false);
+	if (smoothPipeline && (!smoothResult || smoothWidth != Width || smoothHeight != Height)) {
+		DxvkCompute::Drop(smoothResult);
+		smoothResult = DxvkCompute::CreateBuffer(Width * Height * 16, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_SRC, "AmbientLight smoothed prep");
+		smoothWidth = Width;
+		smoothHeight = Height;
+	}
+	if (!smoothPipeline || !smoothResult) {
+		SmoothComputeRelease();
+		smoothComputeFailed = true;
+		Logger::Log("UNOFFICIAL AmbientLight: the NormalSmoothing compute path could not be set up; the D3D9 passes are used.");
+		return false;
+	}
+
+	SmoothPush push = {};
+	push.width = Width;
+	push.height = Height;
+	push.reachTexels = (UINT32)normalSmoothing;
+	push.tileRows = SmoothRegionRows - 2 * push.reachTexels;
+	push.reach = (float)normalSmoothing;
+	push.drawDistance = max(Constants.Data.w, 100.0f);
+	push.invWidth = 1.0f / Width;
+	push.invHeight = 1.0f / Height;
+	push.uvOffsetX = (1.0f / (float)TheRenderManager->width) * 0.5f;
+	push.uvOffsetY = (1.0f / (float)TheRenderManager->height) * 0.5f;
+	push.proj00 = TheRenderManager->projMatrix._11;
+	push.proj11 = TheRenderManager->projMatrix._22;
+
+	NVR_EXT_RESOURCE_BINDING bindings[] = {
+		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE,  prepTexture,  0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_STORAGE_BUFFER, smoothResult, 0, 0, 0, FALSE },
+	};
+	NVR_EXT_DISPATCH_DESC dispatch = {};
+	dispatch.pPipeline = smoothPipeline;
+	dispatch.BindingCount = _countof(bindings);
+	dispatch.pBindings = bindings;
+	dispatch.pPushData = &push;
+	dispatch.PushDataSize = sizeof(push);
+	dispatch.GroupsX = (Width + 7) / 8;
+	dispatch.GroupsY = (Height + push.tileRows - 1) / push.tileRows;
+	dispatch.GroupsZ = 1;
+
+	DxvkCompute::PreLoad(bindings, _countof(bindings));
+	HRESULT result = Device->SetRenderTarget(0, Target);
+	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->Dispatch(&dispatch);
+	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->CopyBufferToTexture(prepTexture, 0, 0, smoothResult, 0);
+	if (FAILED(result)) {
+		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing compute dispatch failed (%08lX); the D3D9 passes are used from now on.", result);
+		SmoothComputeRelease();
+		smoothComputeFailed = true;
+		DxvkCompute::Fail("an AmbientLightSmooth dispatch failed");
+		return false;
+	}
+	if (++smoothComputeFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing compute path running (%ux%u, reach %d, %ux%u groups).", Width, Height, normalSmoothing, dispatch.GroupsX, dispatch.GroupsY);
+	return true;
+}
+
 bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	prepared = false;
 	if (normalSmoothing <= 0 || !Effect) return false;
+	if (TheShaderManager->Effects.Normals->Smoothed()) return false;
 	EnsureBuffers();
 	D3DXHANDLE technique = Effect->GetTechnique(0);
 	D3DXHANDLE smooth = TechniqueHandle(techSmooth, "AmbientLightSmooth");
@@ -388,6 +508,7 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	if (!technique || !smooth || !layoutHandle || !edgesHandle || !prepTexture || !prepSurface || !bufferTexture[1] || !bufferSurface[1] ||
 		FAILED(Effect->GetTechniqueDesc(smooth, &description)) || description.Passes != 2 || FAILED(Device->GetViewport(&original)) ||
 		FAILED(bufferSurface[1]->GetDesc(&half))) return false;
+	RenderRect::WholeViewport(Device, original);
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width = half.Width;
 	reduced.Height = half.Height;
@@ -408,27 +529,36 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	Device->SetTexture(6, nullptr);
 	Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);
 	UINT passes = 0;
-	HRESULT result = Device->SetRenderTarget(0, prepSurface);
-	if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
-	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
-	if (SUCCEEDED(result)) {
-		result = Effect->BeginPass(0);
+	HRESULT result = S_OK;
+	IDirect3DBaseTexture9* prepareTextures[] = { ExtFileTexture("TESR_DepthBuffer"), ExtFileTexture("TESR_NormalsBuffer"), TheTextureManager->DepthTextureViewModel };
+	if (!(ExtOn() && ExtDraw(ExtPrepare, &prepSurface, 1, prepareTextures, 0, reduced))) {
+		result = Device->SetRenderTarget(0, prepSurface);
+		if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
+		if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 		if (SUCCEEDED(result)) {
-			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-			Effect->EndPass();
+			result = Effect->BeginPass(0);
+			if (SUCCEEDED(result)) {
+				RenderRect::ApplyViewport(Device);
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				Effect->EndPass();
+			}
+			Effect->End();
 		}
-		Effect->End();
 	}
-	if (SUCCEEDED(result)) {
+	if (SUCCEEDED(result) && !SmoothCompute(Device, target, half.Width, half.Height)) {
 		Effect->SetTechnique(smooth);
 		result = Effect->Begin(&passes, 0);
 		if (SUCCEEDED(result)) {
 			for (UINT p = 0; p < 2 && SUCCEEDED(result); ++p) {
+				IDirect3DSurface9* extTarget = p == 0 ? bufferSurface[1] : prepSurface;
+				IDirect3DBaseTexture9* extSource = p == 0 ? prepTexture : bufferTexture[1];
+				if (ExtOn() && ExtDraw(ExtSmooth, &extTarget, 1, &extSource, p, reduced)) continue;
 				Device->SetTexture(5, p == 0 ? prepTexture : nullptr);
 				Device->SetTexture(6, p == 1 ? bufferTexture[1] : nullptr);
 				result = Device->SetRenderTarget(0, p == 0 ? bufferSurface[1] : prepSurface);
 				if (SUCCEEDED(result)) result = Effect->BeginPass(p);
 				if (FAILED(result)) break;
+				RenderRect::ApplyViewport(Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}
@@ -451,6 +581,222 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %s.", prepared ? "on (reach set, technique AmbientLightSmooth drawn)" : "NOT drawn this frame (a draw failed)");
 	}
 	return prepared;
+}
+
+namespace {
+	const NVR_EXT_BINDING_DESC BlurBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 2, NVR_EXT_BIND_STORAGE_IMAGE, 2, NVR_EXT_VIEW_2D, TRUE,  0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 44 },
+	};
+	struct BlurPush {
+		D3DXVECTOR4	layout;
+		float		uvOffset[2], blurRadius, debugView, farZ;
+		UINT32		apron, wholeStep, samplerIndex, width, height, pad0, pad1;
+	};
+	static_assert(sizeof(BlurPush) == 64, "AmbientLightBlur.comp push block");
+}
+
+bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width, UINT height) {
+	if (!TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute || !DxvkCompute::Available()) return false;
+	if (RenderRect::Active()) return false;
+	if (!blurComputeOk) {
+		if (blurComputeTried) return false;
+		blurComputeTried = true;
+		blurPipeline = DxvkCompute::CreatePipeline("AmbientLightBlur", BlurBindings, _countof(BlurBindings), sizeof(BlurPush), true);
+		if (!blurPipeline || !DxvkCompute::PointClamp()) {
+			DxvkCompute::Drop(blurPipeline);
+			Logger::Log("UNOFFICIAL AmbientLight: blur compute path could not be set up; the D3D9 blur passes are used");
+			return false;
+		}
+		blurComputeOk = true;
+		Logger::Log("UNOFFICIAL AmbientLight: blur compute path ready");
+	}
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	if (!depth || !bufferTexture[0] || !bufferTexture[1]) return false;
+
+	BlurPush push = {};
+	push.layout = layout;
+	push.uvOffset[0] = (1.0f / (float)TheRenderManager->width) * 0.5f;
+	push.uvOffset[1] = (1.0f / (float)TheRenderManager->height) * 0.5f;
+	push.blurRadius = Constants.Data2.z;
+	push.debugView = Constants.Data2.w;
+	push.farZ = TheRenderManager->CameraData.y;
+	const float step = (std::max)(Constants.Data2.z, 0.5f);
+	push.apron = (UINT32)(std::min)(13.0f, ceilf(3.0f * step) + 1.0f);
+	push.wholeStep = step == floorf(step) ? 1 : 0;
+	push.width = width;
+	push.height = height;
+
+	NVR_EXT_RESOURCE_BINDING bindings[] = {
+		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE, bufferTexture[0], 0, 0, 0, FALSE },
+		{ 1, NVR_EXT_BIND_SAMPLED_IMAGE, depth,            0, 0, 0, FALSE },
+		{ 2, NVR_EXT_BIND_STORAGE_IMAGE, bufferTexture[1], 0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_SAMPLER,       DxvkCompute::PointClamp(), 0, 0, 0, FALSE },
+	};
+	NVR_EXT_DISPATCH_DESC dispatch = {};
+	dispatch.pPipeline = blurPipeline;
+	dispatch.BindingCount = _countof(bindings);
+	dispatch.pBindings = bindings;
+	dispatch.pPushData = &push;
+	dispatch.PushDataSize = sizeof(push);
+	dispatch.GroupsX = (width + 15) / 16;
+	dispatch.GroupsY = (height + 15) / 16;
+	dispatch.GroupsZ = 1;
+	DxvkCompute::PreLoad(bindings, _countof(bindings));
+	HRESULT result = DxvkCompute::Extension()->Dispatch(&dispatch);
+	if (FAILED(result)) {
+		Logger::Log("UNOFFICIAL AmbientLight: blur compute dispatch failed (%08lX); the D3D9 blur passes are used from now on", result);
+		DxvkCompute::Drop(blurPipeline);
+		blurComputeOk = false;
+		DxvkCompute::Fail("an AmbientLight blur dispatch failed");
+		return false;
+	}
+	if (++blurComputeFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: blur compute path running (%ux%u, one dispatch for BlurX + BlurY).", width, height);
+	return true;
+}
+
+namespace {
+	struct ALExtShader { const char* Spv; UINT Textures; UINT Optional; UINT Gi; };
+	const ALExtShader ALExtShaders[AmbientLightEffect::ExtShaderCount] = {
+		{ "AmbientLightPrepare",    3,  0 },
+		{ "AmbientLightSmoothPass", 1,  0 },
+		{ "AmbientLightEstimate",   2,  0 },
+		{ "AmbientLightBlurPass",   2,  0 },
+		{ "AmbientLightAccumulate", 3,  0 },
+		{ "AmbientLightStats",      7,  1u << 6 },
+		{ "AmbientLightReduce",     2,  0 },
+		{ "AmbientLightApply",      13, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11) },
+		{ "AmbientLightScreen",     6,  1u << 2 },
+		{ "AmbientLightInject",     5,  0x1F },
+		{ "AmbientLightPropagate",  5,  (1u << 3) | (1u << 4) },
+		{ "AmbientLightEstimateHiZ", 3, 0 },
+		{ "AmbientLightGILight",      1,  0, 0 },
+		{ "AmbientLightEstimate-gi0", 3,  0, 1 },
+		{ "AmbientLightEstimate-gi1", 3,  0, 1 },
+		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
+		{ "AmbientLightGIAccumulate", 4,  0, 0 },
+		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
+	};
+	struct ALExtPush {
+		D3DXVECTOR4	frame;
+		UINT32		pointClamp, linearClamp, pointWrap, variant;
+	};
+	static_assert(sizeof(ALExtPush) == 32, "AmbientLight.glsl push block");
+	struct ALExtPushGI {
+		ALExtPush	base;
+		D3DXVECTOR4	gi;
+	};
+	static_assert(sizeof(ALExtPushGI) == 48, "AmbientLight.glsl push block (NVR_GI)");
+	const char* const ALExtMatrices[] = { "TESR_ProjectionTransform", "TESR_InvProjectionTransform", "TESR_ViewTransform", "NVR_ALReproject",
+		"NVR_GridSunToGrid", "NVR_GridToSun" };
+	const char* const ALExtVectors[] = { "TESR_AmbientLightData", "TESR_AmbientLightData2", "TESR_ReciprocalResolution", "NVR_ALLayout",
+		"NVR_ALFlags", "NVR_ALInterior", "NVR_ALScene", "NVR_ALTemporal", "NVR_ALEdges", "TESR_WaterSettings", "TESR_ShadowData",
+		"TESR_ShadowFade", "TESR_SkyColor", "TESR_SunAmbient", "TESR_SunDirection", "TESR_AmbientOcclusionSky5", "TESR_AmbientOcclusionData",
+		"TESR_DepthConstants", "TESR_CameraData", "TESR_CameraPosition", "NVR_SunFarFlags", "NVR_GridOrigin", "NVR_GridOrigin1", "NVR_GridData",
+		"NVR_GridLight", "NVR_GridStep", "NVR_GridShift", "NVR_GridScreen", "NVR_GridWalls", "NVR_GridLampInfo" };
+	const char* const ALExtArrays[] = { "NVR_GridLamps", "NVR_GridLampColors" };
+	struct ALExtConstants {
+		D3DXMATRIX	matrices[_countof(ALExtMatrices)];
+		D3DXVECTOR4	vectors[_countof(ALExtVectors)];
+		D3DXVECTOR4	arrays[_countof(ALExtArrays)][AmbientLightEffect::GridLampsMax];
+	};
+	static_assert(_countof(ALExtMatrices) + _countof(ALExtVectors) + _countof(ALExtArrays) == 38, "AmbientLightEffect::extHandles");
+}
+
+bool AmbientLightEffect::ExtOn() const {
+	return !ExtFailed && DxvkCompute::PassesOn();
+}
+
+bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport) {
+	if (!ExtOn() || Shader >= ExtShaderCount || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS || Viewport.X || Viewport.Y || !Viewport.Width || !Viewport.Height) return false;
+	const ALExtShader& info = ALExtShaders[Shader];
+	if (DxvkCompute::KeptOnD3D9(info.Spv)) return false;
+	ExtPass& pass = extPasses[Shader][TargetCount - 1];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[16 + 4] = {};
+		for (UINT i = 0; i < info.Textures; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
+		bindings[info.Textures] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 3; s++) bindings[info.Textures + 1 + s] = { 0, 0, NVR_EXT_BIND_SAMPLER, s, NVR_EXT_VIEW_2D, FALSE, 16 + 4 * s };
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), true, TargetCount);
+	}
+	ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
+	if (!pass.Pipeline || !samplers[0] || !samplers[1] || !samplers[2]) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[16 + 4] = {};
+	IDirect3DBaseTexture9* standIn = ExtFileTexture("TESR_DepthBuffer");
+	for (UINT i = 0; i < info.Textures; i++) {
+		IDirect3DBaseTexture9* texture = Textures[i];
+		if (!texture && (info.Optional & (1u << i))) texture = standIn;
+		if (!texture) return false;
+		resources[i] = { i, NVR_EXT_BIND_SAMPLED_IMAGE, texture, 0, 0, 0, FALSE };
+	}
+	ALExtConstants constants = {};
+	UINT h = 0;
+	for (UINT m = 0; m < _countof(ALExtMatrices); m++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtMatrices[m])) Effect->GetMatrix(handle, &constants.matrices[m]);
+	for (UINT v = 0; v < _countof(ALExtVectors); v++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtVectors[v])) Effect->GetVector(handle, &constants.vectors[v]);
+	for (UINT a = 0; a < _countof(ALExtArrays); a++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtArrays[a])) Effect->GetVectorArray(handle, constants.arrays[a], GridLampsMax);
+	ID3D9NvrExtBuffer* uniforms = ExtUniforms(extUniforms, &constants, sizeof(constants));
+	if (!uniforms) return false;
+	UINT count = info.Textures;
+	resources[count++] = { 0, NVR_EXT_BIND_UNIFORM_BUFFER, uniforms, 0, 0, 0, FALSE };
+	for (UINT s = 0; s < 3; s++) resources[count++] = { s, NVR_EXT_BIND_SAMPLER, samplers[s], 0, 0, 0, FALSE };
+
+	ALExtPushGI push = {};
+	push.base.frame = D3DXVECTOR4(1.0f / Viewport.Width, 1.0f / Viewport.Height,
+		(1.0f / (float)TheRenderManager->width) * 0.5f, (1.0f / (float)TheRenderManager->height) * 0.5f);
+	push.base.variant = Variant;
+	if (info.Gi) push.gi = D3DXVECTOR4(giThickness, 0.0f, giStrength, giThinOcclusion ? 1.0f : 0.0f);
+	RECT viewport = { 0, 0, (LONG)Viewport.Width, (LONG)Viewport.Height };
+	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), &viewport, ExtUv::TexelCentre)) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
+	return true;
+}
+
+namespace {
+	const char* const GIShaderFiles[] = { "AmbientLightGILight", "AmbientLightEstimate-gi0", "AmbientLightEstimate-gi1", "AmbientLightEstimate-gi2",
+		"AmbientLightGIAccumulate", "AmbientLightApply-gi" };
+}
+
+bool AmbientLightEffect::GIActive() {
+	int state = 0;
+	if (!computeGI) state = 0;
+	else if (giFailed) state = 1;
+	else if (!DxvkCompute::Available()) state = 2;
+	else if (!ExtOn()) state = 3;
+	else {
+		if (giFiles < 0) {
+			giFiles = 1;
+			for (const char* file : GIShaderFiles) if (!DxvkCompute::HasSpirv(file)) {
+				Logger::Log("UNOFFICIAL AmbientLight: ComputeGI needs Shaders\\NewVegasReloaded\\Compute\\%s.spv (not installed).", file);
+				giFiles = 0;
+			}
+		}
+		if (giFiles && !giLightTried) {
+			giLightTried = true;
+			const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+			const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
+			TheTextureManager->InitTexture("NVR_AmbientLightGILight", &giLightTexture, &giLightSurface, width, height, D3DFMT_A8R8G8B8);
+			if (!giLightTexture || !giLightSurface) {
+				Logger::Log("UNOFFICIAL AmbientLight: ComputeGI's light texture could not be made; off for this session.");
+				giFailed = true;
+			}
+		}
+		state = giFailed ? 1 : giFiles ? 5 : 4;
+	}
+	if (state != giReported) {
+		giReported = state;
+		static const char* const says[] = { nullptr, "off for this session (it failed: see above); the usual passes run",
+			"needs NVR DXVK (the fork's d3d9.dll): nothing changes", "needs [Main.Main.Performance] NvrDxvkPasses on (AmbientLight's passes as Vulkan passes): nothing changes",
+			"shader files missing (see above): nothing changes", "on (Estimate with a visibility bitmask: one bounce of screen light)" };
+		if (says[state]) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI %s.", says[state]);
+	}
+	return state == 5;
 }
 
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
@@ -513,6 +859,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		renderTime = 0;
 		return;
 	}
+	RenderRect::WholeViewport(Device, original);
 	IDirect3DTexture9* skyTexture = nullptr;
 	if (AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion; ao && ao->Effect && AmbientOcclusionEffect::SkyV2Active()) {
 		D3DXHANDLE skyTechnique = TechniqueHandle(techSky, "AmbientLightSky");
@@ -554,6 +901,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		gridSunFresh = false;
 		gridSunActive = false;
 	}
+	const bool giOn = GIActive();
+	bool giLightReady = false;
+	giDrawn = false;
+	Constants.Data.z = giOn ? giStrength : 0.0f;
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
@@ -603,7 +954,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	}
 	else sunFar = nullptr;
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = historyValid && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCellChanged;
+	static bool lastRect = false;
+	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
+	lastRect = RenderRect::Active();
+	const bool continuous = historyValid && rectSame && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCameraCut;
 	FlickerWatch::Flags |= FlickerWatch::kALRendered | (continuous ? FlickerWatch::kALHistory : 0u);
 	D3DXHANDLE temporalHandle = ParameterHandle(paramTemporal, "NVR_ALTemporal");
 	D3DXHANDLE reprojectHandle = ParameterHandle(paramReproject, "NVR_ALReproject");
@@ -626,14 +980,102 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeMask1);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 	UINT passes = 0;
+	int blurred = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < 8 && SUCCEEDED(result); ++p) {
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
 			if (p == 0 && prepared) continue;
+			if (p == 3 && blurred) continue;
+			if (p == 1 && giOn && ExtOn()) {
+				static GpuTimer lightTimer("  Ambient light GI light (half)");
+				GpuProfileScope gpu(lightTimer, Device);
+				IDirect3DSurface9* lightTarget = giLightSurface;
+				IDirect3DBaseTexture9* lightTextures[] = { scene };
+				giLightReady = ExtDraw(ExtGILight, &lightTarget, 1, lightTextures, 0, reduced);
+				if (giLightReady && ++giFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI running (%ux%u, quality %d: %d slices x %d taps, thickness %.0f, strength %.2f%s).",
+					half.Width, half.Height, giQuality, giQuality == 0 ? 2 : giQuality == 1 ? 3 : 4, giQuality == 0 ? 8 : giQuality == 1 ? 12 : 16, giThickness, giStrength,
+					giThinOcclusion ? ", thin occlusion" : "");
+			}
+			if (p == 2 && TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute && DxvkCompute::Available()) {
+				Device->SetTexture(5, nullptr);
+				Device->SetTexture(6, nullptr);
+				Device->SetTexture(7, nullptr);
+				result = Device->SetRenderTarget(0, historySurface[writeIndex]);
+				if (FAILED(result)) break;
+				GpuProfileScope gpu(passTimers[2], Device);
+				if (RenderBlurCompute(layout, half.Width, half.Height)) { blurred = 1; continue; }
+			}
 			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
 				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
+			if (ExtOn()) {
+				IDirect3DBaseTexture9* depth = ExtFileTexture("TESR_DepthBuffer");
+				IDirect3DBaseTexture9* normals = ExtFileTexture("TESR_NormalsBuffer");
+				IDirect3DBaseTexture9* viewModel = TheTextureManager->DepthTextureViewModel;
+				IDirect3DBaseTexture9* grid = gridValid ? gridAccum[gridAccumIndex] : nullptr;
+				IDirect3DBaseTexture9* gridColour = gridValid && gridColorValid ? gridAccumColor[gridAccumIndex] : nullptr;
+				IDirect3DSurface9* targets[2] = { destination, occlusionHistorySurface[writeIndex] };
+				bool drawn = false;
+				GpuProfileScope gpu(passTimers[p], Device);
+				if (p == 0) {
+					IDirect3DBaseTexture9* textures[] = { depth, normals, viewModel };
+					drawn = ExtDraw(ExtPrepare, targets, 1, textures, 0, reduced);
+				}
+				else if (p == 1) {
+					IDirect3DTexture9* hiz = nullptr;
+					if (hiz && !hizEstimateChecked) {
+						hizEstimateChecked = true;
+						std::vector<char> words;
+						if (!DxvkCompute::LoadSpirv("AmbientLightEstimateHiZ", words)) {
+							hizEstimateFailed = true;
+							Logger::Log("UNOFFICIAL AmbientLight: Compute\\AmbientLightEstimateHiZ.spv is missing; HiZ does nothing.");
+						}
+					}
+					if (hiz && !hizEstimateFailed) {
+						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), hiz };
+						drawn = ExtDraw(ExtEstimateHiZ, targets, 1, textures, (UINT)hizLogQ, reduced);
+						if (drawn && ++hizEstimateFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: Estimate reads its far taps from the Hi-Z pyramid (HiZ %d).", hizLogQ);
+					}
+					else {
+						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), giLightTexture };
+						if (giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);
+						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
+					}
+				}
+				else if (p == 2 || p == 3) {
+					IDirect3DBaseTexture9* textures[] = { depth, bufferTexture[p == 2 ? 0 : 1] };
+					drawn = ExtDraw(ExtBlur, targets, 1, textures, p == 3 ? 1 : 0, reduced);
+				}
+				else if (p == 4) {
+					if (giDrawn && giTest != 1) {
+						IDirect3DBaseTexture9* giTextures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex], historyTexture[readIndex] };
+						drawn = ExtDraw(ExtGIAccumulate, targets, 2, giTextures, 0, reduced);
+					}
+					if (!drawn) giDrawn = false;
+					IDirect3DBaseTexture9* textures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex] };
+					if (!drawn) drawn = ExtDraw(ExtAccumulate, targets, 2, textures, 0, reduced);
+				}
+				else if (p == 5) {
+					IDirect3DBaseTexture9* textures[] = { scene, depth, viewModel, occlusionHistory[writeIndex], normals, grid, gridColour };
+					drawn = ExtDraw(ExtStats, targets, 1, textures, 0, statsViewport);
+				}
+				else if (p == 6) {
+					IDirect3DBaseTexture9* textures[] = { statsTexture, balanceTexture[balanceRead] };
+					drawn = ExtDraw(ExtReduce, targets, 1, textures, 0, balanceViewport);
+				}
+				else {
+					IDirect3DBaseTexture9* waveStage = Constants.Data2.w > 11.5f && gridValid ? gridGeometry : gridScreenValid ? gridScreen[gridScreenIndex] : nullptr;
+					IDirect3DBaseTexture9* balance = interiorMode ? balanceTexture[balanceRuns ? balanceWrite : balanceRead] : nullptr;
+					IDirect3DBaseTexture9* textures[] = { scene, sunFar, depth, normals, ExtFileTexture("TESR_PointShadowBuffer"), skyTexture, viewModel,
+						occlusionHistory[writeIndex], waveStage, grid, gridColour, balance, bufferTexture[blurred], historyTexture[writeIndex] };
+					const UINT variant = (skyTexture ? 1u : 0u) | (waveStage ? 2u : 0u);
+					if (giDrawn && giTest == 0) drawn = ExtDraw(ExtGIApply, targets, 1, textures, variant, original);
+					if (!drawn) drawn = ExtDraw(ExtApply, targets, 1, textures, variant, original);
+					if (giDrawn && giTest == 0 && drawn && giFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI's bounce light applied (GI pass, accumulate, apply as Vulkan passes).");
+				}
+				if (drawn) continue;
+			}
 			Device->SetTexture(5, nullptr);
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);
@@ -645,7 +1087,8 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if (p > 0) Device->SetTexture(5, prepTexture);
 			Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);
 			const bool applyLike = p == 5 || p == 7;
-			if (p == 2 || p == 4 || p == 7) Device->SetTexture(6, bufferTexture[0]);
+			if (p == 2) Device->SetTexture(6, bufferTexture[0]);
+			else if (p == 4 || p == 7) Device->SetTexture(6, bufferTexture[blurred]);
 			else if (p == 3) Device->SetTexture(6, bufferTexture[1]);
 			else if (p == 6) Device->SetTexture(6, statsTexture);
 			if (p == 4) Device->SetTexture(7, historyTexture[readIndex]);
@@ -669,6 +1112,11 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				TheRenderManager->renderState->NoteDeviceTexture(10, skyTexture);
 			}
 			Device->SetTexture(1, scene);
+			RenderRect::ApplyViewport(Device);
+			if (p == 5 && RenderRect::Active()) {
+				Device->SetViewport(&statsViewport);
+				Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS));
+			}
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);

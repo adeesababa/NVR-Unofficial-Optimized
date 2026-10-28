@@ -20,13 +20,13 @@ env:
 
 jobs:
   build:
-    runs-on: windows-2019
+    runs-on: windows-2022
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
+      uses: microsoft/setup-msbuild@v2
 
     - name: Restore NuGet packages
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -36,7 +36,11 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: cmd /c build.bat ${{inputs.projectname}}
+      # windows-2022 has VS2022 only: build with its v143 toolset in place of the projects' v142.
+      run: |
+        $proj = "${{inputs.projectname}}\${{inputs.projectname}}.vcxproj"
+        (Get-Content $proj) -replace '<PlatformToolset>v142<', '<PlatformToolset>v143<' | Set-Content $proj
+        cmd /c build.bat ${{inputs.projectname}}
 
     - name: zip files
       uses: vimtor/action-zip@v1

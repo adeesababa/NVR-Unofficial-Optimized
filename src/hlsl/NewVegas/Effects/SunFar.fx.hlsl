@@ -1,3 +1,4 @@
+
 float4 TESR_ReciprocalResolution;
 float4 TESR_WaterSettings;
 float4 TESR_ShadowFade;

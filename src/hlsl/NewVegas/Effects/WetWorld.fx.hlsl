@@ -37,6 +37,8 @@ sampler2D TESR_SplashNormalSampler : register(s9) < string ResourceName = "Preci
 sampler2D TESR_PuddleCloudSampler : register(s10) < string ResourceName = "water\water_d.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_PuddleNormalSampler : register(s11) < string ResourceName = "water\water_nrm.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_WaterStreakSampler : register(s12) < string ResourceName = "Precipitations\water-streaks_n.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_CoverMapBuffer : register(s13) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#include "Includes/CoverMap.hlsl"
 
 static const float PI = 3.14159265;
 static const float DrawD = TESR_OrthoData.x * 0.9;
@@ -376,7 +378,8 @@ float4 SampleWaterStreaks(float4 streakUV, float3 surfaceNormal, float4 uvDx, fl
 float3 GetSSRViewPosition(float2 uv)
 {
     float4 d = tex2Dlod(TESR_DepthBuffer, float4(uv, 0, 0));
-    float4 p = mul(float4(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f,
+    float2 s = rectToScreen(uv);
+    float4 p = mul(float4(s.x * 2.0f - 1.0f, 1.0f - s.y * 2.0f,
         0.5f, 1.0f), TESR_InvProjectionTransform);
     float safeW = (p.w < 0.0f ? -1.0f : 1.0f) * max(abs(p.w), 0.000001f);
     float3 viewPosition = p.xyz / safeW;
@@ -410,8 +413,9 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
         float3 probe = origin + rayDirection * travel;
         float4 projected = projectedOrigin + projectedDirection * travel;
         if (projected.w * clipSign <= 0.0001f || probe.z * viewSign <= 0.0001f) break;
-        float2 hitUV = projected.xy / projected.w * float2(0.5f, -0.5f) + 0.5f;
-        if (hitUV.x <= 0.001f || hitUV.x >= 0.999f || hitUV.y <= 0.001f || hitUV.y >= 0.999f) break;
+        float2 hitS = projected.xy / projected.w * float2(0.5f, -0.5f) + 0.5f;
+        if (hitS.x <= 0.001f || hitS.x >= 0.999f || hitS.y <= 0.001f || hitS.y >= 0.999f) break;
+        float2 hitUV = screenToRect(hitS);
         float4 depthSample = tex2Dlod(TESR_DepthBuffer, float4(hitUV, 0, 0));
         float delta = probe.z * viewSign - depthSample.x * farZ;
         if (depthSample.x > 0.0f && depthSample.x < 0.99999f
@@ -425,7 +429,7 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
                 float midTravel = (lowerTravel + upperTravel) * 0.5f;
                 float3 midProbe = origin + rayDirection * midTravel;
                 float4 midClip = projectedOrigin + projectedDirection * midTravel;
-                float2 midUV = midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f;
+                float2 midUV = screenToRect(midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f);
                 float midZ = tex2Dlod(TESR_DepthBuffer, float4(midUV, 0, 0)).x * farZ;
                 float midDelta = midProbe.z * viewSign - midZ;
                 if (midDelta >= 0.0f)
@@ -438,7 +442,8 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
             }
             float3 hitProbe = origin + rayDirection * upperTravel;
             float4 hitClip = projectedOrigin + projectedDirection * upperTravel;
-            float2 refinedUV = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float2 refinedS = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float2 refinedUV = screenToRect(refinedS);
             float hitDepth = tex2Dlod(TESR_DepthBuffer, float4(refinedUV, 0, 0)).x;
             float hitDelta = hitProbe.z * viewSign - hitDepth * farZ;
             float vmHitDepth = tex2Dlod(TESR_DepthBufferViewModel, float4(refinedUV, 0, 0)).x;
@@ -450,7 +455,7 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
 
             if (hitDelta >= 0.0f && validHitDepth && !hitViewModel && separatedHit)
             {
-                float edge = min(min(refinedUV.x, 1.0f-refinedUV.x), min(refinedUV.y, 1.0f-refinedUV.y));
+                float edge = min(min(refinedS.x, 1.0f-refinedS.x), min(refinedS.y, 1.0f-refinedS.y));
                 float edgeVisibility = smoothstep(0.0f, 0.02f, edge);
                 float distanceVisibility = max(1.0f - smoothstep(PuddleSSRMaxDistance * 0.65f,
                     PuddleSSRMaxDistance, upperTravel), 0.25f);
@@ -492,9 +497,10 @@ float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
         float travel = 8.0f + PuddleSSRMaxDistance * fraction * fraction;
         float3 probe = origin + rayDirection * travel;
         float4 projected = projectedOrigin + projectedDirection * travel;
-        float2 hitUV = projected.xy / max(abs(projected.w), 0.0001f) * float2(0.5f, -0.5f) + 0.5f;
+        float2 hitS = projected.xy / max(abs(projected.w), 0.0001f) * float2(0.5f, -0.5f) + 0.5f;
         bool onScreen = projected.w * clipSign > 0.0001f && probe.z * viewSign > 0.0001f
-            && hitUV.x > 0.001f && hitUV.x < 0.999f && hitUV.y > 0.001f && hitUV.y < 0.999f;
+            && hitS.x > 0.001f && hitS.x < 0.999f && hitS.y > 0.001f && hitS.y < 0.999f;
+        float2 hitUV = screenToRect(hitS);
         float4 depthSample = tex2Dlod(TESR_DepthBuffer, float4(hitUV, 0, 0));
         float delta = probe.z * viewSign - depthSample.x * farZ;
         [branch]
@@ -508,7 +514,7 @@ float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
                 float midTravel = (lowerTravel + upperTravel) * 0.5f;
                 float3 midProbe = origin + rayDirection * midTravel;
                 float4 midClip = projectedOrigin + projectedDirection * midTravel;
-                float2 midUV = midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f;
+                float2 midUV = screenToRect(midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f);
                 float midZ = tex2Dlod(TESR_DepthBuffer, float4(midUV, 0, 0)).x * farZ;
                 bool behind = midProbe.z * viewSign - midZ >= 0.0f;
                 upperTravel = behind ? midTravel : upperTravel;
@@ -516,7 +522,8 @@ float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
             }
             float3 hitProbe = origin + rayDirection * upperTravel;
             float4 hitClip = projectedOrigin + projectedDirection * upperTravel;
-            float2 refinedUV = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float2 refinedS = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float2 refinedUV = screenToRect(refinedS);
             float hitDepth = tex2Dlod(TESR_DepthBuffer, float4(refinedUV, 0, 0)).x;
             float hitDelta = hitProbe.z * viewSign - hitDepth * farZ;
             float vmHitDepth = tex2Dlod(TESR_DepthBufferViewModel, float4(refinedUV, 0, 0)).x;
@@ -526,7 +533,7 @@ float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
             bool validHitDepth = hitDepth > 0.0f && hitDepth < 0.99999f;
             bool separatedHit = dot(pixelSeparation, pixelSeparation) >= 16.0f;
             float thickness = PuddleSSRThickness + PuddleSSRThicknessPerStep * (travel - previousTravel);
-            float edge = min(min(refinedUV.x, 1.0f - refinedUV.x), min(refinedUV.y, 1.0f - refinedUV.y));
+            float edge = min(min(refinedS.x, 1.0f - refinedS.x), min(refinedS.y, 1.0f - refinedS.y));
             float edgeVisibility = smoothstep(0.0f, PuddleSSREdgeFade, edge);
             float distanceVisibility = max(1.0f - smoothstep(PuddleSSRMaxDistance * 0.65f,
                 PuddleSSRMaxDistance, upperTravel), 0.25f);
@@ -581,7 +588,7 @@ float4 BlurWetMap(VSOUT IN, uniform float2 OffsetMask, uniform float blurRadius)
     {
         if (tap != 0)
         {
-            float2 sampleUV = saturate(uv + blurStep * (float)tap);
+            float2 sampleUV = clampToRectIfOn(saturate(uv + blurStep * (float)tap), TESR_ReciprocalResolution.xy);
             float sampleDepth = readDepth(sampleUV);
             float depthWeight = 1.0f - smoothstep(depthTolerance * 0.5f,
                 depthTolerance, abs(sampleDepth - centerDepth));
@@ -630,7 +637,7 @@ void AddLampHighlightFast(float4 lightPos, float3 c, float3 worldPos, float3 V, 
     }
 }
 
-float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
+float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace, uniform bool persist) : COLOR0
 {
     float4 baseColor = tex2D(TESR_SourceBuffer, IN.UVCoord);
 
@@ -725,8 +732,9 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
     puddles *= (1.0f - puddleVMExclude) * (1.0f - vmMask);
     puddles *= smoothstep(DepressionSlopeCutoff, DepressionSlopeFadeStart, dotUp);
 
+    float4 cover = persist ? CoverMapRead(camera_vector.xy) : float4(0, 0, 0, 0);
     float puddleFade = smoothstep(PuddleAccumulationStart, PuddleAccumulationFull,
-        saturate(TESR_WetWorldData.z));
+        saturate(persist ? cover.y : TESR_WetWorldData.z));
     float puddlemask = puddles * puddleFade;
 
     float slopeMask = smoothstep(0.90f, 0.97f, dotUp);
@@ -751,7 +759,7 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
     rippleMask = lerp(rainFade * flatCoverage, rippleMask, vmMask);
 
     float wetSlope = lerp(slopeMask, 1.0f, vmMask);
-    float wetRippleMask = lerp(rainFade * flatWetCoverage, rippleMask * wetSlope, vmMask);
+    float wetRippleMask = lerp((persist ? cover.x : rainFade) * flatWetCoverage, rippleMask * wetSlope, vmMask);
     float wetMask = saturate(max(puddlemask, wetRippleMask * 0.85f));
     float specMask = saturate(max(puddlemask,
         wetRippleMask + rim * 0.15f * wetSlope));
@@ -853,7 +861,7 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
     float NdotV_refr = saturate(dot(N, -V));
     float viewRefr   = smoothstep(0.18f, 0.45f, NdotV_refr);
 
-    float2 refrOff = expand(projectPosition(combinedNormals)).xy * TESR_ReciprocalResolution.xy * refractionScale;
+    float2 refrOff = expand(rectToScreen(projectPosition(combinedNormals).xy)) * TESR_ReciprocalResolution.xy * refractionScale;
 
     float splashRefr = 0.35f * splashAlpha * splashFlatMask;
     refrOff += splashBumpXY * (refractionScale * 0.35f) * TESR_ReciprocalResolution.xy * splashRefr;
@@ -1299,7 +1307,7 @@ technique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(false, false);
+        PixelShader  = compile ps_3_0 Wet(false, false, false);
     }
 }
 
@@ -1332,7 +1340,7 @@ technique FastPathsTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(true, false);
+        PixelShader  = compile ps_3_0 Wet(true, false, false);
     }
 }
 
@@ -1356,7 +1364,7 @@ technique FixedTraceTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(false, true);
+        PixelShader  = compile ps_3_0 Wet(false, true, false);
     }
 }
 
@@ -1380,6 +1388,54 @@ technique FixedTraceFastPathsTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(true, true);
+        PixelShader  = compile ps_3_0 Wet(true, true, false);
+    }
+}
+
+technique PersistentTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, false, true);
+    }
+}
+
+technique PersistentFixedTraceTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, true, true);
     }
 }

@@ -19,6 +19,7 @@ NiD3DVertexShader* __fastcall CreateVertexShaderHook(BSShader* This, UInt32 edx,
 		VertexShader->SetName("WATERHEIGHTMAP1.vso");
 		TheShaderManager->WaterVertexShaders[1] = VertexShader;
 	}
+	if (!memcmp(ShaderName, "GRASS", 5)) Logger::Log("UNOFFICIAL the game makes the grass vertex shader %s", ShaderName);
 	TheShaderManager->LoadShader(VertexShader);
 	return (NiD3DVertexShader*)VertexShader;
 
@@ -43,6 +44,7 @@ NiD3DPixelShader* __fastcall CreatePixelShaderHook(BSShader* This, UInt32 edx, c
 		PixelShader->SetName("WATERHEIGHTMAP1.pso");
 		TheShaderManager->WaterPixelShaders[1] = PixelShader;
 	}
+	if (!memcmp(ShaderName, "GRASS", 5)) Logger::Log("UNOFFICIAL the game makes the grass pixel shader %s", ShaderName);
 	TheShaderManager->LoadShader(PixelShader);
 	return (NiD3DPixelShader*)PixelShader;
 

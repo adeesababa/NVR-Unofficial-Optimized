@@ -1,10 +1,17 @@
 #include "OrthoProbe.h"
 #include "FlickerWatch.h"
 #include "GpuProfiler.h"
+#include "HiZ.h"
+#include "PixelInspector.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
+#include "../effects/GpuParticles.h"
+#include "SunDepthFit.h"
+#include "../effects/CoverMap.h"
+#include <unordered_map>
+#include <vector>
 
 #define RESZ_CODE 0x7FA05000
 
@@ -12,6 +19,8 @@
 * Initializes the Shader Manager Singleton.
 * The Shader Manager creates and holds onto the Effects activated in the Settings Manager, and sets the constants.
 */
+static void LoadEarlyShaders(ShaderManager* Manager);
+
 void ShaderManager::Initialize() {
 
 	auto timer = TimeLogger();
@@ -85,6 +94,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<SunFarEffect>(&TheShaderManager->Effects.SunFar);
 	TheShaderManager->RegisterEffect<SpecularEffect>(&TheShaderManager->Effects.Specular);
 	TheShaderManager->RegisterEffect<SnowEffect>(&TheShaderManager->Effects.Snow);
+	TheShaderManager->RegisterEffect<CoverMapEffect>(&TheCoverMap);
 	TheShaderManager->RegisterEffect<SnowAccumulationEffect>(&TheShaderManager->Effects.SnowAccumulation);
 	TheShaderManager->RegisterEffect<UnderwaterEffect>(&TheShaderManager->Effects.Underwater);
 	TheShaderManager->RegisterEffect<VolumetricFogEffect>(&TheShaderManager->Effects.VolumetricFog);
@@ -116,6 +126,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
 	TheShaderManager->RegisterShaderCollection<ParticleShaders>(&TheShaderManager->Shaders.Particles);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
+	LoadEarlyShaders(TheShaderManager);
 	
 	//setup map of constant names
 	TheShaderManager->RegisterConstant("TESR_WorldTransform", (D3DXVECTOR4*)&TheRenderManager->worldMatrix);
@@ -138,6 +149,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_ViewSpaceLightDir", &TheShaderManager->ShaderConst.ViewSpaceLightDir);
 	TheShaderManager->RegisterConstant("TESR_ScreenSpaceLightDir", &TheShaderManager->ShaderConst.ScreenSpaceLightDir);
 	TheShaderManager->RegisterConstant("TESR_ReciprocalResolution", &TheShaderManager->ShaderConst.ReciprocalResolution);
+	TheShaderManager->RegisterConstant("TESR_RenderScale", &TAAEffect::RenderScaleConstant);
 	TheShaderManager->RegisterConstant("TESR_CameraForward", &TheRenderManager->CameraForward);
 	TheShaderManager->RegisterConstant("TESR_DepthConstants", &TheRenderManager->DepthConstants);
 	TheShaderManager->RegisterConstant("TESR_CameraData", &TheRenderManager->CameraData);
@@ -150,6 +162,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_FogData", &TheShaderManager->ShaderConst.fogData);
 	TheShaderManager->RegisterConstant("TESR_FogDistance", &TheShaderManager->ShaderConst.fogDistance);
 	TheShaderManager->RegisterConstant("TESR_FogColor", &TheShaderManager->ShaderConst.fogColor);
+	TerrainErosion::Initialize();
 	TheShaderManager->RegisterConstant("TESR_SunColor", &TheShaderManager->ShaderConst.sunColor);
 	TheShaderManager->RegisterConstant("TESR_SunDiskColor", &TheShaderManager->ShaderConst.sunDiskColor);
 	TheShaderManager->RegisterConstant("TESR_SunAmbient", &TheShaderManager->ShaderConst.sunAmbient);
@@ -162,23 +175,107 @@ void ShaderManager::Initialize() {
 	timer.LogTime("ShaderManager::Initialize");
 }
 
-void ShaderManager::CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex) {
-	
+void ShaderManager::CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex, float ScaleX, float ScaleY) {
+
 	void* VertexData = NULL;
 	float OffsetX = (1.0f / (float)Width) * 0.5f;
 	float OffsetY = (1.0f / (float)Height) * 0.5f;
-	
+
 	FrameVS FrameVertices[] = {
 		{ -1.0f,  1.0f, 1.0f, 0.0f + OffsetX, 0.0f + OffsetY },
-		{ -1.0f, -1.0f, 1.0f, 0.0f + OffsetX, 1.0f + OffsetY },
-		{  1.0f,  1.0f, 1.0f, 1.0f + OffsetX, 0.0f + OffsetY },
-		{  1.0f, -1.0f, 1.0f, 1.0f + OffsetX, 1.0f + OffsetY }
+		{ -1.0f, -1.0f, 1.0f, 0.0f + OffsetX, ScaleY + OffsetY },
+		{  1.0f,  1.0f, 1.0f, ScaleX + OffsetX, 0.0f + OffsetY },
+		{  1.0f, -1.0f, 1.0f, ScaleX + OffsetX, ScaleY + OffsetY }
 	};
 	TheRenderManager->device->CreateVertexBuffer(4 * sizeof(FrameVS), D3DUSAGE_WRITEONLY, FrameFVF, D3DPOOL_DEFAULT, FrameVertex, NULL);
 	(*FrameVertex)->Lock(0, 0, &VertexData, NULL);
 	memcpy(VertexData, FrameVertices, sizeof(FrameVertices));
 	(*FrameVertex)->Unlock();
 
+}
+
+bool RenderRect::ScreenShaped(unsigned w, unsigned h) {
+	const unsigned sw = TheRenderManager->width, sh = TheRenderManager->height;
+	if (!w || !h || !sw || !sh || w > sw || h > sh) return false;
+	const float aspect = (float)w / (float)h, screen = (float)sw / (float)sh;
+	return fabsf(aspect - screen) <= 0.01f * screen;
+}
+
+void RenderRect::ApplyViewport(IDirect3DDevice9* Device) {
+	ShaderManager* sm = TheShaderManager;
+	if (!On) return;
+	IDirect3DSurface9* target = nullptr;
+	D3DSURFACE_DESC desc = {};
+	const bool got = SUCCEEDED(Device->GetRenderTarget(0, &target)) && target && SUCCEEDED(target->GetDesc(&desc));
+	if (target) target->Release();
+	if (!got || !ScreenShaped(desc.Width, desc.Height)) {
+		IDirect3DVertexBuffer9* bound = nullptr;
+		UINT offset = 0, stride = 0;
+		if (SUCCEEDED(Device->GetStreamSource(0, &bound, &offset, &stride)) && bound) {
+			if (bound == sm->FrameVertexRect) Device->SetStreamSource(0, sm->FrameVertex, 0, sizeof(FrameVS));
+			bound->Release();
+		}
+		return;
+	}
+	if (!sm->FrameVertexRect || sm->FrameVertexRectScale[0] != ScaleX || sm->FrameVertexRectScale[1] != ScaleY) {
+		if (sm->FrameVertexRect) { sm->FrameVertexRect->Release(); sm->FrameVertexRect = nullptr; }
+		sm->CreateFrameVertex(TheRenderManager->width, TheRenderManager->height, &sm->FrameVertexRect, ScaleX, ScaleY);
+		sm->FrameVertexRectScale[0] = ScaleX;
+		sm->FrameVertexRectScale[1] = ScaleY;
+	}
+	const D3DVIEWPORT9 port = { 0, 0, Width(desc.Width), Height(desc.Height), 0.0f, 1.0f };
+	Device->SetViewport(&port);
+	Device->SetStreamSource(0, sm->FrameVertexRect ? sm->FrameVertexRect : sm->FrameVertex, 0, sizeof(FrameVS));
+}
+
+void RenderRect::WholeViewport(IDirect3DDevice9* Device, D3DVIEWPORT9& Viewport) {
+	if (!On || Viewport.X || Viewport.Y) return;
+	IDirect3DSurface9* target = nullptr;
+	D3DSURFACE_DESC desc = {};
+	const bool got = SUCCEEDED(Device->GetRenderTarget(0, &target)) && target && SUCCEEDED(target->GetDesc(&desc));
+	if (target) target->Release();
+	if (got && ScreenShaped(desc.Width, desc.Height) && Viewport.Width == Width(desc.Width) && Viewport.Height == Height(desc.Height)) {
+		Viewport.Width = desc.Width;
+		Viewport.Height = desc.Height;
+	}
+}
+
+namespace {
+	std::vector<IDirect3DSurface9*> RescaleList;
+	struct RescaleTemp { IDirect3DTexture9* Texture = nullptr; IDirect3DSurface9* Surface = nullptr; D3DSURFACE_DESC Desc = {}; };
+	std::unordered_map<IDirect3DSurface9*, RescaleTemp> RescaleTemps;
+}
+
+void RenderRect::RescaleAfterUpscale(IDirect3DSurface9* Surface) {
+	if (!On || !Surface || std::find(RescaleList.begin(), RescaleList.end(), Surface) != RescaleList.end()) return;
+	RescaleList.push_back(Surface);
+}
+
+void RenderRect::RescaleRegistered(IDirect3DDevice9* Device) {
+	for (IDirect3DSurface9* buffer : RescaleList) {
+		D3DSURFACE_DESC desc = {};
+		if (FAILED(buffer->GetDesc(&desc))) continue;
+		RescaleTemp& spare = RescaleTemps[buffer];
+		if (!spare.Surface || spare.Desc.Width != desc.Width || spare.Desc.Height != desc.Height || spare.Desc.Format != desc.Format) {
+			if (spare.Surface) spare.Surface->Release();
+			if (spare.Texture) spare.Texture->Release();
+			spare = RescaleTemp();
+			if (FAILED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &spare.Texture, nullptr)) ||
+				FAILED(spare.Texture->GetSurfaceLevel(0, &spare.Surface))) {
+				if (spare.Texture) spare.Texture->Release();
+				spare = RescaleTemp();
+				static bool logged = false;
+				if (!logged) Logger::Log("[ERROR] UNOFFICIAL RenderScale v2: no spare to rescale a %ux%u buffer after the upscale (read at the wrong size).", desc.Width, desc.Height);
+				logged = true;
+				continue;
+			}
+			spare.Desc = desc;
+		}
+		const RECT drawn = { 0, 0, (LONG)(std::max)(1.0f, floorf((float)desc.Width * LastScaleX + 0.5f)), (LONG)(std::max)(1.0f, floorf((float)desc.Height * LastScaleY + 0.5f)) };
+		if (SUCCEEDED(Device->StretchRect(buffer, &drawn, spare.Surface, nullptr, D3DTEXF_LINEAR)))
+			Device->StretchRect(spare.Surface, nullptr, buffer, nullptr, D3DTEXF_NONE);
+	}
+	RescaleList.clear();
 }
 
 
@@ -256,6 +353,8 @@ void ShaderManager::InitializeConstants() {
 /*
 Updates the values of the constants that can be accessed from shader code, with values representing the state of the game's elements.
 */
+void NvrMsaaWarningTick();
+
 void ShaderManager::UpdateConstants() {
 
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
@@ -267,6 +366,8 @@ void ShaderManager::UpdateConstants() {
 	MarkShadersVanilla = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVanilla");
 	MarkShadersVsFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsFrom");
 	MarkShadersVsTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsTo");
+	GameShaderEyes = TheSettingManager->GetSettingI("Shaders.PBR.Main", "GameShaderEyes") != 0;
+	NvrMsaaWarningTick();
 	if (MarkShadersVanilla == 2) {
 		static bool dumped = false;
 		if (!dumped) {
@@ -327,13 +428,24 @@ void ShaderManager::UpdateConstants() {
 	GameState.isExterior = !currentCell->IsInterior();// || Player->parentCell->flags0 & TESObjectCELL::kFlags0_BehaveLikeExterior; // < use exterior flag, broken for now
 	static unsigned int cellFrame = ~0u;
 	static bool cellChangedThisFrame = false;
+	static bool cameraCutThisFrame = false;
+	static D3DXVECTOR4 cutCamera(0.0f, 0.0f, 0.0f, 0.0f);
+	static bool cutInterior = false, cutKnown = false;
 	const bool firstCallOfFrame = TheFrameRateManager->FrameNumber != cellFrame;
 	if (firstCallOfFrame) {
 		cellFrame = TheFrameRateManager->FrameNumber;
 		cellChangedThisFrame = currentCell != PreviousCell;
 		PreviousCell = currentCell;
+		const bool interior = currentCell->IsInterior();
+		const D3DXVECTOR4 camera = TheRenderManager->CameraPosition;
+		const float dx = camera.x - cutCamera.x, dy = camera.y - cutCamera.y, dz = camera.z - cutCamera.z;
+		cameraCutThisFrame = cellChangedThisFrame && (!cutKnown || interior || cutInterior || dx * dx + dy * dy + dz * dz > 512.0f * 512.0f);
+		cutCamera = camera;
+		cutInterior = interior;
+		cutKnown = true;
 	}
 	GameState.isCellChanged = cellChangedThisFrame;
+	GameState.isCameraCut = cameraCutThisFrame;
 	if (firstCallOfFrame && GameState.isCellChanged) {
 		TheSettingManager->SettingsChanged = true; // force update constants during cell transition
 		// Preset resolve+apply as early in this function as possible -- before
@@ -360,6 +472,8 @@ void ShaderManager::UpdateConstants() {
 	GameState.isRainy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Rainy : false;
 	GameState.isSnow = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Snow : false;
 	if (!GameState.isSnow && TheSettingManager->GetSettingI("Shaders.Snow.Main", "ForceSnow")) { GameState.isSnow = true; GameState.isRainy = false; }
+	else if (!GameState.isRainy && TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "ForceRain")) GameState.isRainy = true;
+	if (GpuParticles::Wanted()) orthoRequired = true;
 	GameState.isCloudy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Cloudy : false;
 
 	TimeGlobals* GameTimeGlobals = TimeGlobals::Get();
@@ -596,6 +710,21 @@ void ShaderManager::ReloadEffects() {
 	}
 }
 
+static bool ShaderSetsReady = false;
+static std::vector<NiD3DVertexShader*> EarlyVertexShaders;
+static std::vector<NiD3DPixelShader*> EarlyPixelShaders;
+
+static void LoadEarlyShaders(ShaderManager* Manager) {
+	ShaderSetsReady = true;
+	if (EarlyVertexShaders.empty() && EarlyPixelShaders.empty()) return;
+	Logger::Log("UNOFFICIAL shader sets ready: loading %u vertex and %u pixel shaders the game made before them",
+		(unsigned)EarlyVertexShaders.size(), (unsigned)EarlyPixelShaders.size());
+	for (NiD3DVertexShader* s : EarlyVertexShaders) Manager->LoadShader(s);
+	for (NiD3DPixelShader* s : EarlyPixelShaders) Manager->LoadShader(s);
+	EarlyVertexShaders.clear();
+	EarlyPixelShaders.clear();
+}
+
 /*
 * Load generic Vertex Shaders as well as the ones for interiors and exteriors if the exist. 
 * Returns false if generic one isn't found (as other ones are optional)
@@ -603,6 +732,15 @@ void ShaderManager::ReloadEffects() {
 bool ShaderManager::LoadShader(NiD3DVertexShader* Shader) {
 	
 	NiD3DVertexShaderEx* VertexShader = (NiD3DVertexShaderEx*)Shader;
+	if (!ShaderSetsReady) {
+		VertexShader->ShaderProg[ShaderRecordType::Default] = NULL;
+		VertexShader->ShaderProg[ShaderRecordType::Exterior] = NULL;
+		VertexShader->ShaderProg[ShaderRecordType::Interior] = NULL;
+		VertexShader->Enabled = false;
+		EarlyVertexShaders.push_back(Shader);
+		Logger::Log("UNOFFICIAL shader %s made before NVR's shader sets: loaded once they exist", VertexShader->Name ? VertexShader->Name : "?");
+		return false;
+	}
 	ShaderCollection* Collection = GetShaderCollection(VertexShader->Name);
 
 	if (!Collection) {
@@ -639,6 +777,15 @@ bool ShaderManager::LoadShader(NiD3DVertexShader* Shader) {
 bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 
 	NiD3DPixelShaderEx* PixelShader = (NiD3DPixelShaderEx*)Shader;
+	if (!ShaderSetsReady) {
+		PixelShader->ShaderProg[ShaderRecordType::Default] = NULL;
+		PixelShader->ShaderProg[ShaderRecordType::Exterior] = NULL;
+		PixelShader->ShaderProg[ShaderRecordType::Interior] = NULL;
+		PixelShader->Enabled = false;
+		EarlyPixelShaders.push_back(Shader);
+		Logger::Log("UNOFFICIAL shader %s made before NVR's shader sets: loaded once they exist", PixelShader->Name ? PixelShader->Name : "?");
+		return false;
+	}
 	ShaderCollection* Collection = GetShaderCollection(PixelShader->Name);
 
 	if (!Collection) {
@@ -747,7 +894,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
 	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
-		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || logLamps);
+		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps);
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 	LampFixtures::LogModels = logLamps;
 
@@ -843,6 +990,37 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		SpotLightList[0] = nullptr;
 	}
 
+	std::vector<const void*> clusterMembers;
+	if (Settings->Forward.ShadowClusterEnabled && !TheShaderManager->GameState.isExterior && Settings->Forward.ShadowClusterDistance > 0.0f) {
+		struct Cand { const void* key; NiPointLight* light; float brightness; };
+		std::vector<Cand> cands;
+		for (auto& e : SceneLights) {
+			NiPointLight* L = e.second->sourceLight;
+			if (!L || L->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT || L->Spec.r * Settings->LightRadiusMult <= 10) continue;
+			if (e.second->bIsEnabled == 0xFF) continue;
+			cands.push_back({ e.second, L, (L->Diff.r + L->Diff.g + L->Diff.b) * L->Dimmer });
+		}
+		std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.brightness > b.brightness; });
+		const float d2max = Settings->Forward.ShadowClusterDistance * Settings->Forward.ShadowClusterDistance;
+		std::vector<bool> taken(cands.size(), false);
+		for (size_t r = 0; r < cands.size(); r++) {
+			if (taken[r]) continue;
+			const NiPoint3& rp = cands[r].light->m_worldTransform.pos;
+			for (size_t m = r + 1; m < cands.size(); m++) {
+				if (taken[m]) continue;
+				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
+				const float dx = mp.x - rp.x, dy = mp.y - rp.y, dz = mp.z - rp.z;
+				if (dx * dx + dy * dy + dz * dz < d2max) { taken[m] = true; clusterMembers.push_back(cands[m].key); }
+			}
+		}
+		static int logCountdown = 0;
+		if (Settings->Forward.LogLamps && --logCountdown <= 0) {
+			logCountdown = 300;
+			Logger::Log("ShadowCluster: %u candidate lamps, %u share a brighter neighbour's shadow (%u groups), distance %.0f",
+				(unsigned)cands.size(), (unsigned)clusterMembers.size(), (unsigned)(cands.size() - clusterMembers.size()), Settings->Forward.ShadowClusterDistance);
+		}
+	}
+
 	auto v = SceneLights.begin();
 	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
 		// set null values if we reached the end of lights in the scene and current index is lower than max amount
@@ -912,6 +1090,9 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			float radius = Light->Spec.r * Settings->LightRadiusMult;
 			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
 			LightPos.w = radius;
+
+			if (CastShadow && !clusterMembers.empty() && std::find(clusterMembers.begin(), clusterMembers.end(), (const void*)v->second) != clusterMembers.end())
+				CastShadow = false;
 
 			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
 				ShadowCasters[ShadowIndex] = v->second;
@@ -1256,7 +1437,7 @@ static void InteriorFoldSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	Fog->gridTexture = nullptr;
 	Fog->sceneOverride = FoldCheckSceneTexture;
 	Fog->targetOverride = FoldCheckOutSurface;
-	Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	{ Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Fog); }
 	const bool applied = Fog->compositeApplied;
 	Fog->sceneOverride = nullptr;
 	Fog->targetOverride = nullptr;
@@ -1303,9 +1484,35 @@ static void InteriorFoldSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* R
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
+	PixelInspector::OwnTargetScope inspect(Effect, RenderTarget, techniqueIndex);
 	Effect->Render(Device, RenderTarget, RenderTarget, techniqueIndex, clearRenderTarget, RenderTarget);
 };
 
+
+void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	static GpuTimer depthTimer("Depth combine");
+	static GpuTimer normalsTimer("Normal reconstruction");
+	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
+	Device->SetFVF(FrameFVF);
+	bool mergedNormals = false;
+	{
+		GpuProfileScope gpu(depthTimer, Device);
+		NormalsEffect* Normals = Effects.Normals;
+		if (Normals->Enabled && Normals->Effect && Normals->ShouldRender())
+			mergedNormals = Effects.CombineDepth->RenderWithNormals(Device, Normals->Textures.NormalsSurface);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
+	}
+	{
+		GpuProfileScope gpu(normalsTimer, Device);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
+		Effects.Normals->RenderSmooth(Device);
+		Device->SetRenderTarget(0, RenderTarget);
+	}
+	if (RenderRect::Active()) Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
+}
 
 void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget) {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
@@ -1319,8 +1526,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	IDirect3DSurface9* SourceSurface = TheTextureManager->SourceSurface;
 	IDirect3DSurface9* RenderedSurface = TheTextureManager->RenderedSurface;
-	static GpuTimer depthTimer("Depth combine");
-	static GpuTimer normalsTimer("Normal reconstruction");
 	static GpuTimer pointShadowTimer("Point shadow lighting");
 	static GpuTimer sunContactTimer("Sun contact shadows");
 	static GpuTimer shadowApplyTimer("Shadow apply");
@@ -1342,20 +1547,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
 	Device->SetFVF(FrameFVF);
 
+	PixelInspector::CaptureIf("Scene in (HDR, before NVR)", RenderTarget);
+
 	// render post process normals for use by shaders
-	bool mergedNormals = false;
-	{
-		GpuProfileScope gpu(depthTimer, Device);
-		NormalsEffect* Normals = Effects.Normals;
-		if (Normals->Enabled && Normals->Effect && Normals->ShouldRender())
-			mergedNormals = Effects.CombineDepth->RenderWithNormals(Device, Normals->Textures.NormalsSurface);
-		if (!mergedNormals)
-			RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
-	}
-	{
-		GpuProfileScope gpu(normalsTimer, Device);
-		if (!mergedNormals)
-			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
+	RenderDepthAndNormals(RenderTarget);
+	PixelInspector::CaptureIf("Depth (TESR_DepthBuffer, linear / farZ)", Effects.CombineDepth->Textures.CombinedDepthTexture, PixelInspector::Depth);
+	PixelInspector::CaptureIf("View normal (TESR_NormalsBuffer)", Effects.Normals->Textures.NormalsTexture, PixelInspector::Normal);
+	if (SunDepthFit::Wanted()) {
+		static GpuTimer depthFitTimer("Sun depth fit");
+		GpuProfileScope gpu(depthFitTimer, Device);
+		SunDepthFit::Measure(Device);
+		Device->SetRenderTarget(0, RenderTarget);
 	}
 #if NVR_TEST_TOOLS
 	OrthoProbe::AfterCombine(Device);
@@ -1389,6 +1591,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				!PointShadowForward::ExteriorBatched(GameState.isExterior) &&
 				Effects.PointShadows->Enabled && Effects.PointShadows->Effect && Effects.PointShadows->ShouldRender())
 				maskMode = LampMaskRect(maskRect, lampCount);
+			if (maskMode == 2 && RenderRect::Active()) {
+				maskRect.left = (LONG)floorf((float)maskRect.left * RenderRect::ScaleX);
+				maskRect.top = (LONG)floorf((float)maskRect.top * RenderRect::ScaleY);
+				maskRect.right = (std::min)((LONG)ceilf((float)maskRect.right * RenderRect::ScaleX), (LONG)RenderRect::Width(TheRenderManager->width));
+				maskRect.bottom = (std::min)((LONG)ceilf((float)maskRect.bottom * RenderRect::ScaleY), (LONG)RenderRect::Height(TheRenderManager->height));
+			}
 			static int loggedMaskMode = -1;
 			if (maskMode != loggedMaskMode) {
 				static int stateLines = 0;
@@ -1512,10 +1720,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Effects.Reflections->CaptureMaterial(Device);
 	Device->SetRenderTarget(0, RenderTarget);
 
-	if (Effects.SkinScattering && SkinShaders::NewSkinEnabled()) {
+	if (Effects.SkinScattering && Shaders.Skin && Shaders.Skin->Active()) {
 		static GpuTimer skinScatterTimer("Skin scattering");
 		GpuProfileScope gpu(skinScatterTimer, Device);
-		Effects.SkinScattering->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.SkinScattering->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.SkinScattering); }
 	}
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	if (Effects.SkyView && Effects.SkyView->ShouldRender()) {
@@ -1532,6 +1740,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	EnabledGuard aoGuard{ ambientLight ? Effects.AmbientOcclusion : nullptr, Effects.AmbientOcclusion->Enabled };
 	EnabledGuard bounceGuard{ ambientLight ? Effects.BounceLight : nullptr, Effects.BounceLight->Enabled };
 	if (ambientLight) Effects.AmbientOcclusion->Enabled = Effects.BounceLight->Enabled = false;
+	HiZ::Build(Device, DxvkCompute::PassesOn() && ambientLight && Effects.AmbientLight->HiZWanted());
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
@@ -1560,7 +1769,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	auto interiorApply = [&]() {
 		Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
-		Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+		{ Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsInteriors); }
 		Effects.ShadowsInteriors->skipBlur = false;
 	};
 	if (!GameState.isExterior) {
@@ -1601,7 +1810,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(shadowApplyTimer, Device);
 		if (GameState.isExterior) {
 			if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight)
-				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsExteriors); }
 		}
 		else if (keepDarkening && !(composite && interiorApplies)) {
 #if NVR_TEST_TOOLS
@@ -1611,14 +1820,23 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 	}
 
+	if (TheCoverMap && (TheCoverMap->Settings.wet || TheCoverMap->Settings.snow)) {
+		static GpuTimer coverMapTimer("Cover map update");
+		GpuProfileScope gpu(coverMapTimer, Device);
+		TheCoverMap->RenderUpdate(Device, RenderTarget);
+	}
 	{
 		GpuProfileScope gpu(snowAccumulationTimer, Device);
-		Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{
+			Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
+				TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0, false, SourceSurface);
+			PixelInspector::AfterFrame(Effects.SnowAccumulation);
+		}
 	}
 	{
 		GpuProfileScope gpu(aoTimer, Device);
 		AO->deferCombine = (composite || pairApply) && aoApplies;
-		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(AO); }
 		AO->deferCombine = false;
 		if (pairApply) {
 			static GpuTimer mergedApplyTimer("  Shadow + AO apply (merged)");
@@ -1630,22 +1848,22 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Fog->compositeSkyTexture = nullptr;
 			}
 			if (!merged) {
-				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsExteriors); }
 				if (AO->deferredReady) {
 					AO->combineOnly = true;
-					AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+					{ AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(AO); }
 					AO->combineOnly = false;
 				}
-				else AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				else { AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(AO); }
 			}
 			AO->deferredReady = false;
 		}
 		if (composite && aoApplies && !AO->deferredReady) {
 			composite = false;
 			if (shadowApplies)
-				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsExteriors); }
 			if (interiorApplies) interiorApply();
-			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(AO); }
 		}
 	}
 	const bool specularRenders = wouldRender(Effects.Specular) && Effects.Specular->Textures.LightSurface;
@@ -1663,12 +1881,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;
 		Effects.AmbientLight->shadowApplied = false;
-		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.AmbientLight); }
 		Effects.AmbientLight->foldShadow = false;
 		if (Effects.AmbientLight->shadowApplied) FlickerWatch::Flags |= FlickerWatch::kALApplied;
 		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied) {
 			FlickerWatch::Flags |= FlickerWatch::kShadowPass;
-			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsExteriors); }
 		}
 	}
 	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior) {
@@ -1683,13 +1901,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		static GpuTimer bounceLightTimer("Bounce light");
 		GpuProfileScope gpu(bounceLightTimer, Device);
 		Effects.BounceLight->deferCombine = bounceIntoSpecular;
-		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.BounceLight); }
 		Effects.BounceLight->deferCombine = false;
 	}
 	{
 		static GpuTimer bloodFlowTimer("Blood flow");
 		GpuProfileScope gpu(bloodFlowTimer, Device);
-		Effects.BloodFlow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.BloodFlow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.BloodFlow); }
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -1698,7 +1916,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Effects.WetWorld->RenderCoverTest(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.WetWorld->MainTechnique(), false, SourceSurface);
+		{
+			Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
+				TheCoverMap ? TheCoverMap->WetTechnique(Effects.WetWorld, Effects.WetWorld->MainTechnique()) : Effects.WetWorld->MainTechnique(), false, SourceSurface);
+			PixelInspector::AfterFrame(Effects.WetWorld);
+		}
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the
 		// strength together, so this one test gates the whole thing.
@@ -1706,7 +1928,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			RenderEffectToRT(Effects.FlashlightBeam->Textures.VolumetricSurface, Effects.FlashlightBeam, true);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface);
+		{ Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface); PixelInspector::AfterFrame(Effects.Flashlight); }
 		if (specularRenders) {
 			RenderEffectToRT(Effects.Specular->Textures.NormalsSurface, Effects.Specular, false, 1);
 			Effects.Specular->BindExtras(Device, true);
@@ -1724,13 +1946,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			}
 			if (!specularDone) {
 				Effects.BounceLight->combineOnly = true;
-				Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.BounceLight); }
 				Effects.BounceLight->combineOnly = false;
 			}
 			Effects.BounceLight->deferredReady = false;
 		}
-		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (!specularDone) { Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Specular); }
+		{ Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Underwater); }
 	}
 #if NVR_TEST_TOOLS
 	EffectSelfTest::Capture(EffectSelfTest::AfterSpill, TheTextureManager->RenderedSurface);
@@ -1739,10 +1961,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		static GpuTimer reflectionsTimer("Reflections (SSR)");
 		GpuProfileScope gpu(reflectionsTimer, Device);
 		if (wouldRender(Effects.Reflections)) {
+			if (DxvkCompute::PassesOn() && Effects.Reflections->HiZWanted()) HiZ::Build(Device, true);
 			Effects.Reflections->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 			Effects.Reflections->BindMaterial();
-			Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Reflections); }
 			Effects.Reflections->ClearPassTextures();
 		}
 		else if (Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) {
@@ -1767,7 +1990,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->compositeAOTexture = AO->ResultTexture();
 		Fog->compositeSkyTexture = Fog->compositeAO ? AO->SkyTexture() : nullptr;
 		Fog->compositeApplied = false;
-		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Fog); }
 		Fog->compositeSkyTexture = nullptr;
 		const bool applied = Fog->compositeApplied;
 #if NVR_TEST_TOOLS
@@ -1778,14 +2001,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
 		if (composite && !applied) {
 			if (shadowApplies)
-				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsExteriors); }
 			if (interiorApplies) interiorApply();
 			if (AO->deferredReady) {
 				AO->combineOnly = true;
-				AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(AO); }
 				AO->combineOnly = false;
 			}
-			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Fog); }
 		}
 #if NVR_TEST_TOOLS
 		if (foldCheckFrame && (composite ? applied : !aoApplies)) InteriorFoldSelfCheck(Device, RenderTarget, SourceSurface, checkAO, checkAOTexture, checkSky);
@@ -1796,12 +2019,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(volumetricLightTimer, Device);
 		if (lightGrid) {
 			if (!Fog->gridApplied)
-				Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 8, false, SourceSurface);
+				{ Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 8, false, SourceSurface); PixelInspector::AfterFrame(Effects.VolumetricLight); }
 		}
 		else if (wouldRender(Effects.VolumetricLight)) {
 			Effects.VolumetricLight->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
-			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.VolumetricLight->CompositeTechnique(), false, SourceSurface);
+			{ Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.VolumetricLight->CompositeTechnique(), false, SourceSurface); PixelInspector::AfterFrame(Effects.VolumetricLight); }
 		}
 		Fog->gridTexture = nullptr;
 	}
@@ -1810,13 +2033,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (wouldRender(Effects.Sandstorm) && Effects.Sandstorm->UseFastPath()) {
 			Effects.Sandstorm->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
-			Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 5, false, SourceSurface);
+			{ Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 5, false, SourceSurface); PixelInspector::AfterFrame(Effects.Sandstorm); }
 		}
-		else Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		else { Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Sandstorm); }
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);
-		Effects.GodRays->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+		{ Effects.GodRays->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface); PixelInspector::AfterFrame(Effects.GodRays); }
 	}
 
 	{
@@ -1824,13 +2047,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// calculate average luma for use by shaders
 		if (avglumaRequired) {
 			GpuProfileScope gpuLuma(avgLumaTimer, Device);
-			RenderEffectToRT(Effects.AvgLuma->Textures.AvgLumaSurface, Effects.AvgLuma, NULL);
-			Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
+			const bool computed = Effects.AvgLuma->RenderCompute(Device);
+			if (!computed) {
+				RenderEffectToRT(Effects.AvgLuma->Textures.AvgLumaSurface, Effects.AvgLuma, NULL);
+				Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
+			}
+			Effects.AvgLuma->CheckCompute(Device, !computed && TheSettingManager->SettingsMain.Main.AvgLumaComputeCheck > 0);
 		}
 		{
 			GpuProfileScope gpuExposure(exposureTimer, Device);
 			if (!(TheSettingManager->SettingsMain.Main.SkipIdentityExposure && Effects.Exposure->Constants.Data.y == 0.0f))
-				Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				{ Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Exposure); }
 		}
 		{
 			GpuProfileScope gpuBloom(bloomTimer, Device);
@@ -1840,9 +2067,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 
 	{
 		GpuProfileScope gpu(preColorTimer, Device);
-		Effects.Lens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.Lens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Lens); }
 		if (Effects.LUT->Settings.PreTonemapping)
-			Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.LUT); }
 	}
 
 	timer.LogTime("ShaderManager::RenderEffectsPreTonemapping");
@@ -1990,6 +2217,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
+	PixelInspector::CaptureIf("Tonemapped (before the post effects)", TheTextureManager->RenderedSurface);
 	Effects.Debug->CaptureClipStart(Device, RenderTarget);
 
 	auto renders = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
@@ -2002,7 +2230,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		EffectRecord* const order[] = {
 			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
-			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug };
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug,
+			TheCoverMap };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender() &&
@@ -2013,84 +2242,91 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 
 	{
 		GpuProfileScope gpu(taaTimer, Device);
-		Effects.TAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.TAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.TAA); }
 	}
 
 	{
 		GpuProfileScope gpu(weatherTimer, Device);
-		Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Rain); }
+		{ Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Snow); }
+		{
+			static GpuTimer gpuParticlesTimer("GPU particles (sim + draw)");
+			GpuProfileScope gpuParticles(gpuParticlesTimer, Device);
+			GpuParticles::Render(Device, RenderTarget);
+		}
+		{ Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.BloomLegacy); }
 	}
 	{
 		GpuProfileScope gpu(heatHazeTimer, Device);
-		Effects.HeatHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.HeatHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.HeatHaze); }
 	}
 
-	Effects.VolumetricSmoke->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr);
-	Effects.BarrelHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr);
+	{ Effects.VolumetricSmoke->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr); PixelInspector::AfterFrame(Effects.VolumetricSmoke); }
+	{ Effects.BarrelHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr); PixelInspector::AfterFrame(Effects.BarrelHaze); }
 
 	// screenspace coloring/blurring effects get rendered last
 	{
 		GpuProfileScope gpu(colorTimer, Device);
-		Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, colorLUT ? 1 : 0, false, SourceSurface);
+		{ Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, colorLUT ? 1 : 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Coloring); }
 		if (!Effects.LUT->Settings.PreTonemapping && !colorLUT)
-			Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			{ Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.LUT); }
 	}
 	{
 		GpuProfileScope gpu(dofTimer, Device);
 		const UINT technique = !Effects.DepthOfField->Constants.Enabled && Effects.DepthOfField->Constants.Blur.x ? 1 : 0;
-		Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, technique, false, technique == 1 ? nullptr : SourceSurface);
+		{ Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, technique, false, technique == 1 ? nullptr : SourceSurface); PixelInspector::AfterFrame(Effects.DepthOfField); }
 	}
 	{
 		GpuProfileScope gpu(motionBlurTimer, Device);
-		Effects.MotionBlur->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.MotionBlur->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.MotionBlur); }
 	}
 
 	// lens effects
 	{
 		GpuProfileScope gpu(lensTimer, Device);
-		Effects.BloodLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.WaterLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.LowHF->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.BloodLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.BloodLens); }
+		{ Effects.WaterLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.WaterLens); }
+		{ Effects.LowHF->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.LowHF); }
 	}
 	{
 		GpuProfileScope gpu(ditherTimer, Device);
-		Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.DitherBuster->TechniqueIndex(), false, SourceSurface);
+		{ Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.DitherBuster->TechniqueIndex(), false, SourceSurface); PixelInspector::AfterFrame(Effects.DitherBuster); }
 	}
 	{
 		GpuProfileScope gpu(smaaTimer, Device);
-		Effects.SMAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.SMAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.SMAA); }
 	}
 	{
 		GpuProfileScope gpu(fxaaTimer, Device);
-		Effects.FXAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.FXAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.FXAA); }
 	}
 	{
 		GpuProfileScope gpu(sharpenTimer, Device);
-		Effects.Sharpening->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.Sharpening->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Sharpening); }
 	}
 	{
 		GpuProfileScope gpu(cinemaTimer, Device);
-		Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, cinemaDither ? 1 : 0, false, SourceSurface);
+		{ Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, cinemaDither ? 1 : 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Cinema); }
 	}
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
-		Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.ImageAdjust); }
 	}
 	{
 		GpuProfileScope gpu(bodycamTimer, Device);
-		Effects.Bodycam->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.Bodycam->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Bodycam); }
 	}
 	{
 		GpuProfileScope gpu(skyDitherTimer, Device);
-		if (!cinemaDither) Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (!cinemaDither) { Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.SkyDither); }
 	}
+	if (SunDepthFit::DebugView > 0) SunDepthFit::RenderView(Device, RenderTarget);
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
-		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		{ Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Debug); }
 		Effects.Debug->RenderClipView(Device, RenderTarget);
 	}
+	if (TheCoverMap) TheCoverMap->RenderDebug(Device, RenderTarget, SourceSurface);
 	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior)
 		FlickerWatch::OnFrame(Device, RenderTarget, Effects.SunFar->Settings.FlickerThreshold);
 	else FlickerWatch::Flags = 0;
@@ -2241,12 +2477,14 @@ bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
 
 void FrameChain::Commit() {
 	if (!Active) return;
+	Writes++; LastWrite = 1;
 	Current ^= 1;
 	Publish();
 }
 
 void FrameChain::Sync() {
 	if (!Active) return;
+	Writes++; LastWrite = 3;
 	ReclaimFinal();
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	if (Surf[Current] == GameTarget) {

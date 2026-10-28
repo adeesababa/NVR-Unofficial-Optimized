@@ -1,5 +1,6 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
 #include <unordered_map>
+#include "GpuDebug.h"
 
 // GetCurrentDirectoryA is reliable at startup but GetSaveFileNameA (and other
 // common-dialog calls) can silently change it.  Capture the game root once and
@@ -349,7 +350,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-static const int UnofficialSettingsVersion = 69;
+static const int UnofficialSettingsVersion = 70;
 extern bool ParallaxLiteDistanceMigrationPending;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -487,6 +488,7 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 			changed += changed.empty() ? "Shaders.PBR.Main.LampSums false -> true" : ", Shaders.PBR.Main.LampSums false -> true";
 		}
 	}
+	if (version < 70) replace("Shaders.ShadowsExteriors.ShadowMaps", "Mode", 2, 3, true);
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
 			"Change them in the menu and press Save if you want the old values back.", changed.c_str());
@@ -678,6 +680,31 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
+	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
+	SettingsMain.Main.NvrDxvkPasses = boolSetting(performance, "NvrDxvkPasses", false);
+	SettingsMain.Main.NvrDxvkVariants = boolSetting(performance, "NvrDxvkVariants", true);
+	SettingsMain.Main.NvrDxvkStencil = boolSetting(performance, "NvrDxvkStencil", true);
+	{
+		Configuration::ConfigNode node;
+		const std::string keep = Config.FillNode(&node, performance, "NvrDxvkKeepD3D9") ? node.LongValue : std::string();
+		strncpy_s(SettingsMain.Main.NvrDxvkKeepD3D9, keep.c_str(), _TRUNCATE);
+		const std::string test = Config.FillNode(&node, performance, "NvrDxvkTestSuffix") ? node.LongValue : std::string();
+		strncpy_s(SettingsMain.Main.NvrDxvkTestSuffix, test.c_str(), _TRUNCATE);
+	}
+	SettingsMain.Main.AmbientLightSmoothCompute = boolSetting(performance, "AmbientLightSmoothCompute", false);
+	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);
+	SettingsMain.Main.AmbientLightBlurCompute = boolSetting(performance, "AmbientLightBlurCompute", false);
+	SettingsMain.Main.NvrSm6Shaders = boolSetting(performance, "NvrSm6Shaders", false);
+	{
+		Configuration::ConfigNode node;
+		const int every = Config.FillNode(&node, performance, "AvgLumaComputeCheck") ? node.IntValue : 0;
+		SettingsMain.Main.AvgLumaComputeCheck = max(0, min(every, 100000));
+	}
+	{
+		Configuration::ConfigNode node;
+		const int reach = Config.FillNode(&node, "Main.Main.Quality", "SmoothNormals") ? node.IntValue : 0;
+		SettingsMain.Main.SmoothNormals = max(0, min(reach, 256));
+	}
 	SettingsMain.Main.LampMaskScissor = boolSetting(performance, "LampMaskScissor", true);
 	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", false);
 	{
@@ -933,6 +960,11 @@ void SettingManager::LoadSettings() {
 
 	SettingsMain.Develop.DebugMode = GetSettingI("Main.Develop.Main", "DebugMode");
 	SettingsMain.Develop.TraceShaders = GetSettingI("Main.Develop.Main", "TraceShaders");
+	GpuDebug::Labels = GetSettingI("Main.Develop.Main", "GpuDebugLabels") != 0;
+	GpuDebug::CaptureKey = GetSettingI("Main.Develop.Main", "RenderDocCaptureKey");
+	GpuDebug::CaptureFrames = GetSettingI("Main.Develop.Main", "RenderDocCaptureFrames");
+	if (GpuDebug::CaptureFrames < 1) GpuDebug::CaptureFrames = 1;
+	if (GpuDebug::CaptureFrames > 10) GpuDebug::CaptureFrames = 10;
 
 	SettingsMain.Transitions.TransitionCurvePower = GetSettingF("Main.Transitions.Main", "TransitionCurvePower");
 

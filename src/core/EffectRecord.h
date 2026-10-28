@@ -1,5 +1,12 @@
 #pragma once
 #include <vector>
+#include <map>
+#include <string>
+#include <functional>
+#include "NvrDxvkExt.h"
+
+class Sm6Pass;
+struct Sm6PassSet;
 
 class EffectRecord : public ShaderProgram {
 public:
@@ -16,9 +23,32 @@ public:
 	virtual void			BeforeDraw(IDirect3DDevice9* Device) {};
 	virtual bool			SwitchEffect();
 	virtual void			Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer);
+	virtual bool			ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) { return false; }
+	bool					ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+								ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last = true);
+	bool					ExtFailed = false;
+	UInt32					ExtFrames = 0;
+	struct ExtPass { ID3D9NvrExtPipeline* Pipeline = nullptr; bool Tried = false; };
+	bool					ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+								ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount,
+								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0, bool PointWrapSampler = false, bool Last = true);
+	ID3D9NvrExtPipeline*	ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
+								const std::function<ID3D9NvrExtPipeline*(const char*)>& Make);
+	enum class ExtUv { ScreenQuad, TexelCentre };
+	bool					ExtShiftLogged = false;
+	bool					ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
+								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr, ExtUv Uv = ExtUv::TexelCentre,
+								const NVR_EXT_DEPTH_STENCIL* DepthStencil = nullptr);
+	struct ExtUniformBuffer { ID3D9NvrExtBuffer* Buffer = nullptr; UINT Size = 0; bool Tried = false; };
+	ID3D9NvrExtBuffer*		ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size);
+	IDirect3DBaseTexture9*	ExtFileTexture(const char* SamplerName);
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
 	void					DisposeEffect();
 	bool					LoadEffect();
+	static int				BuildMacros(D3DXMACRO* EffectMacros);
+	struct Sm6PassSet*		Sm6Set = nullptr;
+	class Sm6Pass*			Sm6For(UINT techniqueIndex, UINT pass);
+	bool					Sm6Covers(UINT techniqueIndex);
 
 	bool 					IsLoaded();
 	bool					Enabled;

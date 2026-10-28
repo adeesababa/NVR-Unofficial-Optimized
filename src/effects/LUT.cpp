@@ -1,4 +1,5 @@
 #include <filesystem>
+#include "../core/DxvkCompute.h"
 #include "LUT.h"
 #include "LUTIdentity.h"
 #include "LUTFile.h"
@@ -154,4 +155,14 @@ void LUTEffect::UpdateConstants()
 		Constants.Blend.y = 1.0f;
 	}
 	Constants.Blend.z = Settings.HDRCompat ? 1.0f : 0.0f;
+}
+
+bool LUTEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 data, blend; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.data = Constants.Data;
+	push.blend = Constants.Blend;
+	IDirect3DBaseTexture9* current = TheTextureManager->RenderedTexture;
+	IDirect3DBaseTexture9* textures[] = { current, DayTexture ? DayTexture : current, NightTexture ? NightTexture : current, InteriorTexture ? InteriorTexture : current };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "LUT", textures, _countof(textures), &push, sizeof(push), 32);
 }

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 
+
 static const char* TerrainShadowsSection = "Shaders.ShadowsExteriors.TerrainShadows";
 
 void TerrainShadowMap::UpdateSettings() {

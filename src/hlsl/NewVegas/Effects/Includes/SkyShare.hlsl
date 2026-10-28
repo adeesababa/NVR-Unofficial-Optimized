@@ -1,3 +1,4 @@
+
 float SkyShare(float3 worldNormal, float sunMask)
 {
 	float ambientE = TESR_AmbientOcclusionSky2.z;

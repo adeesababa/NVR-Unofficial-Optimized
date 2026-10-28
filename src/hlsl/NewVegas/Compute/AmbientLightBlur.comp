@@ -1,0 +1,114 @@
+
+#version 450
+#extension GL_EXT_samplerless_texture_functions : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "Common.glsl"
+
+#define TILE 16
+#define MAX_APRON 13
+#define SPAN (TILE + 2 * MAX_APRON)
+
+layout(local_size_x = TILE, local_size_y = TILE, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform texture2D t_buffer;
+layout(set = 1, binding = 1) uniform texture2D t_depth;
+layout(set = 1, binding = 2, rgba16f) uniform writeonly image2D i_dst;
+
+layout(push_constant) uniform Push {
+    vec4  layoutData;
+    vec2  uvOffset;
+    float blurRadius;
+    float debugView;
+    float farZ;
+    uint  apron;
+    uint  wholeStep;
+    uint  samplerIndex;
+    uint  width;
+    uint  height;
+    uint  pad0;
+    uint  pad1;
+} pc;
+
+shared uvec2 s_buffer[SPAN * SPAN];
+shared float s_depth[SPAN * SPAN];
+shared uvec2 s_mid[SPAN * TILE];
+
+const float weights[4] = float[4](0.30, 0.23, 0.11, 0.05);
+
+uvec2 packHalf4(vec4 v) { return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw)); }
+vec4 unpackHalf4(uvec2 p) { return vec4(unpackHalf2x16(p.x), unpackHalf2x16(p.y)); }
+
+float readDepthLod(vec2 uv) {
+    return textureLod(sampler2D(t_depth, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).x * pc.farZ;
+}
+
+vec2 pixelUV(ivec2 p) { return vec2(p) * pc.layoutData.zw + pc.uvOffset; }
+
+ivec2 regionOrigin() { return ivec2(gl_WorkGroupID.xy) * TILE - int(pc.apron); }
+int slot(ivec2 q) { ivec2 r = q - regionOrigin(); return r.y * SPAN + r.x; }
+
+vec4 blurPass(ivec2 p, bool alongY) {
+    ivec2 size = ivec2(pc.width, pc.height);
+    ivec2 origin = regionOrigin();
+    vec2 uv = pixelUV(p);
+    float blurStep = max(pc.blurRadius, 0.5);
+    vec2 axisStep = (alongY ? vec2(0.0, 1.0) : vec2(1.0, 0.0)) * pc.layoutData.zw;
+    int axis = alongY ? 1 : 0;
+
+    float depth = s_depth[slot(p)];
+    vec4 center = alongY ? unpackHalf4(s_mid[(p.y - origin.y) * TILE + (p.x - origin.x - int(pc.apron))]) : unpackHalf4(s_buffer[slot(p)]);
+    if (pc.debugView > 2.5 && pc.debugView < 6.5) return center;
+
+    vec2 toleranceInv = vec2(1.0 / max(depth * 0.03, 2.0), 1.0 / max(depth * 0.25, 16.0));
+    vec3 bounce = center.rgb * weights[0];
+    float visibility = center.a * weights[0];
+    vec2 total = vec2(weights[0]);
+    for (int i = 1; i < 4; i++) {
+        for (int side = -1; side <= 1; side += 2) {
+            vec2 tapUV = uv + axisStep * (blurStep * float(i * side));
+            int unclamped = int(floor(tapUV[axis] * float(size[axis])));
+            ivec2 tap = p;
+            tap[axis] = clamp(unclamped, 0, size[axis] - 1);
+            bool inside = unclamped == tap[axis];
+            float tapDepth = pc.wholeStep != 0u && inside ? s_depth[slot(tap)] : readDepthLod(tapUV);
+            float dz = abs(tapDepth - depth);
+            vec2 w = vec2(1.0) - dz * toleranceInv;
+            w = mix(vec2(0.0), w * weights[i], greaterThanEqual(w, vec2(0.0)));
+            vec4 value = alongY ? unpackHalf4(s_mid[(tap.y - origin.y) * TILE + (tap.x - origin.x - int(pc.apron))]) : unpackHalf4(s_buffer[slot(tap)]);
+            visibility += value.a * w.x;
+            bounce += value.rgb * w.y;
+            total += w;
+        }
+    }
+    return vec4(bounce * (1.0 / total.y), visibility * (1.0 / total.x));
+}
+
+void main() {
+    ivec2 size = ivec2(pc.width, pc.height);
+    ivec2 origin = regionOrigin();
+    int apron = int(pc.apron);
+    int span = TILE + 2 * apron;
+    uint thread = gl_LocalInvocationIndex;
+
+    for (uint k = thread; k < uint(span * span); k += TILE * TILE) {
+        ivec2 q = origin + ivec2(int(k) % span, int(k) / span);
+        ivec2 c = clamp(q, ivec2(0), size - 1);
+        s_buffer[slot(q)] = packHalf4(texelFetch(t_buffer, c, 0));
+        s_depth[slot(q)] = readDepthLod(pixelUV(c));
+    }
+    barrier();
+
+    for (uint k = thread; k < uint(span * TILE); k += TILE * TILE) {
+        ivec2 p = ivec2(gl_WorkGroupID.xy) * TILE + ivec2(int(k) % TILE, int(k) / TILE - apron);
+        if (p.y < 0 || p.y >= size.y) continue;
+        ivec2 c = ivec2(min(p.x, size.x - 1), p.y);
+        vec4 x = blurPass(c, false);
+        s_mid[(p.y - origin.y) * TILE + (p.x - origin.x - apron)] = packHalf4(x);
+    }
+    barrier();
+
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) return;
+    imageStore(i_dst, p, blurPass(p, true));
+}

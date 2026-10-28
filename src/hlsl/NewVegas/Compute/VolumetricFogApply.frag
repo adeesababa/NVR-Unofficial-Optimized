@@ -1,0 +1,42 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+#define FOG_APPLY
+#include "VolumetricFog.glsl"
+
+layout(location = 0) out vec4 o_color;
+
+void main() {
+    bool legacy = FOG_LEGACY_ON, classic = FOG_CLASSIC_ON;
+    if (FOG_MODE_IS(4u)) {
+        vec4 color = linearize(LINEAR_LOD(t_scene, uv));
+        vec3 fogMul, fogAdd;
+        float nightAmount;
+        FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, false, classic);
+        vec4 finalColor = max(vec4(color.rgb * fogMul + fogAdd, mix(color.a, 1.0, nightAmount)), vec4(0.0));
+        o_color = delinearize(finalColor);
+        return;
+    }
+    vec3 color;
+    if (FOG_MODE_IS(2u)) {
+        color = InteriorStoreRound(ApplyInteriorShadowDepth(uv, LINEAR_LOD(t_scene, uv), LINEAR_LOD(t_pointShadow, uv).r, readDepthLod(uv)).rgb);
+        color = pows(color, 2.2);
+        if (pc.compositeFlags.y > 0.5) color = CompositeAO(color, uv);
+        color = pows(color, 1.0 / 2.2);
+        color = FogApply(color, uv, legacy, true, classic);
+    }
+    else if (FOG_MODE_IS(0u)) {
+        color = FogApply(LINEAR_LOD(t_scene, uv).rgb, uv, legacy, false, classic);
+    }
+    else {
+        color = LINEAR_LOD(t_scene, uv).rgb;
+        color = pows(color, 2.2);
+        if (pc.compositeFlags.x > 0.5) color = CompositeSunShadow(color, uv);
+        if (pc.compositeFlags.y > 0.5) color = CompositeAO(color, uv);
+        color = pows(color, 1.0 / 2.2);
+        if (FOG_MODE_IS(3u)) { o_color = vec4(color, 1.0); return; }
+        color = FogApply(color, uv, legacy, false, classic);
+    }
+    if (pc.gridFlags.y > 0.5) color = FogGridLight(color, uv);
+    o_color = vec4(color, 1.0);
+}

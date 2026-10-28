@@ -1,4 +1,9 @@
 #include <regex>
+#include "DxvkCompute.h"
+#include "Sm6Pass.h"
+#include "RenderRect.h"
+#include "GpuDebug.h"
+#include "PixelInspector.h"
 #include "ReflMaterial.h"
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -81,22 +86,7 @@ bool EffectRecord::LoadEffect() {
 	// needs them -- D3DXCreateEffectCompiler below is handed the already-preprocessed source.
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
 	D3DXMACRO EffectMacros[8];
-	int macroCount = 0;
-	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
-		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
-	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
-		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
-	if (TheRenderManager->IsReversedDepth())
-		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
-	if (ReflMaterial::CompiledIn())
-		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
-	if (ReflMaterial::AddCompiledIn())
-		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
-	if (ReflMaterial::OccCompiledIn())
-		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
-	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
-		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
-	EffectMacros[macroCount] = { NULL, NULL };
+	BuildMacros(EffectMacros);
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {
@@ -209,6 +199,26 @@ bool EffectRecord::LoadEffect() {
 	timer.LogTime("EffectRecord::LoadEffect");
 
 	return success;
+}
+
+int EffectRecord::BuildMacros(D3DXMACRO* EffectMacros) {
+	int macroCount = 0;
+	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
+		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
+	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
+		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
+	if (TheRenderManager->IsReversedDepth())
+		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
+	if (ReflMaterial::CompiledIn())
+		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
+	if (ReflMaterial::AddCompiledIn())
+		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
+	if (ReflMaterial::OccCompiledIn())
+		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
+	EffectMacros[macroCount] = { NULL, NULL };
+	return macroCount;
 }
 
 
@@ -450,7 +460,18 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		return; // skip rendering of disabled effects
 	}
 
+	PixelInspector::EffectScope inspect(this, RenderTarget, RenderedSurface, techniqueIndex);
+
 	auto timer = TimeLogger();
+	GpuDebug::LabelScope label(Name);
+
+	if (!ExtFailed && DxvkCompute::PassesOn() && !DxvkCompute::KeptOnD3D9(Name) && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
+			return ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer); }()) {
+		Device->SetRenderTarget(0, RenderTarget);
+		std::string name = "EffectRecord::ExtRender " + std::string(Name);
+		renderTime = timer.LogTime(name.c_str());
+		return;
+	}
 
 	FrameChain& chain = TheShaderManager->Chain;
 	if (chain.Owns(RenderTarget, RenderedSurface)) {
@@ -472,7 +493,9 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				Effect->BeginPass(p);
 				RebindSlotTextures();
 				BindPassTextures();
-				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+				RenderRect::ApplyViewport(Device);
+				if (!sm6 || !sm6->Plain() || Sm6Pass::Scissored(Device) || !sm6->Draw(Device, &destination, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
 				else chain.Commit();
@@ -499,7 +522,9 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 			Effect->BeginPass(p);
 			BindPassTextures();
 			BeforeDraw(Device);
-			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+			RenderRect::ApplyViewport(Device);
+			if (!sm6 || !sm6->Plain() || Sm6Pass::Scissored(Device) || !sm6->Draw(Device, &RenderTarget, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture
 		}
@@ -528,3 +553,179 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 	}
 	return cache.Handle;
 }
+
+bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last) {
+	if (!Pipeline || !DxvkCompute::Available()) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;
+	ID3D9NvrExt* ext = DxvkCompute::Extension();
+
+	NVR_EXT_DRAW_DESC draw = {};
+	draw.pPipeline = Pipeline;
+	draw.TargetCount = 1;
+	draw.BindingCount = BindingCount;
+	draw.pBindings = Bindings;
+	draw.pPushData = Push;
+	draw.PushDataSize = PushSize;
+	DxvkCompute::PreLoad(Bindings, BindingCount);
+
+	FrameChain& chain = TheShaderManager->Chain;
+	HRESULT result;
+	if (chain.Owns(RenderTarget, RenderedSurface)) {
+		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
+			Device->StretchRect(TheTextureManager->RenderedSurface, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
+		const bool direct = last && chain.IsDirectFinal(this);
+		draw.Targets[0].pResource = direct ? chain.FinalSurface() : chain.Output();
+		result = ext->Draw(&draw);
+		if (SUCCEEDED(result)) { if (direct) chain.CommitFinal(); else chain.Commit(); }
+	}
+	else {
+		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
+			Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
+		draw.Targets[0].pResource = RenderTarget;
+		result = ext->Draw(&draw);
+		if (SUCCEEDED(result) && RenderedSurface && RenderedSurface != RenderTarget)
+			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR);
+	}
+	if (FAILED(result)) {
+		ExtFailed = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);
+		return false;
+	}
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as a Vulkan pass.", Name);
+	return true;
+}
+
+bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
+	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv, const NVR_EXT_DEPTH_STENCIL* DepthStencil) {
+	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
+	if (DepthStencil && DxvkCompute::Info().ExtVersionMinor < 6) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;
+	NVR_EXT_DRAW_DESC draw = {};
+	draw.pPipeline = Pipeline;
+	draw.TargetCount = TargetCount;
+	for (UINT i = 0; i < TargetCount; i++) {
+		if (!Targets[i]) return false;
+		draw.Targets[i].pResource = Targets[i];
+	}
+	if (Viewport) {
+		draw.ViewportX = Viewport->left;
+		draw.ViewportY = Viewport->top;
+		draw.ViewportWidth = Viewport->right - Viewport->left;
+		draw.ViewportHeight = Viewport->bottom - Viewport->top;
+	}
+	draw.BindingCount = BindingCount;
+	draw.pBindings = Bindings;
+	draw.pPushData = Push;
+	draw.PushDataSize = PushSize;
+	float shiftX = 0.0f, shiftY = 0.0f;
+	if (Uv == ExtUv::ScreenQuad) {
+		UINT w = draw.ViewportWidth, h = draw.ViewportHeight;
+		if (!w || !h) {
+			D3DSURFACE_DESC desc;
+			if (FAILED(Targets[0]->GetDesc(&desc))) return false;
+			w = desc.Width; h = desc.Height;
+		}
+		shiftX = 0.5f - 0.5f * (float)w / (float)TheRenderManager->width;
+		shiftY = 0.5f - 0.5f * (float)h / (float)TheRenderManager->height;
+		if (fabsf(shiftX) < 1e-6f) shiftX = 0.0f;
+		if (fabsf(shiftY) < 1e-6f) shiftY = 0.0f;
+		if ((shiftX != 0.0f || shiftY != 0.0f) && DxvkCompute::Info().ExtVersionMinor < 4) {
+			static bool said = false;
+			if (!said) Logger::Log("UNOFFICIAL NVR DXVK: this d3d9.dll has extension %u.%u: passes into targets smaller than the screen read at the texel centre, not where their D3D9 pass reads (a quarter texel at half resolution; needs 1.4)", DxvkCompute::Info().ExtVersionMajor, DxvkCompute::Info().ExtVersionMinor);
+			said = true; shiftX = shiftY = 0.0f;
+		}
+	}
+	DxvkCompute::PreLoad(Bindings, BindingCount);
+	HRESULT result = DepthStencil ? DxvkCompute::Extension()->DrawDepthStencil(&draw, DepthStencil, shiftX, shiftY)
+		: (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
+	if (SUCCEEDED(result) && (shiftX != 0.0f || shiftY != 0.0f) && !ExtShiftLogged) {
+		ExtShiftLogged = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: %s's passes into smaller targets read at the D3D9 frame quad's uv (first: shift %.3f, %.3f px)", Name, shiftX, shiftY);
+	}
+	if (FAILED(result)) {
+		ExtFailed = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw into its own target (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);
+		return false;
+	}
+	return true;
+}
+
+ID3D9NvrExtPipeline* EffectRecord::ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
+	const std::function<ID3D9NvrExtPipeline*(const char*)>& Make) {
+	const char* test = TheSettingManager->SettingsMain.Main.NvrDxvkTestSuffix;
+	if (Suffix && *Suffix && *test) {
+		const std::string name = std::string(SpvName) + "-" + Suffix + test;
+		ExtPass& pass = Variants[name];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			if (DxvkCompute::HasSpirv(name.c_str())) pass.Pipeline = Make(name.c_str());
+			if (pass.Pipeline) Logger::Log("UNOFFICIAL NVR DXVK: test variant %s in use (NvrDxvkTestSuffix)", name.c_str());
+		}
+		if (pass.Pipeline) return pass.Pipeline;
+	}
+	if (Suffix && *Suffix && DxvkCompute::VariantsOn()) {
+		const std::string name = std::string(SpvName) + "-" + Suffix;
+		ExtPass& pass = Variants[name];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			if (DxvkCompute::HasSpirv(name.c_str())) pass.Pipeline = Make(name.c_str());
+		}
+		if (pass.Pipeline) return pass.Pipeline;
+	}
+	if (!Generic.Tried) {
+		Generic.Tried = true;
+		Generic.Pipeline = Make(SpvName);
+	}
+	return Generic.Pipeline;
+}
+
+ID3D9NvrExtBuffer* EffectRecord::ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size) {
+	if (!DxvkCompute::Available() || !Data || !Size) return nullptr;
+	if (Uniforms.Buffer && Uniforms.Size != Size) DxvkCompute::Drop(Uniforms.Buffer);
+	if (!Uniforms.Buffer) {
+		if (Uniforms.Tried) return nullptr;
+		Uniforms.Tried = true;
+		Uniforms.Buffer = DxvkCompute::CreateBuffer((Size + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, Name);
+		Uniforms.Size = Size;
+		if (!Uniforms.Buffer) return nullptr;
+	}
+	if (FAILED(DxvkCompute::Extension()->UpdateBuffer(Uniforms.Buffer, 0, Size, Data))) return nullptr;
+	return Uniforms.Buffer;
+}
+
+bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset, bool PointWrapSampler, bool Last) {
+	if (TextureCount > 8) return false;
+	const UINT samplers = WrapSamplerPushOffset ? 2 : 1;
+	if (!Pass.Tried) {
+		Pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[10] = {};
+		for (UINT i = 0; i < TextureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[TextureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount].Slot = 0; bindings[TextureCount].PushOffset = SamplerPushOffset;
+		bindings[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount + 1].Slot = 1; bindings[TextureCount + 1].PushOffset = WrapSamplerPushOffset;
+		Pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvName, bindings, TextureCount + samplers, PushSize, true);
+	}
+	ID3D9NvrExtSampler* sampler = PointSampler ? DxvkCompute::PointClamp() : DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* wrap = WrapSamplerPushOffset ? (PointWrapSampler ? DxvkCompute::PointWrap() : DxvkCompute::LinearWrap()) : nullptr;
+	if (!Pass.Pipeline || !sampler || (WrapSamplerPushOffset && !wrap)) return false;
+	NVR_EXT_RESOURCE_BINDING resources[10] = {};
+	for (UINT i = 0; i < TextureCount; i++) {
+		if (!Textures[i]) return false;
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = Textures[i];
+	}
+	resources[TextureCount].Slot = 0; resources[TextureCount].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount].pResource = sampler;
+	resources[TextureCount + 1].Slot = 1; resources[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount + 1].pResource = wrap;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, Pass.Pipeline, resources, TextureCount + samplers, Push, PushSize, Last);
+}
+
+IDirect3DBaseTexture9* EffectRecord::ExtFileTexture(const char* SamplerName) {
+	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
+		ShaderTextureValue* sampler = &TextureShaderValues[c];
+		if (sampler->Name && !strcmp(sampler->Name, SamplerName) && sampler->Texture) return sampler->Texture->Texture;
+	}
+	return nullptr;
+}
+

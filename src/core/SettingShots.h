@@ -18,7 +18,8 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; };
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; int capture = 0;
+		bool renderdoc = false; std::string renderdocPath; bool keep = false; };
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -28,6 +29,7 @@ namespace SettingShots {
 	inline size_t Index = 0;
 	inline int Frame = 0;
 	inline std::vector<Undo> Undos;
+	inline std::vector<Undo> Kept;
 	inline SelfTestCore::ShotReader Reader;
 	inline std::atomic<int> InFlight{ 0 };
 	inline char Run[32] = "";
@@ -60,6 +62,7 @@ namespace SettingShots {
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
+		Kept.clear();
 		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false; TurnRate = 0.0f;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
@@ -80,6 +83,7 @@ namespace SettingShots {
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
 			else if (command == "noreload") NoReload = true;
+			else if (command == "keep") { if (List.empty()) { error = "line " + std::to_string(number) + ": 'keep' before any 'shot'"; return false; } List.back().keep = true; }
 			else if (command == "turn") { words >> TurnRate; TurnRate = std::clamp(TurnRate, -360.0f, 360.0f); }
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "menu" || command == "menutests") {
@@ -118,6 +122,17 @@ namespace SettingShots {
 				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
 				List.back().changes.push_back(c);
 			}
+			else if (command == "capture") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a capture before the first 'shot'"; return false; }
+				int frames = 2;
+				words >> frames;
+				List.back().capture = std::clamp(frames, 1, 10);
+			}
+			else if (command == "renderdoc") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a renderdoc before the first 'shot'"; return false; }
+				List.back().renderdoc = true;
+				words >> List.back().renderdocPath;
+			}
 			else if (command == "sampler") { words >> CpuSampler::Hz; CpuSampler::Hz = std::clamp(CpuSampler::Hz, 100, 4000); }
 			else if (command == "affinity") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": an affinity before the first 'shot'"; return false; }
@@ -125,6 +140,18 @@ namespace SettingShots {
 				words >> mask;
 				List.back().affinity = (DWORD_PTR)strtoull(mask.c_str(), nullptr, 16);
 				if (!List.back().affinity) { error = "line " + std::to_string(number) + ": affinity needs a hex mask"; return false; }
+			}
+			else if (command == "inspect") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": an inspect before the first 'shot'"; return false; }
+				std::string x, y;
+				words >> x >> y;
+				if (x.empty() || y.empty()) { error = "line " + std::to_string(number) + ": inspect needs <x> <y>"; return false; }
+				const char* keys[3] = { "Enabled", "X", "Y" };
+				const std::string values[3] = { "true", x, y };
+				for (int k = 0; k < 3; k++) {
+					Change c; c.section = "Main.Develop.PixelInspector"; c.key = keys[k]; c.value = values[k];
+					List.back().changes.push_back(c);
+				}
 			}
 			else if (command == "set" || command == "effect") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
@@ -209,13 +236,14 @@ namespace SettingShots {
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
 		const bool changes = std::any_of(s.changes.begin(), s.changes.end(), [](const Change& c) { return !c.console && !c.coverage; });
+		if (s.keep) { Kept.insert(Kept.end(), Undos.begin(), Undos.end()); Undos.clear(); }
 		if (changes || !NoReload) TheSettingManager->LoadSettings();
 		else Logger::Log("SETTING SHOTS %s: shot '%s': no changes, no settings reload (noreload)", Run, s.slug.c_str());
-		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
+		if (!s.menu.empty() && s.menu != "game") ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 
 	inline void Revert() {
-		if (Index < List.size() && !List[Index].menu.empty()) ImGuiManager::TestShowMenu(nullptr, false);
+		if (Index < List.size() && !List[Index].menu.empty() && List[Index].menu != "game") ImGuiManager::TestShowMenu(nullptr, false);
 		for (auto u = Undos.rbegin(); u != Undos.rend(); ++u) {
 			if (u->effect) { TheShaderManager->SwitchShaderStatus(u->section.c_str()); continue; }
 			switch (u->type) {
@@ -230,8 +258,14 @@ namespace SettingShots {
 		if (any) TheSettingManager->LoadSettings();
 	}
 
+	inline void RestoreKept() {
+		Undos.insert(Undos.begin(), Kept.begin(), Kept.end());
+		Kept.clear();
+	}
+
 	inline void Stop(const char* why) {
 		Logger::Log("SETTING SHOTS %s: stopped, %s", Run, why);
+		RestoreKept();
 		Revert();
 		Running = false;
 		Notify(kLinkStopped, why);
@@ -329,6 +363,33 @@ namespace SettingShots {
 		else lastTurn = 0;
 	}
 
+	struct RenderDocApi {
+		void* getVersion; void* setOptionU32; void* setOptionF32; void* getOptionU32; void* getOptionF32; void* setFocusKeys; void* setCaptureKeys;
+		void* getOverlay; void* maskOverlay; void* removeHooks; void* unloadCrashHandler;
+		void (__cdecl* SetCaptureFilePathTemplate)(const char* pathTemplate);
+		void* getPathTemplate; void* getNumCaptures; void* getCapture;
+		void (__cdecl* TriggerCapture)();
+	};
+	inline void TriggerRenderDoc(const Shot& s) {
+		static RenderDocApi* api = nullptr;
+		if (!api) {
+			typedef int (__cdecl* GetApiFn)(int version, void** api);
+			HMODULE module = GetModuleHandleA("renderdoc.dll");
+			GetApiFn getApi = module ? (GetApiFn)GetProcAddress(module, "RENDERDOC_GetAPI") : nullptr;
+			if (!getApi || !getApi(10102, (void**)&api) || !api) {
+				api = nullptr;
+				Logger::Log("SETTING SHOTS %s: shot '%s': no RenderDoc in the game (under DXVK: ENABLE_VULKAN_RENDERDOC_CAPTURE=1 for the launch), no capture", Run, s.slug.c_str());
+				return;
+			}
+		}
+		char path[MAX_PATH];
+		if (!s.renderdocPath.empty()) strcpy_s(path, s.renderdocPath.c_str());
+		else sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\RenderDoc_%s_%s", Run, s.slug.c_str());
+		api->SetCaptureFilePathTemplate(path);
+		api->TriggerCapture();
+		Logger::Log("SETTING SHOTS %s: shot '%s': RenderDoc capture of the next frame asked (%s_frame<N>.rdc)", Run, s.slug.c_str(), path);
+	}
+
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
 			AllQueued = false;
@@ -365,6 +426,12 @@ namespace SettingShots {
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
+		if (List[Index].capture && Frame == ShotFrames() - 1) {
+			char why[96];
+			sprintf_s(why, "shot %u '%s' of run %s", (unsigned)Index, List[Index].slug.c_str(), Run);
+			GpuDebug::RequestCapture(List[Index].capture, why);
+		}
+		if (List[Index].renderdoc && Frame == ShotFrames() - 2) TriggerRenderDoc(List[Index]);
 	}
 
 	inline void QueueJob(Job* job) {
@@ -377,6 +444,7 @@ namespace SettingShots {
 	}
 
 	inline void NextShot() {
+		if (Index + 1 >= List.size()) RestoreKept();
 		Revert();
 		Index++;
 		Frame = 0;

@@ -1,4 +1,5 @@
 #include "WaterLens.h"
+#include "../core/DxvkCompute.h"
 
 void WaterLensEffect::UpdateConstants() {
 
@@ -29,3 +30,13 @@ void WaterLensEffect::RegisterConstants(){
 bool WaterLensEffect::ShouldRender() {
 	return Constants.Data.w > 0.0f; 
 };
+
+bool WaterLensEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 gameTime, waterLensData; UInt32 samplerIndex; UInt32 wrapIndex; UInt32 pad[2]; } push = {};
+	push.gameTime = TheShaderManager->ShaderConst.GameTime;
+	push.waterLensData = Constants.Data;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, ExtFileTexture("TESR_waterlensSampler") };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "WaterLens", textures, _countof(textures), &push, sizeof(push), 32, false, 36);
+}
+

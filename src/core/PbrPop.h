@@ -144,6 +144,34 @@ namespace PbrPop {
 		}
 	}
 
+	namespace SpecDistance {
+		inline float OrigStart = 0.0f, OrigEnd = 0.0f, Target = 0.0f;
+		inline bool Saved = false;
+		constexpr UInt32 kRebuildBit = 0x04000000;
+		inline void BeginFrame() {
+			float& start = *BSShaderManager::fSpecularLODStartFade;
+			float& end = *BSShaderManager::fSpecularLODEnd;
+			if (!Saved) { OrigStart = start; OrigEnd = end; Saved = true; }
+			const float want = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Main", "SpecularDistance"), 0.0f);
+			if (want <= 0.0f) {
+				if (Target > 0.0f) {
+					start = OrigStart; end = OrigEnd; Target = 0.0f;
+					*(UInt32*)kEnabledPasses ^= kRebuildBit;
+					Logger::Log("UNOFFICIAL SpecularDistance: the game's own highlight distance %.0f-%.0f (every object's passes rebuilt)", start, end);
+				}
+				return;
+			}
+			const float wantStart = (std::max)(want - (OrigEnd - OrigStart), 1.0f);
+			if (start == wantStart && end == want) return;
+			const bool announce = want != Target;
+			start = wantStart; end = want; Target = want;
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			if (announce)
+				Logger::Log("UNOFFICIAL SpecularDistance: objects keep their full PBR shading (highlights, metal) out to %.0f units (the game's own: "
+					"%.0f); every object's passes rebuilt", want, OrigEnd);
+		}
+	}
+
 #if NVR_TEST_TOOLS
 	namespace SpecLodTest {
 		inline float Current = 0.0f, OrigStart = 0.0f, OrigEnd = 0.0f;

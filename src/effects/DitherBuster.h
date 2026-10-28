@@ -27,4 +27,9 @@ public:
 	UINT	TechniqueIndex() const { return (Settings.GateSoftness > 0.0f || Settings.DeDither || Settings.DebugView != 0) ? 1 : 0; }
 
 	DitherBusterStruct	Constants;
+
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+private:
+	ExtPass				extPass;
+	ExtPass				extPassStable;
 };

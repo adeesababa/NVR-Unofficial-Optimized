@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <string>
+#include "../core/DxvkCompute.h"
+
 
 static const char* CloudShadowsSection = "Shaders.CloudShadows.Main";
 
@@ -292,4 +295,179 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Sce
 		Logger::Log("UNOFFICIAL sun far shadows: drawn (land %s, clouds %s, volumetric clouds %s); the sun-shadow composites take the factor",
 			TheShaderManager->Effects.ShadowsExteriors->TerrainShadows.Active() ? "on" : "off", Constants.Data.x > 0.0f ? "on" : "off", volume ? "on" : "off");
 	}
+}
+
+namespace {
+	struct SunFarUniforms {
+		D3DXVECTOR4	waterSettings;
+		D3DXVECTOR4	shadowFade;
+		D3DXVECTOR4	shadowSunLight;
+		D3DXVECTOR4	shadowAmbientLight;
+		D3DXVECTOR4	pbrData;
+		D3DXVECTOR4	pbrExtraData;
+		D3DXVECTOR4	terrainData;
+		D3DXVECTOR4	terrainSkyData;
+		D3DXVECTOR4	skyIrradiance[9];
+		D3DXVECTOR4	terrainShadowData;
+		D3DXVECTOR4	terrainShadowRange;
+		D3DXVECTOR4	terrainShadowParams;
+		D3DXVECTOR4	sunFarData;
+		D3DXVECTOR4	sunFarClouds;
+		D3DXVECTOR4	sunFarCloudOffset[2];
+		D3DXVECTOR4	sunFarCloudWeight;
+		D3DXVECTOR4	sunFarCloudBlend;
+		D3DXVECTOR4	sunFarVolume;
+		D3DXVECTOR4	sunDirection;
+		D3DXVECTOR4	sunFarWater;
+		D3DXVECTOR4	fogData;
+		D3DXVECTOR4	fogColor;
+		D3DXVECTOR4	sunFarLand;
+		D3DXVECTOR4	cameraData;
+		D3DXVECTOR4	cameraPosition;
+		D3DXVECTOR4	smoothedSunDir;
+		D3DXVECTOR4	shadowFormatData;
+		D3DXVECTOR4	shadowBlur;
+		D3DXVECTOR4	shadowNearCenter;
+		D3DXVECTOR4	shadowMiddleCenter;
+		D3DXVECTOR4	shadowFarCenter;
+		D3DXVECTOR4	shadowLodCenter;
+		D3DXMATRIX	shadowToLightNear;
+		D3DXMATRIX	shadowToLightMiddle;
+		D3DXMATRIX	shadowToLightFar;
+		D3DXMATRIX	shadowToLightLod;
+		D3DXMATRIX	projectionTransform;
+		D3DXMATRIX	viewTransform;
+	};
+	const NVR_EXT_BINDING_DESC SunFarBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE,  3, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE,  4, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 5, NVR_EXT_BIND_SAMPLED_IMAGE,  5, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 6, NVR_EXT_BIND_SAMPLED_IMAGE,  6, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 7, NVR_EXT_BIND_SAMPLED_IMAGE,  7, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 8, NVR_EXT_BIND_SAMPLED_IMAGE,  8, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 9, NVR_EXT_BIND_SAMPLED_IMAGE,  9, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 10, NVR_EXT_BIND_SAMPLED_IMAGE, 10, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 11, NVR_EXT_BIND_SAMPLED_IMAGE, 11, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 12, NVR_EXT_BIND_SAMPLED_IMAGE, 12, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 13, NVR_EXT_BIND_SAMPLED_IMAGE, 13, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 14, NVR_EXT_BIND_SAMPLED_IMAGE, 14, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 15, NVR_EXT_BIND_SAMPLED_IMAGE, 15, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D, FALSE, 4 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D, FALSE, 8 },
+	};
+	struct SunFarPush { UInt32 samplerPoint; UInt32 samplerLinear; UInt32 samplerMip; UInt32 pad; };
+}
+
+static bool CopyRegistered(void* to, size_t bytes, const char* name) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	if (found == TheShaderManager->ConstantsTable.end() || !found->second) {
+		static bool logged = false;
+		if (!logged) {
+			logged = true;
+			Logger::Log("UNOFFICIAL NVR DXVK: SunFar: %s is not registered; the D3D9 technique is used", name);
+		}
+		return false;
+	}
+	memcpy(to, found->second, bytes);
+	return true;
+}
+
+static IDirect3DBaseTexture9* NamedTexture(const char* name) {
+	std::string text = name;
+	IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(text);
+	return slot ? *slot : nullptr;
+}
+
+bool SunFarEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0 || !Texture || !Surface) return false;
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("SunFar", SunFarBindings, _countof(SunFarBindings), sizeof(SunFarPush), true);
+	}
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* mip = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
+	if (!extPass.Pipeline || !point || !linear || !mip) return false;
+
+	ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
+	IDirect3DBaseTexture9* depth = NamedTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = NamedTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* atlas = NamedTexture("TESR_ShadowAtlas");
+	IDirect3DBaseTexture9* terrain = NamedTexture("TESR_TerrainShadowBuffer");
+	IDirect3DBaseTexture9* ground = NamedTexture("TESR_TerrainShadowGround");
+	if (!depth || !normals || !atlas) return false;
+	if (shadows && shadows->TerrainShadows.Active() && (!terrain || !ground)) return false;
+	VolumetricCloudsEffect* volumetric = TheShaderManager->Effects.VolumetricClouds;
+	IDirect3DBaseTexture9* volume = volumetric && Constants.Volume.x > 0.0f ? volumetric->Textures.ShadowTexture : nullptr;
+	IDirect3DBaseTexture9* water = Constants.Water.z > 0.0f ? WaterDepthMap() : nullptr;
+	IDirect3DBaseTexture9* inputs[16] = { depth, normals, atlas, terrain ? terrain : depth, ground ? ground : depth };
+	inputs[15] = PassTextures[15] ? PassTextures[15] : depth;
+	for (int i = 0; i < 4; i++) {
+		inputs[5 + i] = layerTextures[i] ? layerTextures[i] : depth;
+		inputs[9 + i] = blendTextures[i] ? blendTextures[i] : depth;
+	}
+	inputs[13] = volume ? volume : depth;
+	inputs[14] = water ? water : depth;
+
+	SunFarUniforms uniforms = {};
+	bool registered = true;
+	auto copy = [&](void* to, size_t bytes, const char* name) { registered = CopyRegistered(to, bytes, name) && registered; };
+	copy(&uniforms.waterSettings, sizeof(uniforms.waterSettings), "TESR_WaterSettings");
+	copy(&uniforms.shadowFade, sizeof(uniforms.shadowFade), "TESR_ShadowFade");
+	copy(&uniforms.shadowSunLight, sizeof(uniforms.shadowSunLight), "TESR_ShadowSunLight");
+	copy(&uniforms.shadowAmbientLight, sizeof(uniforms.shadowAmbientLight), "TESR_ShadowAmbientLight");
+	copy(&uniforms.pbrData, sizeof(uniforms.pbrData), "TESR_PBRData");
+	copy(&uniforms.pbrExtraData, sizeof(uniforms.pbrExtraData), "TESR_PBRExtraData");
+	copy(&uniforms.terrainData, sizeof(uniforms.terrainData), "TESR_TerrainData");
+	copy(&uniforms.terrainSkyData, sizeof(uniforms.terrainSkyData), "TESR_TerrainSkyData");
+	copy(&uniforms.skyIrradiance, sizeof(uniforms.skyIrradiance), "TESR_SkyIrradianceObjects");
+	copy(&uniforms.terrainShadowData, sizeof(uniforms.terrainShadowData), "TESR_TerrainShadowData");
+	copy(&uniforms.terrainShadowRange, sizeof(uniforms.terrainShadowRange), "TESR_TerrainShadowRange");
+	copy(&uniforms.terrainShadowParams, sizeof(uniforms.terrainShadowParams), "TESR_TerrainShadowParams");
+	copy(&uniforms.sunFarData, sizeof(uniforms.sunFarData), "TESR_SunFarData");
+	copy(&uniforms.sunFarClouds, sizeof(uniforms.sunFarClouds), "TESR_SunFarClouds");
+	copy(&uniforms.sunFarCloudOffset, sizeof(uniforms.sunFarCloudOffset), "TESR_SunFarCloudOffset");
+	copy(&uniforms.sunFarCloudWeight, sizeof(uniforms.sunFarCloudWeight), "TESR_SunFarCloudWeight");
+	copy(&uniforms.sunFarCloudBlend, sizeof(uniforms.sunFarCloudBlend), "TESR_SunFarCloudBlend");
+	copy(&uniforms.sunFarVolume, sizeof(uniforms.sunFarVolume), "TESR_SunFarVolume");
+	copy(&uniforms.sunDirection, sizeof(uniforms.sunDirection), "TESR_SunDirection");
+	copy(&uniforms.sunFarWater, sizeof(uniforms.sunFarWater), "TESR_SunFarWater");
+	copy(&uniforms.fogData, sizeof(uniforms.fogData), "TESR_FogData");
+	copy(&uniforms.fogColor, sizeof(uniforms.fogColor), "TESR_FogColor");
+	copy(&uniforms.sunFarLand, sizeof(uniforms.sunFarLand), "TESR_SunFarLand");
+	copy(&uniforms.cameraData, sizeof(uniforms.cameraData), "TESR_CameraData");
+	copy(&uniforms.cameraPosition, sizeof(uniforms.cameraPosition), "TESR_CameraPosition");
+	copy(&uniforms.smoothedSunDir, sizeof(uniforms.smoothedSunDir), "TESR_SmoothedSunDir");
+	copy(&uniforms.shadowFormatData, sizeof(uniforms.shadowFormatData), "TESR_ShadowFormatData");
+	copy(&uniforms.shadowBlur, sizeof(uniforms.shadowBlur), "TESR_ShadowBlur");
+	copy(&uniforms.shadowNearCenter, sizeof(uniforms.shadowNearCenter), "TESR_ShadowNearCenter");
+	copy(&uniforms.shadowMiddleCenter, sizeof(uniforms.shadowMiddleCenter), "TESR_ShadowMiddleCenter");
+	copy(&uniforms.shadowFarCenter, sizeof(uniforms.shadowFarCenter), "TESR_ShadowFarCenter");
+	copy(&uniforms.shadowLodCenter, sizeof(uniforms.shadowLodCenter), "TESR_ShadowLodCenter");
+	copy(&uniforms.shadowToLightNear, sizeof(uniforms.shadowToLightNear), "TESR_ShadowCameraToLightTransformNear");
+	copy(&uniforms.shadowToLightMiddle, sizeof(uniforms.shadowToLightMiddle), "TESR_ShadowCameraToLightTransformMiddle");
+	copy(&uniforms.shadowToLightFar, sizeof(uniforms.shadowToLightFar), "TESR_ShadowCameraToLightTransformFar");
+	copy(&uniforms.shadowToLightLod, sizeof(uniforms.shadowToLightLod), "TESR_ShadowCameraToLightTransformLod");
+	copy(&uniforms.projectionTransform, sizeof(uniforms.projectionTransform), "TESR_ProjectionTransform");
+	copy(&uniforms.viewTransform, sizeof(uniforms.viewTransform), "TESR_ViewTransform");
+	if (!registered) return false;
+	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!constants) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[_countof(SunFarBindings)] = {};
+	for (UINT i = 0; i < 16; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i]; }
+	resources[16].Slot = 0; resources[16].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[16].pResource = constants;
+	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = point;
+	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = linear;
+	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	SunFarPush push = {};
+	IDirect3DSurface9* target = Surface;
+	if (!ExtDrawTo(extPass.Pipeline, &target, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as a Vulkan pass.", Name);
+	return true;
 }

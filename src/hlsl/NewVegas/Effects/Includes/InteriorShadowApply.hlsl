@@ -1,3 +1,4 @@
+
 float4 ApplyInteriorShadowDepth(float2 uv, float4 color, float shadowSample, float depth) {
     color.rgb = pows(color.rgb, 2.2);
 	float3 eyeDir = toWorld(uv);

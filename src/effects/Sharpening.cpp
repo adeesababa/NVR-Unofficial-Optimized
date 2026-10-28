@@ -1,4 +1,5 @@
 #include "Sharpening.h"
+#include "../core/DxvkCompute.h"
 
 void SharpeningEffect::UpdateConstants() {
 	Constants.Data = TheShaderManager->GameState.isExterior ? Exterior : Interior;
@@ -16,4 +17,15 @@ void SharpeningEffect::UpdateSettings(){
 
 void SharpeningEffect::RegisterConstants(){
 	TheShaderManager->RegisterConstant("TESR_SharpeningData", &Constants.Data);
-}
+}
+
+bool SharpeningEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 data, reciprocalResolution, cameraData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.data = Constants.Data;
+	push.reciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	push.cameraData = TheRenderManager->CameraData;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "Sharpening", textures, _countof(textures), &push, sizeof(push), 48);
+}
+

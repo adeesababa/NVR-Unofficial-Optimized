@@ -269,7 +269,7 @@ namespace CpuSampler {
 
 	inline DWORD WINAPI ThreadMain(void*) {
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-		HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 , TIMER_ALL_ACCESS);
+		HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002, TIMER_ALL_ACCESS);
 		const LONGLONG period = Hz > 0 ? -10000000LL / Hz : -10000;
 		ScanModules();
 		LONGLONG lastScan = Qpc();

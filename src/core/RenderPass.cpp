@@ -51,7 +51,7 @@ static void SetCTLean(ShaderRecord* record, ConstantRun& run) {
 	}
 	record->SetCT();
 	run.record = record;
-	run.valid = !record->TextureShaderValuesCount && !record->HasRenderedBuffer && !record->HasDepthBuffer && !record->HasTerrainBlendDepth && !record->ClearSamplers;
+	run.valid = !record->TextureShaderValuesCount && !record->HasRenderedBuffer && !record->HasDepthBuffer && !record->HasTerrainBlendDepth && !record->HasDisplaceDepth && !record->ClearSamplers;
 	size_t registers = 0;
 	for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
 		if (!record->FloatShaderValues[c].Value) run.valid = false;

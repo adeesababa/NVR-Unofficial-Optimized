@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/TemporalHistoryStats.h"
+#include "../core/RenderRect.h"
 
 class VolumetricLightEffect : public EffectRecord
 {
@@ -58,12 +59,19 @@ public:
 	void	UpdateSettings();
 	bool	ShouldRender();
 	void	RenderBuffers(IDirect3DDevice9* Device);
-	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface ? 8 : 0; }
+	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface && !RenderRect::Active() ? 8 : 0; }
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	ExtPass				extPasses[9];
+	ExtUniformBuffer	extUniforms;
 
 private:
+	IDirect3DBaseTexture9*	fogNoise = nullptr;
+	bool		fogNoiseLoaded = false;
 	D3DXMATRIX	lastView, lastInvView, lastProj;
 	UINT		lastRenderedFrame = 0;
 	bool		haveHistory = false;
+	bool		lastRect = false;
 	TemporalHistoryStats	stats;
 	void		ReportHistory(const char* when);
 };

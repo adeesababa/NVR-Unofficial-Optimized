@@ -1,3 +1,10 @@
+# NVR build, no Visual Studio command prompt needed. Double-click tools\build.bat (it runs this), or:
+#   powershell -ExecutionPolicy Bypass -File tools\build.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\build.ps1 "D:\Games\Fallout New Vegas\Data"
+# Builds NewVegasReloaded.dll (Release, Win32) into build\optimized\. With a Data folder (argument, or the first line of
+# tools\deploy-path.txt) it then copies the DLL (+ .pdb) to <Data>\nvse\Plugins\ and the shader sources to
+# <Data>\Shaders\NewVegasReloaded\ -- changed files only, nothing is ever deleted.
+# Needs Visual Studio 2019, or Visual Studio 2022 with "MSVC v142 - VS 2019 C++ x64/x86 build tools" installed.
 param([string]$Deploy = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
@@ -9,6 +16,7 @@ Write-Host ''
 Write-Host '=== NVR build ==='
 Write-Host "Repo: $repo"
 
+# --- Visual Studio with the v142 toolset ------------------------------------------------------------
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at `"$vswhere`". Is Visual Studio installed?" }
 $vs = & $vswhere -latest -version '[16.0,17.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
@@ -24,12 +32,14 @@ $msbuild = Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
 if (-not (Test-Path $msbuild)) { throw "MSBuild not found at `"$msbuild`"." }
 Write-Host "Visual Studio: $vs"
 
+# --- submodules (imgui, toml11) --------------------------------------------------------------------
 if (-not (Test-Path "$repo\lib\imgui\imgui.h")) {
     Write-Host 'lib\imgui is empty: fetching the git submodules...'
     & git -C $repo submodule update --init --recursive
     if (-not (Test-Path "$repo\lib\imgui\imgui.h")) { throw "Could not fetch the submodules. Run 'git submodule update --init --recursive' in $repo by hand." }
 }
 
+# --- build -------------------------------------------------------------------------------------------
 Write-Host ''
 Write-Host 'Building NewVegasReloaded.dll (Release, Win32)...'
 & $msbuild "$repo\NewVegasReloaded\NewVegasReloaded.vcxproj" /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$repo\" "/p:OutDir=$repo\build\optimized\" "/p:IntDir=$repo\build\optimized-obj\" /m /nologo /v:minimal
@@ -39,6 +49,7 @@ if (-not (Test-Path $dll)) { throw "The build reported success but `"$dll`" is m
 Write-Host ''
 Write-Host "BUILD OK: $dll" -ForegroundColor Green
 
+# --- optional deploy ----------------------------------------------------------------------------------
 if (-not $Deploy) {
     Write-Host ''
     Write-Host 'To install: copy build\optimized\NewVegasReloaded.dll to <Data>\nvse\Plugins\ and any changed .hlsl files from'
@@ -52,6 +63,7 @@ Write-Host "Copying to $Deploy ..."
 Copy-Item $dll "$Deploy\nvse\Plugins\" -Force
 $pdb = "$repo\build\optimized\NewVegasReloaded.pdb"
 if (Test-Path $pdb) { Copy-Item $pdb "$Deploy\nvse\Plugins\" -Force }
+# shaders: changed files only, nothing deleted (no /MIR); robocopy exit codes under 8 mean success
 & robocopy "$repo\src\hlsl\NewVegas\Shaders" "$Deploy\Shaders\NewVegasReloaded\Shaders" /E /NJH /NJS /NDL /NP /NFL | Out-Null
 if ($LASTEXITCODE -ge 8) { throw 'Copying the shaders failed (game running, or folder read-only?).' }
 & robocopy "$repo\src\hlsl\NewVegas\Effects" "$Deploy\Shaders\NewVegasReloaded\Effects" /E /NJH /NJS /NDL /NP /NFL | Out-Null

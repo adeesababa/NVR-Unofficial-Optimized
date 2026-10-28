@@ -241,7 +241,8 @@ VSOUT HalfVS(VSIN IN) {
 
 float3 reconstructPositionFromDepth(float2 uv, float linearDepth01)
 {
-	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, projectedDepthFromLinear(linearDepth01), 1.0f), TESR_InvProjectionTransform);
+	float2 s01 = rectToScreen(uv);
+	float4 viewSpace = mul(float4(s01.x * 2 - 1, (1 - s01.y) * 2 - 1, projectedDepthFromLinear(linearDepth01), 1.0f), TESR_InvProjectionTransform);
 	viewSpace /= viewSpace.w;
 	return viewSpace.xyz;
 }
@@ -284,9 +285,10 @@ float4 DedicatedLightMask(VSOUT IN) : COLOR0 {
 
 float4 DedicatedRadialBlur(VSOUT IN, uniform float step, uniform float storeAttenuation) : COLOR0 {
 	[branch] if (GodRaysEmpty()) return float4(0.0f, 0.0f, 0.0f, 1.0f);
-	float2 uv = IN.UVCoord - 0.5 * TESR_ReciprocalResolution.xy;
+	float2 rectUV = IN.UVCoord - 0.5 * TESR_ReciprocalResolution.xy;
+	float2 uv = rectToScreen(rectUV);
 
-	float2 sunPos = projectPosition(TESR_ViewSpaceLightDir.xyz * farZ).xy;
+	float2 sunPos = rectToScreen(projectPosition(TESR_ViewSpaceLightDir.xyz * farZ).xy);
 	float2 blurDirection = (sunPos.xy - uv) * float2(1.0f, raspect);
 	float distance = length(blurDirection);
 	float2 dir = blurDirection / max(distance, 0.000001f);
@@ -299,13 +301,13 @@ float4 DedicatedRadialBlur(VSOUT IN, uniform float step, uniform float storeAtte
 		float sampleDistance = stepSize * i;
 		samplePos = uv + (dir * sampleDistance / float2(1, raspect));
 		[branch] if (sampleDistance <= distance && samplePos.x > 0 && samplePos.y > 0 && samplePos.x < 1 && samplePos.y < 1) {
-			color += tex2Dlod(NVR_GodRaysBuffer, float4(samplePos, 0, 0));
+			color += tex2Dlod(NVR_GodRaysBuffer, float4(screenToRect(samplePos), 0, 0));
 			total += 1;
 		}
 	}
 	color /= total;
 
-	return float4(color.rgb, lerp(1.0, RayAttenuation(uv), storeAttenuation));
+	return float4(color.rgb, lerp(1.0, RayAttenuation(rectUV), storeAttenuation));
 }
 
 float4 DedicatedCombine(VSOUT IN) : COLOR0

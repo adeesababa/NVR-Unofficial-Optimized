@@ -1,6 +1,11 @@
 #include "Reflections.h"
 #include "../core/GpuProfiler.h"
 #include "../core/ReflMaterial.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
+#include "../core/HiZ.h"
+#include "../core/ShaderCounters.h"
+#include "../core/PixelInspector.h"
 
 void ReflectionsEffect::UpdateSettings() {
 	if (GpuTimer::Enabled) ReportHistory("settings changed");
@@ -20,7 +25,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.CubeMap = TheSettingManager->GetSettingI(section, "CubeMap") != 0;
 	Settings.CubeCapture = std::clamp(TheSettingManager->GetSettingF(section, "CubeCapture"), 0.02f, 1.0f);
 	Settings.CubeFade = std::clamp(TheSettingManager->GetSettingF(section, "CubeFade"), 0.0f, 0.2f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 8);
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 10);
 	Settings.GridFallback = TheSettingManager->GetSettingI(section, "GridFallback") != 0;
 	Settings.GridBrightness = std::clamp(TheSettingManager->GetSettingF(section, "GridBrightness"), 0.0f, 4.0f);
 	Settings.MaterialAware = ReflMaterial::CompiledIn() ? std::clamp(TheSettingManager->GetSettingI(section, "MaterialAware"), 0, 2) : 0;
@@ -29,9 +34,17 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.ReflectAdd = ReflMaterial::AddCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "ReflectAdd"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
+	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;
 	SettingManager::Configuration::ConfigNode node;
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 	Settings.ReflectivityInterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityInterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
+	Settings.HiZInteriorsTest = TheSettingManager->GetSettingI(section, "HiZInteriorsTest") != 0;
+	Settings.HiZSafeCells = TheSettingManager->GetSettingI(section, "HiZSafeCells") != 0;
+	HiZ::CheckEvery = std::clamp(TheSettingManager->GetSettingI(section, "HiZCheck"), 0, 100000);
+}
+
+bool ReflectionsEffect::HiZWanted() const {
+	return Settings.HiZ && !ExtFailed && !hizTraceFailed && (TheShaderManager->GameState.isExterior || Settings.HiZInteriorsTest);
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -99,7 +112,7 @@ void ReflectionsEffect::GridStep() {
 	const AmbientLightEffect* ambient = TheShaderManager->Effects.AmbientLight;
 	const UINT now = TheFrameRateManager->FrameNumber;
 	bool use = Settings.GridFallback && !TheShaderManager->GameState.isExterior && ambient && ambient->Enabled && ambient->Effect && ambient->gridBounce > 0.0f &&
-		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCellChanged;
+		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCameraCut;
 	IDirect3DTexture9* light = use ? ambient->gridAccum[ambient->gridAccumIndex] : nullptr;
 	IDirect3DTexture9* colour = use && ambient->gridColorValid ? ambient->gridAccumColor[ambient->gridAccumIndex] : nullptr;
 	use = use && light;
@@ -139,6 +152,7 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data4.z = Settings.ReflectAdd;
 	Constants.Data4.w = Settings.SpecularOcclusion;
 	Constants.Layout.z = Settings.SpecularOcclusionLevel;
+	Constants.Layout.w = Settings.HiZSafeCells ? 1.0f : 0.0f;
 	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect * reflectivity, 0.0f);
 }
 
@@ -180,6 +194,9 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const UINT now = TheFrameRateManager->FrameNumber;
 	const bool drewLastFrame = lastRenderedFrame + 1 == now;
 	bool usable = temporal && haveHistory && drewLastFrame;
+	static bool lastRect = false;
+	if (RenderRect::ScaleChanged() || RenderRect::Active() != lastRect) usable = false;
+	lastRect = RenderRect::Active();
 	const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 		(double)invView._43 - lastInvView._43 };
 	if (usable) usable = move[0] * move[0] + move[1] * move[1] + move[2] * move[2] < 500.0 * 500.0;
@@ -212,8 +229,10 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	if (D3DXHANDLE handle = ParameterHandle(skyHandle, "NVR_ReflectionsSky")) {
 		D3DXVECTOR4 sky(skyVis ? 1.0f : 0.0f, ao ? ao->SkyMinReflection : 0.1f, 0.0f, 0.0f);
 		Effect->SetVector(handle, &sky);
+		extSky = sky;
 	}
-	else skyVis = nullptr;
+	else { skyVis = nullptr; extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f); }
+	extSkyTexture = skyVis;
 	BindMaterial();
 	if (skyVis) {
 		SetPassTexture(14, skyVis);
@@ -221,13 +240,15 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 			{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
 		for (const auto& s : linear) TheRenderManager->SetSamplerState(14, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 	}
+	{
+		static GpuTimer traceTimer("  Reflections trace (half)");
+		GpuProfileScope gpu(traceTimer, Device);
+		pass(temporal ? Textures.TraceSurface : Textures.TempSurface, 1);
+	}
 	if (temporal) {
-		pass(Textures.TraceSurface, 1);
 		pass(Textures.TempSurface, 3);
 		Device->StretchRect(Textures.TempSurface, NULL, Textures.HistorySurface, NULL, D3DTEXF_NONE);
 	}
-	else
-		pass(Textures.TempSurface, 1);
 	pass(Textures.TraceSurface, 2);
 	pass(Textures.BufferSurface, 4);
 	ClearPassTextures();
@@ -293,4 +314,199 @@ void ReflectionsEffect::RenderCube(IDirect3DDevice9* Device, bool reset) {
 			Render(Device, face, face, 6, false, nullptr);
 		}
 	}
+}
+
+namespace {
+	struct ReflUniforms {
+		D3DXMATRIX	projection, view, shadowOrtho, reproject;
+		D3DXVECTOR4	reciprocalResolution, skyColor, horizonColor, waterSettings;
+		D3DXVECTOR4	data, data2, data3, data4, layout, cube2, grid, grid2, grid3, material;
+		D3DXVECTOR4	depthConstants, cameraData, cameraPosition, sky, flags;
+	};
+	ReflUniforms ReflUploaded;
+	struct ReflPush { D3DXVECTOR4 cube; UInt32 linearIndex, pointIndex, mipIndex, pass; };
+
+	const NVR_EXT_BINDING_DESC ReflBindings[] = {
+		{ 1, 0,  NVR_EXT_BIND_SAMPLED_IMAGE, 0,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 1,  NVR_EXT_BIND_SAMPLED_IMAGE, 1,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 2,  NVR_EXT_BIND_SAMPLED_IMAGE, 2,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 3,  NVR_EXT_BIND_SAMPLED_IMAGE, 3,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 4,  NVR_EXT_BIND_SAMPLED_IMAGE, 4,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 5,  NVR_EXT_BIND_SAMPLED_IMAGE, 5,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 6,  NVR_EXT_BIND_SAMPLED_IMAGE, 6,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 7,  NVR_EXT_BIND_SAMPLED_IMAGE, 7,  NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 8,  NVR_EXT_BIND_SAMPLED_IMAGE, 8,  NVR_EXT_VIEW_CUBE, FALSE, 0 },
+		{ 1, 9,  NVR_EXT_BIND_SAMPLED_IMAGE, 9,  NVR_EXT_VIEW_CUBE, FALSE, 0 },
+		{ 1, 10, NVR_EXT_BIND_SAMPLED_IMAGE, 10, NVR_EXT_VIEW_CUBE, FALSE, 0 },
+		{ 1, 11, NVR_EXT_BIND_SAMPLED_IMAGE, 11, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 12, NVR_EXT_BIND_SAMPLED_IMAGE, 12, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 13, NVR_EXT_BIND_SAMPLED_IMAGE, 13, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 14, NVR_EXT_BIND_SAMPLED_IMAGE, 14, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 1, 15, NVR_EXT_BIND_SAMPLED_IMAGE, 15, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 2, 0,  NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D,   FALSE, 0 },
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,   FALSE, 16 },
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,   FALSE, 20 },
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },
+	};
+	const UINT ReflTextureCount = 16;
+	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_STORAGE_BUFFER, 1, NVR_EXT_VIEW_2D, FALSE, 0 };
+	const UINT ReflCounterSlot = 7;
+	ShaderCounters HiZCounters("Reflections Hi-Z trace",
+		{ "rays", "walked to the end / off screen", "walk hit", "hit thrown away", "hit by the fixed-step rest", "out of cells, rest found nothing",
+		  "not started", "cells walked", "skipped facing", "skipped own plane", "skipped behind (thickness)", "no reflection" },
+		{ "endRule/cells/hitT/confidence", "facing/plane/thick/roughness", "hit.xy/depth/amount" });
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+	const D3DXVECTOR4* Registered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+}
+
+bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex > 7 || ClearRenderTarget || (techniqueIndex == 7 && !ReflMaterial::CompiledIn())) return false;
+	static const char* const spvNames[8] = { "ReflectionsComposite", "ReflectionsTrace", "ReflectionsBlur", "ReflectionsTemporal", "ReflectionsBlur",
+		"ReflectionsCapture", "ReflectionsFilter", "ReflectionsMaterial" };
+	ID3D9NvrExtBuffer* hiz = techniqueIndex == 1 && HiZWanted() ? HiZ::Current() : nullptr;
+	if (hiz && !extTraceHiZ.Tried) {
+		extTraceHiZ.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 1];
+		memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+		bindings[_countof(ReflBindings)] = ReflHiZBinding;
+		std::vector<char> words;
+		if (DxvkCompute::LoadSpirv("ReflectionsTraceHiZ", words))
+			extTraceHiZ.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceHiZ", bindings, _countof(bindings), sizeof(ReflPush), true);
+		if (!extTraceHiZ.Pipeline) {
+			hizTraceFailed = true;
+			Logger::Log("UNOFFICIAL Reflections: the Hi-Z trace could not be set up; the normal trace is used.");
+		}
+	}
+	if (!extTraceHiZ.Pipeline) hiz = nullptr;
+	ID3D9NvrExtBuffer* counters = nullptr;
+	if (hiz && TheSettingManager->GetSettingI("Main.Develop.ShaderCounters", "ReflectionsHiZ") != 0) {
+		if (!extTraceHiZCount.Tried) {
+			extTraceHiZCount.Tried = true;
+			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 2];
+			memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+			bindings[_countof(ReflBindings)] = ReflHiZBinding;
+			bindings[_countof(ReflBindings) + 1] = ShaderCounters::Binding(ReflCounterSlot);
+			if (DebugReadback::Interface() && DxvkCompute::HasSpirv("ReflectionsTraceHiZCount"))
+				extTraceHiZCount.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceHiZCount", bindings, _countof(bindings), sizeof(ReflPush), true, 1, NVR_EXT_BLEND_NONE, false);
+			if (!extTraceHiZCount.Pipeline) Logger::Log("UNOFFICIAL Reflections: the Hi-Z trace's counting build is not available (needs NVR DXVK 1.5-debug and the shader file ReflectionsTraceHiZCount.spv); the normal trace runs.");
+		}
+		if (extTraceHiZCount.Pipeline) {
+			D3DSURFACE_DESC target = {};
+			int px = -1, py = -1;
+			if (RenderTarget && SUCCEEDED(RenderTarget->GetDesc(&target))) PixelInspector::PixelFor(target.Width, target.Height, px, py);
+			counters = HiZCounters.Begin(px, py);
+		}
+	}
+	ExtPass& pass = counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
+	}
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	ID3D9NvrExtSampler* mip = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_CLAMP);
+	if (!pass.Pipeline || !linear || !point || !mip) return false;
+
+	const D3DXVECTOR4* projection = Registered("TESR_ProjectionTransform");
+	const D3DXVECTOR4* view = Registered("TESR_ViewTransform");
+	const D3DXVECTOR4* shadowOrtho = Registered("TESR_ShadowCameraToLightTransformOrtho");
+	const D3DXVECTOR4* reciprocal = Registered("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* skyColor = Registered("TESR_SkyColor");
+	const D3DXVECTOR4* horizonColor = Registered("TESR_HorizonColor");
+	const D3DXVECTOR4* waterSettings = Registered("TESR_WaterSettings");
+	const D3DXVECTOR4* depthConstants = Registered("TESR_DepthConstants");
+	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
+	const D3DXVECTOR4* cameraPosition = Registered("TESR_CameraPosition");
+	if (!projection || !view || !shadowOrtho || !reciprocal || !skyColor || !horizonColor || !waterSettings || !depthConstants || !cameraData || !cameraPosition)
+		return false;
+
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* viewModel = SlotTexture("TESR_DepthBufferViewModel");
+	IDirect3DBaseTexture9* ortho = SlotTexture("TESR_OrthoMapBuffer");
+	if (!depth || !normals || !viewModel || !TheTextureManager->RenderedTexture || (!ortho && Constants.Data4.y > 0.5f) ||
+		!Cubes.Capture[0] || !Cubes.Capture[1] || !Cubes.Env)
+		return false;
+	const bool materialBound = materialFilled && Textures.MaterialTexture != nullptr;
+	IDirect3DBaseTexture9* textures[ReflTextureCount] = {
+		TheTextureManager->RenderedTexture, depth, normals, viewModel,
+		Textures.TraceTexture, Textures.BufferTexture, Textures.TempTexture, Textures.HistoryTexture,
+		Cubes.CaptureLastSlot ? Cubes.CaptureLastSlot : Cubes.Capture[0], Cubes.CaptureNewSlot ? Cubes.CaptureNewSlot : Cubes.Capture[1], Cubes.Env,
+		ortho ? ortho : depth, GridLightSlot ? GridLightSlot : depth, GridColorSlot ? GridColorSlot : depth,
+		extSkyTexture ? extSkyTexture : depth, materialBound ? Textures.MaterialTexture : depth };
+	switch (techniqueIndex) {
+		case 1: textures[4] = textures[6] = depth; break;
+		case 2: textures[4] = depth; break;
+		case 3: textures[6] = depth; break;
+		case 4: textures[5] = depth; break;
+		case 5: textures[9] = textures[8]; break;
+		case 6: textures[10] = textures[9]; break;
+		case 7: textures[15] = depth; break;
+	}
+	for (UINT i = 0; i < ReflTextureCount; i++) if (!textures[i]) return false;
+
+	ReflUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.view, view, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.shadowOrtho, shadowOrtho, sizeof(D3DXMATRIX));
+	uniforms.reproject = Constants.Reproject;
+	uniforms.reciprocalResolution = *reciprocal;
+	uniforms.skyColor = *skyColor;
+	uniforms.horizonColor = *horizonColor;
+	uniforms.waterSettings = *waterSettings;
+	uniforms.data = Constants.Data;
+	uniforms.data2 = Constants.Data2;
+	uniforms.data3 = Constants.Data3;
+	uniforms.data4 = Constants.Data4;
+	uniforms.layout = Constants.Layout;
+	uniforms.cube2 = Constants.Cube2;
+	uniforms.grid = Constants.Grid;
+	uniforms.grid2 = Constants.Grid2;
+	uniforms.grid3 = Constants.Grid3;
+	uniforms.material = Constants.Material;
+	uniforms.depthConstants = *depthConstants;
+	uniforms.cameraData = *cameraData;
+	uniforms.cameraPosition = *cameraPosition;
+	uniforms.sky = extSky;
+	uniforms.flags = D3DXVECTOR4(ReflMaterial::CompiledIn() ? 1.0f : 0.0f, ReflMaterial::AddCompiledIn() ? 1.0f : 0.0f,
+		ReflMaterial::OccCompiledIn() ? 1.0f : 0.0f, materialBound ? 1.0f : 0.0f);
+	ID3D9NvrExtBuffer* buffer = extUniforms.Buffer;
+	if (!buffer || memcmp(&uniforms, &ReflUploaded, sizeof(uniforms))) {
+		buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+		if (!buffer) return false;
+		ReflUploaded = uniforms;
+	}
+
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 2] = {};
+	for (UINT i = 0; i < ReflTextureCount; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[16].Slot = 0; resources[16].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[16].pResource = buffer;
+	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
+	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = point;
+	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	UINT resourceCount = _countof(ReflBindings);
+	if (hiz) {
+		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
+		resourceCount++;
+		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
+	}
+	if (counters) resources[resourceCount++] = ShaderCounters::Bind(ReflCounterSlot, counters);
+	ReflPush push = {};
+	push.cube = Constants.Cube;
+	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;
+
+	if (techniqueIndex == 0)
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));
+	const bool drawn = ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);
+	if (counters) HiZCounters.End();
+	return drawn;
 }

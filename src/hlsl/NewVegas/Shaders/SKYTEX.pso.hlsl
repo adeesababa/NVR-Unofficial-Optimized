@@ -19,13 +19,16 @@ float4 TESR_SunPosition : register(c14);
 float4 TESR_SunsetColor : register(c15);
 float4 TESR_HDRBloomData : register(c16);
 float4 TESR_SunDiskColor : register(c17);
-float4 TESR_CloudVolumeData : register(c18);
-float4 TESR_CloudVolumeData2 : register(c19);
-float4 TESR_CloudVolumeLight : register(c21);
-float4 TESR_GameTime : register(c22);
 float4 TESR_CloudsHide : register(c23);
 float4 TESR_SkyTint : register(c24);
 float4 TESR_MoonData : register(c25);
+float4 TESR_SkyTintHorizon : register(c26);
+float4 TESR_SkyLook : register(c27);
+float4 TESR_ReciprocalResolution : register(c28);
+row_major float4x4 TESR_InvProjectionTransform : register(c29);
+row_major float4x4 TESR_InvViewTransform : register(c33);
+float4 TESR_RenderScale : register(c37);
+#define SKY_VIEW_DIRECTION
 
 
 // Registers:
@@ -170,143 +173,6 @@ float4 ShadeClouds(float4 finalColor, float4 vertexColor, float3 skyColor, SunVa
 }
 
 
-static const float CLOUD_REF_THICKNESS = 2500.0;
-static const float CLOUD_EXTINCTION = 3.0;
-static const float CLOUD_HORIZON_LO = 0.05;
-static const float CLOUD_HORIZON_HI = 0.15;
-static const float CLOUD_ERODE = 0.35;
-static const float CLOUD_SUN = 0.3;
-static const float2 CLOUD_WIND = float2(0.6, 0.8);
-
-float CloudHash(float3 p) {
-    p = frac(p * 0.1031);
-    p += dot(p, p.zyx + 31.32);
-    return frac((p.x + p.y) * p.z);
-}
-
-float CloudNoise(float3 p) {
-    float3 i = floor(p);
-    float3 f = frac(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float4 x0 = float4(CloudHash(i), CloudHash(i + float3(0.0, 1.0, 0.0)), CloudHash(i + float3(0.0, 0.0, 1.0)), CloudHash(i + float3(0.0, 1.0, 1.0)));
-    float4 x1 = float4(CloudHash(i + float3(1.0, 0.0, 0.0)), CloudHash(i + float3(1.0, 1.0, 0.0)), CloudHash(i + float3(1.0, 0.0, 1.0)), CloudHash(i + float3(1.0, 1.0, 1.0)));
-    float4 x = lerp(x0, x1, f.x);
-    float2 y = lerp(x.xz, x.yw, f.y);
-    return lerp(y.x, y.y, f.z);
-}
-
-float CloudDetail(float3 q) {
-    float n = 0.0;
-    float amp = 0.65;
-    [unroll] for (int o = 0; o < 2; o++) {
-        n += amp * CloudNoise(q);
-        q = q * 2.03 + 17.1;
-        amp = 0.35;
-    }
-    return saturate((n - 0.5) * 1.5 + 0.5);
-}
-
-float CloudProfile(float h) {
-    return smoothstep(0.0, 0.2, h) * (1.0 - smoothstep(0.6, 1.0, h));
-}
-
-float CloudPhase(float cosT, float g) {
-    float g2 = g * g;
-    return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cosT, 0.01), 1.5);
-}
-
-float CloudCoverage(float2 uv, float2 uvBlend, float lod) {
-    float a = tex2Dlod(TexMap, float4(uv, 0.0, lod)).a;
-    float b = tex2Dlod(TexMapBlend, float4(uvBlend, 0.0, lod)).a;
-    return lerp(a, b, Params.x);
-}
-
-float4 ShadeVolumetricClouds(float4 flatColor, float coverage, float2 uv, float2 uvBlend, float2 pixel, float4 vertexColor, float3 skyColor, SunValues Sun, float3 dir){
-    float band = smoothstep(CLOUD_HORIZON_LO, CLOUD_HORIZON_HI, dir.z);
-    if (band <= 0.0) return flatColor;
-
-    float slabBase = TESR_CloudVolumeData.z;
-    float thickness = TESR_CloudVolumeData.w;
-    float steps = TESR_CloudVolumeData.y;
-    float density = TESR_CloudVolumeData2.x;
-    float absorption = TESR_CloudVolumeData2.y;
-    float detailScale = TESR_CloudVolumeData2.z;
-    float uvScale = TESR_CloudVolumeData2.w;
-    float g = TESR_CloudVolumeLight.x;
-    float silverLining = TESR_CloudVolumeLight.y;
-    float ambientStrength = TESR_CloudVolumeLight.z;
-    float detailSpeed = TESR_CloudVolumeLight.w;
-    float transparency = TESR_CloudData.z;
-    float brightness = TESR_CloudData.w;
-
-    float2 slope = dir.xy / dir.z;
-    float2 uvSlope = slope * uvScale;
-    float3 slopeXYZ = float3(slope, 1.0);
-
-    float midHeight = 0.5 * thickness;
-    float coarse = max(CloudCoverage(uv, uvBlend, 4.0), CloudCoverage(uv + uvSlope * midHeight, uvBlend + uvSlope * midHeight, 4.0));
-    if (coverage < 0.01 && coarse < 0.01) return flatColor;
-
-    float3 sunDir = TESR_SunPosition.xyz;
-    float sunZ = max(sunDir.z, 0.15);
-    float2 lightUV = sunDir.xy / sunZ * uvScale * (0.35 * thickness);
-    float cosT = dot(dir, sunDir);
-    float sunOn = Sun.isDayTime;
-    float3 sunLight = Sun.sunColor * (CLOUD_SUN * sunOn * CloudPhase(cosT, g));
-    float facing = saturate(cosT);
-    float backW = facing * facing;
-    backW *= backW;
-    float frontW = saturate(-cosT);
-    float ambientWhite = saturate(brightness) * lerp(1.0, 0.35, sunOn);
-    float3 ambient = lerp(float3(ambientWhite, ambientWhite, ambientWhite), skyColor, (1.0 - Sun.sunHeight) * sunOn) * ambientStrength;
-
-    float thicknessRatio = thickness / CLOUD_REF_THICKNESS;
-    float viewExt = absorption * CLOUD_EXTINCTION * transparency * thicknessRatio / (steps * dir.z);
-    float lightExt = absorption * CLOUD_EXTINCTION * transparency * density * thicknessRatio * 0.35 / sunZ;
-
-    float jitter = CloudHash(float3(pixel, 0.5));
-    float3 drift = float3(CLOUD_WIND * (TESR_GameTime.z * detailSpeed), 0.0);
-    float3 inScatter = 0.0;
-    float transmittance = 1.0;
-    float stepI = 0.0;
-    [loop] for (int k = 0; k < 16; k++) {
-        if (stepI >= steps) break;
-
-        float h = (stepI + jitter) / steps;
-        float zAbove = h * thickness;
-        float2 uvK = uv + uvSlope * zAbove;
-        float2 uvBK = uvBlend + uvSlope * zAbove;
-
-        float dens = CloudCoverage(uvK, uvBK, 0.0) * CloudProfile(h) * density;
-        float shape = 0.0;
-        if (dens > 0.001) {
-            float n = CloudDetail(slopeXYZ * (slabBase + zAbove) * detailScale + drift);
-            shape = saturate((dens - (1.0 - n) * CLOUD_ERODE) / (1.0 - CLOUD_ERODE));
-        }
-
-        float lit = 0.0;
-        [unroll] for (int j = 0; j < 2; j++) {
-            float along = float(j + 1);
-            lit += CloudCoverage(uvK + lightUV * along, uvBK + lightUV * along, 1.0) * CloudProfile(h + 0.35 * along);
-        }
-        float sunT = exp(-lightExt * lit);
-
-        float powder = 1.0 - exp(-2.0 * shape);
-        float silver = 1.0 + silverLining * backW * (1.0 - powder);
-        float3 S = sunLight * (sunT * silver * lerp(1.0, powder, frontW)) + ambient * (0.5 + 0.5 * h);
-
-        float stepT = exp(-viewExt * shape);
-        inScatter += transmittance * S * (1.0 - stepT);
-        transmittance *= stepT;
-        stepI += 1.0;
-    }
-
-    float opacity = 1.0 - transmittance;
-    float3 colour = inScatter / max(opacity, 0.0001);
-    float4 volume = float4(colour * vertexColor.rgb * Params.y * SkyMultiplier * brightness, opacity * vertexColor.a);
-
-    return delinearize(lerp(linearize(flatColor), volume, band));
-}
 
 
 VS_OUTPUT main(VS_INPUT IN) {
@@ -339,9 +205,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         return OUT;
     } else {
         if (TESR_CloudsHide.x > 0.5) { OUT.color_0 = float4(0.0, 0.0, 0.0, 0.0); return OUT; }
-        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor) * TESR_SkyTint.rgb;
+        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor);
+        skyColor = SkyLook(skyColor, SkyViewDirection(IN.position).z, TESR_SkyTint.rgb, TESR_SkyTintHorizon.rgb, TESR_SkyLook);
         OUT.color_0 = ShadeClouds(finalColor, color, skyColor, Sun, eyeDir);
-        if (TESR_CloudVolumeData.x > 0.5) OUT.color_0 = ShadeVolumetricClouds(OUT.color_0, finalColor.w, IN.TexUV, IN.TexBlendUV, IN.position, color, skyColor, Sun, eyeDir);
         return OUT;
     }
 };

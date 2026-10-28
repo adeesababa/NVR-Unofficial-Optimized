@@ -1,6 +1,8 @@
 #include "BounceLight.h"
 #include "BounceLightMath.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
 void BounceLightEffect::UpdateConstants() {
 }
@@ -155,7 +157,7 @@ bool BounceLightEffect::RenderSpillPyramid(IDirect3DDevice9* Device, IDirect3DTe
 	if (steadyOn) {
 		const double now = TheFrameRateManager->Time;
 		const double gap = now - spillSteadyTime;
-		const bool usable = spillSteadyValid && gap > 0.0 && gap < 0.5 && !TheShaderManager->GameState.isCellChanged;
+		const bool usable = spillSteadyValid && gap > 0.0 && gap < 0.5 && !TheShaderManager->GameState.isCameraCut;
 		D3DXMATRIX reproject;
 		D3DXMatrixIdentity(&reproject);
 		if (usable) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, spillSteadyView, spillSteadyInvView, spillSteadyProj, &reproject);
@@ -276,6 +278,131 @@ IDirect3DTexture9* BounceLightEffect::RenderSpillGather(IDirect3DDevice9* Device
 	return SUCCEEDED(result) ? textures[write] : nullptr;
 }
 
+namespace {
+	struct BouncePush {
+		UInt32 pointSampler;
+		UInt32 linearSampler;
+		UInt32 wrapSampler;
+		UInt32 pad;
+		D3DXVECTOR4 pass;
+	};
+	struct BounceUniforms {
+		D3DXMATRIX projection, invProjection, reproject;
+		D3DXVECTOR4 data, reciprocalResolution, layout, temporal, ambient, cameraData;
+	};
+
+	const D3DXVECTOR4* RegisteredConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+
+	void MakePipeline(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[8] = {};
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
+		for (UINT s = 0; s < 3; s++, count++) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = s; bindings[count].PushOffset = 4 * s; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(BouncePush), true);
+	}
+
+	UINT Resources(NVR_EXT_RESOURCE_BINDING* resources, IDirect3DBaseTexture9* const* textures, UINT textureCount, ID3D9NvrExtBuffer* uniforms) {
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) { resources[count].Slot = i; resources[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[count].pResource = textures[i]; }
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms; count++;
+		ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
+		for (UINT s = 0; s < 3; s++, count++) { resources[count].Slot = s; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = samplers[s]; }
+		return count;
+	}
+}
+
+bool BounceLightEffect::ExtPasses(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, D3DXHANDLE technique,
+	UINT firstPass, UINT endPass, IDirect3DTexture9* scene, IDirect3DTexture9* const* lowTexture, IDirect3DSurface9* const* lowSurface,
+	IDirect3DTexture9* prepTexture, IDirect3DSurface9* prepSurface, IDirect3DTexture9* const* historyTexture,
+	IDirect3DSurface9* const* historySurface, int writeIndex, const D3DXVECTOR4& layout, const D3DXVECTOR4& temporalData,
+	const D3DXVECTOR4& ambientData, const D3DXMATRIX& reproject, GpuTimer* passTimers) {
+	if (!DxvkCompute::Available()) return false;
+	const bool plus = technique != Effect->GetTechnique(0);
+	D3DXVECTOR4 gather(0.0f, 8.0f, 0.0f, 1.0f);
+	bool hard = false;
+	if (plus) {
+		if (technique == TechniqueHandle(techPlus, "BounceLightPlus") || (hard = technique == TechniqueHandle(techPlusHard, "BounceLightPlusHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 8.0f, 0.0f, 1.0f);
+		else if (technique == TechniqueHandle(techTemporal, "BounceLightTemporal") || (hard = technique == TechniqueHandle(techTemporalHard, "BounceLightTemporalHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 8.0f, 1.0f, 4.0f);
+		else if (technique == TechniqueHandle(techTemporalHalf, "BounceLightTemporalHalf") || (hard = technique == TechniqueHandle(techTemporalHalfHard, "BounceLightTemporalHalfHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 4.0f, 1.0f, 8.0f);
+		else return false;
+	}
+	MakePipeline(extPrepare, "BounceLightPrepare", 4);
+	MakePipeline(extGather, "BounceLightGather", 3);
+	MakePipeline(extBlur, "BounceLightBlur", 1);
+	MakePipeline(extCombine, "BounceLightCombine", 3);
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* noise = ExtFileTexture("TESR_BlueNoiseSampler");
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = RegisteredConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* reciprocalResolution = RegisteredConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	if (!extPrepare.Pipeline || !extGather.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !DxvkCompute::PointClamp() ||
+		!DxvkCompute::LinearClamp() || !DxvkCompute::PointWrap() || !depth || !normals || !noise || !projection || !invProjection ||
+		!reciprocalResolution || !cameraData) return false;
+	BounceUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	uniforms.reproject = reproject;
+	uniforms.data = Constants.Data;
+	uniforms.reciprocalResolution = *reciprocalResolution;
+	uniforms.layout = layout;
+	uniforms.temporal = temporalData;
+	uniforms.ambient = ambientData;
+	uniforms.cameraData = *cameraData;
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+	const bool useHistory = historyTexture != nullptr;
+	NVR_EXT_RESOURCE_BINDING resources[8] = {};
+	BouncePush push = {};
+	for (UINT p = firstPass; p < endPass; ++p) {
+		GpuProfileScope gpu(passTimers[p], Device);
+		bool drawn = false;
+		if (p == 0) {
+			push.pass = D3DXVECTOR4(plus ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[4] = { depth, normals, scene, lowTexture[0] };
+			drawn = ExtDrawTo(extPrepare.Pipeline, &prepSurface, 1, resources, Resources(resources, inputs, 4, buffer), &push, sizeof(push));
+		}
+		else if (p == 1) {
+			push.pass = gather;
+			IDirect3DBaseTexture9* inputs[3] = { prepTexture, noise, useHistory ? historyTexture[writeIndex ^ 1] : prepTexture };
+			IDirect3DSurface9* target = useHistory ? historySurface[writeIndex] : lowSurface[0];
+			drawn = ExtDrawTo(extGather.Pipeline, &target, 1, resources, Resources(resources, inputs, 3, buffer), &push, sizeof(push));
+		}
+		else if (p == 2 || p == 3) {
+			push.pass = p == 2 ? D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f) : D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[1] = { p == 3 ? lowTexture[1] : useHistory ? historyTexture[writeIndex] : lowTexture[0] };
+			drawn = ExtDrawTo(extBlur.Pipeline, &lowSurface[p == 2 ? 1 : 0], 1, resources, Resources(resources, inputs, 1, buffer), &push, sizeof(push));
+		}
+		else {
+			push.pass = D3DXVECTOR4(hard ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[3] = { scene, depth, lowTexture[0] };
+			drawn = ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extCombine.Pipeline, resources, Resources(resources, inputs, 3, buffer),
+				&push, sizeof(push), false);
+		}
+		if (!drawn) return false;
+	}
+	if (endPass < 5 && ++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
+	return true;
+}
+
 void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
@@ -348,6 +475,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		lastValid = historyValid = false;
 		return;
 	}
+	RenderRect::WholeViewport(Device, original);
 	auto timer = TimeLogger();
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -363,8 +491,11 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 
 	const bool onlyCombine = combineOnly && deferredReady && deferredTexture == lowTexture[0];
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = lastValid && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
-		!TheShaderManager->GameState.isCellChanged;
+	static bool lastRect = false;
+	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
+	if (!onlyCombine) lastRect = RenderRect::Active();
+	const bool continuous = lastValid && rectSame && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
+		!TheShaderManager->GameState.isCameraCut;
 	const float frameSeconds = continuous ? (float)(now - lastTime) : 0.0f;
 	if (!onlyCombine) {
 		bool moved = false;
@@ -397,17 +528,18 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	Effect->SetVector(layoutHandle, &layout);
 	const bool useHistory = historyTexture != nullptr;
 	const int writeIndex = historyIndex ^ 1;
+	D3DXVECTOR4 temporalData(0.0f, 0.0f, 0.0f, 0.0f), ambientData(0.0f, 0.0f, 0.0f, 0.0f);
+	D3DXMATRIX reproject;
+	D3DXMatrixIdentity(&reproject);
 	if (plus && !onlyCombine) {
 		static const float HistoryShare = 0.9f;
-		D3DXVECTOR4 temporalData(useHistory && continuous && historyValid ? HistoryShare : 0.0f, continuous ? multiBounce : 0.0f,
+		temporalData = D3DXVECTOR4(useHistory && continuous && historyValid ? HistoryShare : 0.0f, continuous ? multiBounce : 0.0f,
 			(float)(frameNumber % 1024), 0.0f);
 		D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient;
 		if (!TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() &&
 			Player->parentCell->lighting)
 			ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4();
-		D3DXVECTOR4 ambientData(0.25f * BounceLinear(ambient.x), 0.25f * BounceLinear(ambient.y), 0.25f * BounceLinear(ambient.z), offScreenLight);
-		D3DXMATRIX reproject;
-		D3DXMatrixIdentity(&reproject);
+		ambientData = D3DXVECTOR4(0.25f * BounceLinear(ambient.x), 0.25f * BounceLinear(ambient.y), 0.25f * BounceLinear(ambient.z), offScreenLight);
 		if (continuous) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, lastView, lastInvView, lastProj, &reproject);
 		Effect->SetVector(temporalHandle, &temporalData);
 		Effect->SetVector(ambientHandle, &ambientData);
@@ -459,8 +591,12 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	GpuTimer* passTimers = quarter ? quarterTimers : halfTimers;
 	const UINT firstPass = onlyCombine ? 4 : 0, endPass = deferCombine ? 4 : 5;
 	UINT passes = 0;
-	HRESULT result = Effect->Begin(&passes, 0);
-	if (SUCCEEDED(result)) {
+	const D3DXHANDLE drawnTechnique = hardEdges || (spill && spillHardEdges > 0.0f) ? spillTechnique : technique;
+	const bool extDrawn = !spill && !debugView && !ExtFailed && DxvkCompute::PassesOn() &&
+		ExtPasses(Device, RenderTarget, RenderedSurface, drawnTechnique, firstPass, endPass, scene, lowTexture, lowSurface, prepTexture, prepSurface,
+			historyTexture, historySurface, writeIndex, layout, temporalData, ambientData, reproject, passTimers);
+	HRESULT result = extDrawn ? S_OK : Effect->Begin(&passes, 0);
+	if (!extDrawn && SUCCEEDED(result)) {
 		for (UINT p = firstPass; p < endPass && SUCCEEDED(result); ++p) {
 			const bool combine = p == 4;
 			IDirect3DSurface9* destination = combine ? finalTarget : p == 0 ? prepSurface :
@@ -482,6 +618,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			else if (p == 3) Device->SetTexture(5, lowTexture[1]);
 			Device->SetTexture(8, p == 1 && spill ? spillResult : combine && debugView == 1 ? spillTexture[0] : nullptr);
 			Device->SetTexture(2, scene);
+			RenderRect::ApplyViewport(Device);
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
@@ -519,6 +656,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			deferredTexture = lowTexture[0];
 			deferredLayout = layout;
 		}
+		else if (extDrawn) {}
 		else if (chained) chain.Commit();
 		else Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}

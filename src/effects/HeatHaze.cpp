@@ -1,7 +1,9 @@
+
 #include <algorithm>
 
 #include "HeatHaze.h"
 #include "../core/FrameClock.h"
+#include "../core/DxvkCompute.h"
 
 void HeatHazeEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_HeatHazeData", &Constants.Data);
@@ -58,4 +60,39 @@ void HeatHazeEffect::UpdateConstants() {
 
 bool HeatHazeEffect::ShouldRender() {
 	return Constants.Data.x > 1e-6f;
+}
+
+bool HeatHazeEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 heatHazeData, heatHazeNoise, misc, viewCol0, viewCol1, viewCol2; UInt32 linearIndex; UInt32 pointIndex; } push = {};
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[4] = {};
+		bindings[0].Set = 1; bindings[0].Binding = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].Slot = 0; bindings[0].ViewType = NVR_EXT_VIEW_2D;
+		bindings[1].Set = 1; bindings[1].Binding = 1; bindings[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[1].Slot = 1; bindings[1].ViewType = NVR_EXT_VIEW_2D;
+		bindings[2].Type = NVR_EXT_BIND_SAMPLER; bindings[2].Slot = 0; bindings[2].PushOffset = 96;
+		bindings[3].Type = NVR_EXT_BIND_SAMPLER; bindings[3].Slot = 1; bindings[3].PushOffset = 100;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("HeatHaze", bindings, _countof(bindings), sizeof(Push), true);
+	}
+	IDirect3DBaseTexture9* rendered = TheTextureManager->RenderedTexture;
+	IDirect3DBaseTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!extPass.Pipeline || !rendered || !depth || !linear || !point) return false;
+
+	const D3DXMATRIX& V = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& P = TheRenderManager->projMatrix;
+	push.heatHazeData = Constants.Data;
+	push.heatHazeNoise = Constants.Noise;
+	push.misc = D3DXVECTOR4(P._11, P._22, TheRenderManager->CameraData.y, TheShaderManager->ShaderConst.ReciprocalResolution.z);
+	push.viewCol0 = D3DXVECTOR4(V._11, V._21, V._31, 0.0f);
+	push.viewCol1 = D3DXVECTOR4(V._12, V._22, V._32, 0.0f);
+	push.viewCol2 = D3DXVECTOR4(V._13, V._23, V._33, 0.0f);
+
+	NVR_EXT_RESOURCE_BINDING resources[4] = {};
+	resources[0].Slot = 0; resources[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[0].pResource = rendered;
+	resources[1].Slot = 1; resources[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[1].pResource = depth;
+	resources[2].Slot = 0; resources[2].Type = NVR_EXT_BIND_SAMPLER; resources[2].pResource = linear;
+	resources[3].Slot = 1; resources[3].Type = NVR_EXT_BIND_SAMPLER; resources[3].pResource = point;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass.Pipeline, resources, _countof(resources), &push, sizeof(push));
 }

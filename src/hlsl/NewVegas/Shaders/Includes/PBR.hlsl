@@ -77,6 +77,15 @@ float3 Fresnel(float3 f0, float3 f90, float cosine) {
     return f0 + (f90 - f0) * pow(1 - cosine, 5.f);
 }
 
+float3 EnvBRDFApprox(float3 f0, float roughness, float NdotV) {
+    const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+    const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28f * NdotV)) * r.x + r.y;
+    float2 ab = float2(-1.04f, 1.04f) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+
 // Diffuse
 // Lambert
 float3 LambertianDiffuse(float3 albedo, float3 fresnel) {

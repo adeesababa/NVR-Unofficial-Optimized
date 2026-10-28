@@ -1,6 +1,8 @@
 #include <algorithm>
 
 #include "SMAA.h"
+#include "Tonemapping.h"
+#include "../core/DxvkCompute.h"
 
 void SMAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SMAAResolution", &Constants.Resolution);
@@ -69,8 +71,17 @@ void SMAAEffect::UpdateConstants() {
 	Constants.Pred = D3DXVECTOR4(Settings.Main.Predication ? 1.0f : 0.0f, Settings.Main.PredicationScale, Settings.Main.PredicationStrength, Settings.Main.DeDither ? 1.0f : 0.0f);
 };
 
+static void MakeStencil(IDirect3DDevice9* Device, IDirect3DSurface9*& Surface, bool& Failed) {
+	if (Surface || Failed) return;
+	if (FAILED(Device->CreateDepthStencilSurface(TheRenderManager->width, TheRenderManager->height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE, &Surface, NULL))) {
+		Surface = nullptr;
+		Failed = true;
+		Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
+	}
+}
+
 /*
- * Render SMAA by performing the three main passes (edge detection, blending weight calculation, and final blending). 
+ * Render SMAA by performing the three main passes (edge detection, blending weight calculation, and final blending).
  */
 void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled) {
@@ -80,14 +91,14 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 
 	auto timer = TimeLogger();
 
-	IDirect3DSurface9* previousDepth = nullptr;
-	if (!Textures.StencilSurface && !Textures.StencilFailed) {
-		if (FAILED(Device->CreateDepthStencilSurface(TheRenderManager->width, TheRenderManager->height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE, &Textures.StencilSurface, NULL))) {
-			Textures.StencilSurface = nullptr;
-			Textures.StencilFailed = true;
-			Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
-		}
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+		Device->SetRenderTarget(0, RenderTarget);
+		renderTime = timer.LogTime("EffectRecord::ExtRender SMAA");
+		return;
 	}
+
+	IDirect3DSurface9* previousDepth = nullptr;
+	MakeStencil(Device, Textures.StencilSurface, Textures.StencilFailed);
 	const bool ownStencil = Textures.StencilSurface != nullptr && !ReShadeIntegration::KeepDepthBound();
 	if (ownStencil) {
 		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;
@@ -185,4 +196,132 @@ void SMAAEffect::NeighborhoodBlendingPass(IDirect3DSurface9* RenderTarget) {
 	Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 	Effect->EndPass();
 	Effect->End();
+}
+
+namespace {
+	struct SMAAPush {
+		D3DXVECTOR4 Resolution, Data, DepthData, Pred, ToneMappingClip;
+		UInt32 samplerIndex, pointSamplerIndex, mode, flags;
+	};
+	const NVR_EXT_BINDING_DESC SMAAEdgesBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+	};
+	const NVR_EXT_BINDING_DESC SMAAWeightsBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE, 2, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       1, NVR_EXT_VIEW_2D, FALSE, 84 },
+	};
+	const NVR_EXT_BINDING_DESC SMAANeighborhoodBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+	};
+}
+
+bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	IDirect3DBaseTexture9* area = ExtFileTexture("TESR_SMAA_AreaTex");
+	IDirect3DBaseTexture9* search = ExtFileTexture("TESR_SMAA_SearchTex");
+	if (!depth || !area || !search || !Textures.SMAA_Edges_Texture || !Textures.SMAA_Blend_Texture || !TheTextureManager->RenderedTexture) return false;
+
+	UInt32 mode;
+	switch (Settings.Main.EdgeDetection) {
+	case INPUT_LUMA: mode = 0; break;
+	case INPUT_COLOR: mode = 1; break;
+	case INPUT_DEPTH: mode = 2; break;
+	case INPUT_LUMADEPTH:
+		mode = (Settings.Main.Predication || Settings.Main.DeDither) && TechniqueHandle(techLumaDepthStable, "LumaDepthEdgeDetectionStable") ? 4 : 3;
+		break;
+	default: return false;
+	}
+
+	bool masked = !Textures.StencilFailed && !ReShadeIntegration::KeepDepthBound();
+	if (!masked) {
+		IDirect3DSurface9* bound = nullptr;
+		D3DSURFACE_DESC desc;
+		if (SUCCEEDED(Device->GetDepthStencilSurface(&bound)) && bound && SUCCEEDED(bound->GetDesc(&desc)))
+			masked = desc.Format == D3DFMT_D24S8 || desc.Format == D3DFMT_D24FS8 || desc.Format == D3DFMT_D24X4S4 || desc.Format == D3DFMT_D15S1;
+		if (bound) bound->Release();
+	}
+	const bool stencil = masked && DxvkCompute::StencilOn() && !ReShadeIntegration::KeepDepthBound()
+		&& (MakeStencil(Device, Textures.StencilSurface, Textures.StencilFailed), Textures.StencilSurface != nullptr);
+
+	auto make =[](ExtPass& pass, const char* spvName, const NVR_EXT_BINDING_DESC* bindings, UINT count) {
+		if (!pass.Tried) {
+			pass.Tried = true;
+			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(SMAAPush), true);
+		}
+		return pass.Pipeline != nullptr;
+	};
+	char edgeSuffix[8];
+	_snprintf_s(edgeSuffix, sizeof(edgeSuffix), _TRUNCATE, "m%u", mode);
+	ID3D9NvrExtPipeline* edgesPipeline = ExtVariant(extVariants, extEdges, "SMAAEdges", edgeSuffix, [](const char* name) {
+		return DxvkCompute::CreateGraphicsPipeline(name, SMAAEdgesBindings, _countof(SMAAEdgesBindings), sizeof(SMAAPush), true);
+	});
+	if (!edgesPipeline ||
+		!make(extWeights, "SMAAWeights", SMAAWeightsBindings, _countof(SMAAWeightsBindings)) ||
+		!make(extNeighborhood, "SMAANeighborhood", SMAANeighborhoodBindings, _countof(SMAANeighborhoodBindings))) return false;
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!linear || !point) return false;
+
+	SMAAPush push = {};
+	push.Resolution = Constants.Resolution;
+	push.Data = Constants.Data;
+	push.DepthData = Constants.DepthData;
+	push.Pred = Constants.Pred;
+	if (TheShaderManager->Shaders.Tonemapping) push.ToneMappingClip = TheShaderManager->Shaders.Tonemapping->Constants.Clip;
+	push.mode = mode;
+
+	NVR_EXT_DEPTH_STENCIL mark = {}, test = {};
+	if (stencil) {
+		IDirect3DSurface9* previousDepth = nullptr;
+		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;
+		Device->SetRenderTarget(0, Textures.SMAA_Edges_Surface);
+		Device->SetDepthStencilSurface(Textures.StencilSurface);
+		Device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_STENCIL, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+		Device->SetRenderTarget(0, Textures.SMAA_Blend_Surface);
+		Device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+		Device->SetDepthStencilSurface(previousDepth);
+		if (previousDepth) previousDepth->Release();
+
+		mark.pResource = test.pResource = Textures.StencilSurface;
+		mark.StencilTest = test.StencilTest = TRUE;
+		mark.StencilReference = test.StencilReference = 1;
+		mark.StencilReadMask = test.StencilReadMask = 0xFF;
+		mark.StencilCompare = NVR_EXT_COMPARE_ALWAYS;
+		mark.StencilPassOp = NVR_EXT_STENCIL_REPLACE;
+		mark.StencilWriteMask = 0xFF;
+		test.StencilCompare = NVR_EXT_COMPARE_EQUAL;
+	}
+
+	push.flags = stencil ? 1u : 0u;
+	NVR_EXT_RESOURCE_BINDING edges[3] = {};
+	edges[0].Slot = 0; edges[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[0].pResource = TheTextureManager->RenderedTexture;
+	edges[1].Slot = 1; edges[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[1].pResource = depth;
+	edges[2].Slot = 0; edges[2].Type = NVR_EXT_BIND_SAMPLER; edges[2].pResource = linear;
+	if (!ExtDrawTo(edgesPipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push), nullptr, ExtUv::TexelCentre,
+		stencil ? &mark : nullptr)) return false;
+
+	push.flags = 0u;
+	push.mode = masked && !stencil ? 1 : 0;
+	NVR_EXT_RESOURCE_BINDING weights[5] = {};
+	weights[0].Slot = 0; weights[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[0].pResource = Textures.SMAA_Edges_Texture;
+	weights[1].Slot = 1; weights[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[1].pResource = area;
+	weights[2].Slot = 2; weights[2].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[2].pResource = search;
+	weights[3].Slot = 0; weights[3].Type = NVR_EXT_BIND_SAMPLER; weights[3].pResource = linear;
+	weights[4].Slot = 1; weights[4].Type = NVR_EXT_BIND_SAMPLER; weights[4].pResource = point;
+	if (!ExtDrawTo(extWeights.Pipeline, &Textures.SMAA_Blend_Surface, 1, weights, _countof(weights), &push, sizeof(push), nullptr, ExtUv::TexelCentre,
+		stencil ? &test : nullptr)) return false;
+
+	push.mode = 0;
+	NVR_EXT_RESOURCE_BINDING blend[3] = {};
+	blend[0].Slot = 0; blend[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; blend[0].pResource = TheTextureManager->RenderedTexture;
+	blend[1].Slot = 1; blend[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; blend[1].pResource = Textures.SMAA_Blend_Texture;
+	blend[2].Slot = 0; blend[2].Type = NVR_EXT_BIND_SAMPLER; blend[2].pResource = linear;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extNeighborhood.Pipeline, blend, _countof(blend), &push, sizeof(push), true);
 }

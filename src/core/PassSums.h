@@ -13,6 +13,8 @@ namespace PassSums {
 	inline Kind Active = None;
 	inline int Runs[3] = { 0, 0, 0 };
 	inline IDirect3DSurface9* Scene = nullptr;
+	inline D3DVIEWPORT9 SceneViewport = {};
+	inline bool SceneViewportSaved = false;
 	inline IDirect3DTexture9* AccTex = nullptr;   inline IDirect3DSurface9* Acc = nullptr;
 	inline IDirect3DSurface9* AccMS = nullptr;
 	inline IDirect3DTexture9* CopyTex = nullptr;  inline IDirect3DSurface9* Copy = nullptr;
@@ -129,7 +131,9 @@ namespace PassSums {
 		static GpuTimer timer("  Pass sums (clear)");
 		GpuProfileScope gpu(timer, device);
 		Scene = target;
+		SceneViewportSaved = SUCCEEDED(device->GetViewport(&SceneViewport));
 		device->SetRenderTarget(0, AccMS ? AccMS : Acc);
+		if (SceneViewportSaved) device->SetViewport(&SceneViewport);
 		DWORD scissor = FALSE;
 		device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissor);
 		if (scissor) device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
@@ -221,6 +225,7 @@ namespace PassSums {
 		static GpuTimer timer("  Pass sums (fold in)");
 		GpuProfileScope gpu(timer, device);
 		device->SetRenderTarget(0, Scene);
+		if (SceneViewportSaved) device->SetViewport(&SceneViewport);
 		IDirect3DStateBlock9* saved = nullptr;
 		if (SUCCEEDED(device->BeginStateBlock())) {
 			RecordFoldStates(device);

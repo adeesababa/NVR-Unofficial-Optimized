@@ -13,6 +13,9 @@ float3 DiffuseDir   : register(c0);
 float3 DiffuseColor : register(c1);
 float3 ScaleMask    : register(c2);
 float4 WindData     : register(c4);
+#ifdef GRASS_POINT_LIGHT
+float4 LightPosition : register(c3);
+#endif
 float4 AlphaParam   : register(c5);
 float4 AmbientColor : register(c6);
 float4 AddlParams   : register(c7);
@@ -41,6 +44,9 @@ struct VS_OUTPUT {
     float4 shadowWorldPos : TEXCOORD1;
     float4 ambient        : TEXCOORD4;
     float4 sun            : TEXCOORD5;   // .w = distance fade
+#ifdef GRASS_POINT_LIGHT
+    float4 att            : TEXCOORD2;
+#endif
     float2 amount         : TEXCOORD6;
     float4 fog            : COLOR0;      // .w = fog amount
 };
@@ -69,18 +75,22 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
     [branch] if (GrassPairing.w > 0.5f && ((instDist > AlphaParam.z) == (GrassPairing.w < 1.5f))) {
         VS_OUTPUT gone = (VS_OUTPUT)0;
+#ifndef GRASS_POINT_LIGHT
         gone.position = float4(2.0f, 2.0f, 0.5f, 1.0f);
+#endif
         return gone;
     }
 
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
     phase = frac(phase * 0.159154937f + 0.5f) * 6.28318548f - 3.14159274f;
     float swing = sin(phase);
+#ifndef GRASS_POINT_LIGHT
     [branch] if (GrassPairing.y > 0.0f) {
         float gust = 0.75f + 0.25f * sin(GrassPairing.z * 0.25f - dot(inst.xy, WindData.xy) * 0.0078125f);
         float flutter = sin(GrassPairing.z + (inst.x - inst.y) * 0.0078125f);
         swing = swing * (1.0f + GrassPairing.y) + 1.5f * GrassPairing.y * (0.75f * gust + 0.25f * flutter);
     }
+#endif
     float sway = swing * WindData.z * (IN.color.w * IN.color.w);
 
     float3 scale = (0.01f * inst.w) * ScaleMask.xyz + 1.0f;
@@ -95,6 +105,15 @@ VS_OUTPUT main(VS_INPUT IN) {
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);
 
+#ifdef GRASS_SHADOW_CASTER
+    float casterFade = OUT.sun.w;
+    float3 casterLight = GetShadowWorldPos(OUT.position);
+    OUT = (VS_OUTPUT)0;
+    OUT.position = float4(casterLight, 1.0f);
+    OUT.uv = IN.uv;
+    OUT.shadowWorldPos = float4(casterLight, 1.0f);
+    OUT.sun.w = casterFade;
+#else
     [branch] if (TESR_Translucency.w > 0.0f) {
         float2 pushUV = GrassCameraRelative(instClip).xy * TESR_Translucency.w;
         [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
@@ -136,6 +155,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     OUT.uv = IN.uv;
     OUT.shadowWorldPos = float4(shadowWorldPos, SHADOW_VS_SENTINEL);
+#ifdef GRASS_POINT_LIGHT
+    OUT.att = float4((LightPosition.xyz - worldPos.xyz) / LightPosition.w * 0.5f + 0.5f, 0.5f);
+    if (GrassPairing.x < 0.5f) OUT.shadowWorldPos = OUT.att;
+#endif
 
+#endif
     return OUT;
 };

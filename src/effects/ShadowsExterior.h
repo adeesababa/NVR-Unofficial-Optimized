@@ -188,6 +188,8 @@ public:
 			bool KeepLampsInView;
 			int LampRanking, DebugView;
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;
+			bool ShadowClusterEnabled = false;
+			float ShadowClusterDistance = 128.0f;
 			float FillLightRadius;
 			float FillLightShadowStrength;
 			int Quality;
@@ -300,6 +302,8 @@ public:
 
 	void		clearShadowsBuffer();
 	bool		ShouldRender() override;
+	bool		ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	ExtPass		extPass;
 	void		UpdateConstants();
 	void		UpdateSettings();
 	void		RegisterConstants();

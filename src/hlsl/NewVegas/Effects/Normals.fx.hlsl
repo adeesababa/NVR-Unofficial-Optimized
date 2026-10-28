@@ -1,6 +1,9 @@
 float4 TESR_ReciprocalResolution;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = NONE; MINFILTER = NONE; MIPFILTER = NONE; };
+float4 TESR_NormalsSmoothData;
+sampler2D TESR_NormalsBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_NormalsSmoothTemp : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 
 struct VSOUT
@@ -28,13 +31,14 @@ VSOUT FrameVS(VSIN IN)
 
 float2 DepthPair(float2 uv)
 {
-	float linear01 = tex2D(TESR_DepthBuffer, uv).x;
+	float linear01 = tex2D(TESR_DepthBuffer, clampToRect(uv, TESR_ReciprocalResolution.xy)).x;
 	return float2(linear01, projectedDepthFromLinear(linear01));
 }
 
 float3 ReconstructPositionFromDepth(float2 uv, float depth)
 {
-	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
+	float2 s01 = rectToScreen(uv);
+	float4 viewSpace = mul(float4(s01.x * 2 - 1, (1 - s01.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
 }
 
@@ -97,4 +101,42 @@ technique
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ComputeNormals();
 	}
+}
+
+float3 PositionFromViewZ(float2 uv, float z) {
+	uv = rectToScreen(uv);
+	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
+}
+
+float4 SmoothNormals(VSOUT IN, uniform bool alongY) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float4 source = alongY ? tex2Dlod(TESR_NormalsSmoothTemp, float4(uv, 0.0f, 0.0f)) : tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f));
+	float3 normal = normalize(expand(source.xyz));
+	float viewZ = readDepthLod(uv);
+	[branch] if (TESR_NormalsSmoothData.x > 0.5f && viewZ < farZ * 0.99f) {
+		float3 origin = PositionFromViewZ(uv, viewZ);
+		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
+		float spacing = TESR_NormalsSmoothData.x / 3.0f;
+		float3 sum = normal;
+		[unroll] for (int k = -3; k <= 3; k++) {
+			if (k == 0) continue;
+			float dist = abs((float)k) * spacing;
+			float2 tapUV = uv + axis * (k * spacing) * TESR_ReciprocalResolution.xy;
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, TESR_RenderScale.x) * step(0.0f, tapUV.y) * step(tapUV.y, TESR_RenderScale.y);
+			tapUV = clamp(tapUV, 0.0f, TESR_RenderScale.xy);
+			float3 tapNormal = normalize(expand((alongY ? tex2Dlod(TESR_NormalsSmoothTemp, float4(tapUV, 0.0f, 0.0f)) : tex2Dlod(TESR_NormalsBuffer, float4(tapUV, 0.0f, 0.0f))).xyz));
+			float tapZ = readDepthLod(tapUV);
+			float tolerance = max(viewZ * 0.0005f * dist, 0.5f);
+			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
+			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal)) * onScreen;
+			sum += tapNormal * weight;
+		}
+		normal = normalize(sum);
+	}
+	return float4(compress(normal), source.w);
+}
+
+technique NormalsSmooth {
+	pass SmoothX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormals(false); }
+	pass SmoothY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormals(true); }
 }

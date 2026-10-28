@@ -1,6 +1,8 @@
 #include "VolumetricClouds.h"
 #include "../core/FrameClock.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"
 
 void VolumetricCloudsEffect::UpdateSettings() {
 	const SettingsStruct before = Settings;
@@ -20,7 +22,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 64);
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 256);
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);
@@ -37,6 +39,8 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ShadowRange = std::clamp(TheSettingManager->GetSettingF(section, "ShadowRange"), 4000.0f, 100000.0f);
 	Settings.WaterReflections = std::clamp(TheSettingManager->GetSettingF(section, "WaterReflections"), 0.0f, 2.0f);
 	Settings.ShadowDebug = TheSettingManager->GetSettingI(section, "ShadowDebug") != 0;
+	Settings.ShadowPrefilter = TheSettingManager->GetSettingI(section, "ShadowPrefilter") != 0;
+	Settings.ShadowSoftness = std::clamp(TheSettingManager->GetSettingF(section, "ShadowSoftness"), 0.5f, 4.0f);
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
@@ -72,6 +76,7 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsMotion", &Constants.Motion);
 	TheShaderManager->RegisterConstant("TESR_CloudsTint", &Constants.Tint);
 	TheShaderManager->RegisterConstant("TESR_CloudsTower", &Constants.Tower);
+	TheShaderManager->RegisterConstant("TESR_CloudsHistoryScale", &Constants.HistoryScale);
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
@@ -108,6 +113,7 @@ static int WeatherIndex(TESWeather* weather) {
 	default: return 0;
 	}
 }
+
 
 static std::string NormalTexturePath(const char* path) {
 	std::string s = path ? path : "";
@@ -340,7 +346,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 			targetType = std::lerp(beforeBias, nowBias, t);
 		}
 	}
-	bool snap = coverage < 0.0f || TheShaderManager->GameState.isCellChanged;
+	bool snap = coverage < 0.0f || TheShaderManager->GameState.isCameraCut;
 	if (snapWait >= 0.0f) {
 		snapWait -= dt;
 		if (snapWait < 0.0f || weatherFill.count(current)) { snap = true; snapWait = -1.0f; }
@@ -405,8 +411,9 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	const float towerFade = 1.0f - std::clamp((coverage - 0.6f) / 0.3f, 0.0f, 1.0f);
 	const float towering = Settings.Towering * towerFade * towerFade * (3.0f - 2.0f * towerFade);
 	const float towerScale = 1.0f + (Settings.TowerHeight - 1.0f) * towering;
-	const int marchSteps = (std::min)(64, (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f))));
-	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
+	ExtMarchSteps = (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f)));
+	const int marchSteps = (std::min)(64, ExtMarchSteps);
+	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, Settings.ShadowPrefilter ? Settings.ShadowSoftness : 0.0f);
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
 	Constants.Light = D3DXVECTOR4(Settings.SunStrength, Settings.AmbientStrength, Settings.Forward, rain);
@@ -468,11 +475,17 @@ static bool TowersOn(VolumetricCloudsEffect* clouds) {
 		clouds->Effect->GetTechnique(10) == clouds->TechniqueHandle(last, "ShadowMapTowers");
 }
 
+static bool PrefilterOn(VolumetricCloudsEffect* clouds) {
+	static EffectRecord::CachedHandle last;
+	return clouds->Constants.Tower.w > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapPrefilter") != NULL &&
+		clouds->Effect->GetTechnique(11) == clouds->TechniqueHandle(last, "ShadowMapPrefilter");
+}
+
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
 	const D3DXMATRIX viewProj = TheRenderManager->ViewProjMatrix;
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCellChanged;
+	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCameraCut;
 	static const float order[4][2] = { {0, 0}, {1, 1}, {1, 0}, {0, 1} };
 	Constants.PrevViewProj = continuous ? lastViewProj : viewProj;
 	Constants.Layout.z = continuous ? Settings.History : 0.0f;
@@ -487,12 +500,20 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
-		TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }
-	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }
-	RenderShadowMap(Device);
+	{
+		RenderRect::Suspend full;
+		const D3DXVECTOR4 scale = TAAEffect::RenderScaleConstant;
+		TAAEffect::RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
+			TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }
+		{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }
+		RenderShadowMap(Device);
+		TAAEffect::RenderScaleConstant = scale;
+	}
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
+	Constants.HistoryScale.x = 1.0f;
+	Constants.HistoryScale.y = 1.0f;
 	Device->SetRenderTarget(0, RenderTarget);
 	{
 		const float strength = Constants.Extra.x;
@@ -511,7 +532,7 @@ void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
 	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer shadowTimer("  Clouds shadow map");
 	GpuProfileScope gpu(shadowTimer, Device);
-	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, TowersOn(this) ? 10 : 4);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, PrefilterOn(this) ? 11 : TowersOn(this) ? 10 : 4);
 	shadowMapFrame = frame;
 }
 
@@ -524,6 +545,7 @@ float VolumetricCloudsEffect::ShadowStrengthForSunFar() {
 	const float day = std::clamp(TheShaderManager->ShaderConst.SunAmount.x, 0.0f, 1.0f);
 	return Constants.Extra.x * (0.3f + 0.7f * day) * t * t * (3.0f - 2.0f * t);
 }
+
 
 bool VolumetricCloudsEffect::ReflectionWanted() const {
 	return Enabled && Effect && Settings.WaterReflections > 0.0f && TheShaderManager->GameState.isExterior &&
@@ -660,4 +682,122 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 	}
 	target->Release();
 	if (depth) depth->Release();
+}
+
+namespace {
+	const char* const CloudsMatrixNames[] = { "TESR_CloudsPrevViewProj", "TESR_ViewTransform", "TESR_ProjectionTransform" };
+	const char* const CloudsVectorNames[] = { "TESR_ReciprocalResolution", "TESR_SunDirection", "TESR_SunColor", "TESR_SunAmount",
+		"TESR_SkyColor", "TESR_HorizonColor", "TESR_CloudsShape", "TESR_CloudsNoise", "TESR_CloudsLight", "TESR_CloudsWind",
+		"TESR_CloudsMarch", "TESR_CloudsLayout", "TESR_CloudsBlocks", "TESR_CloudsLook", "TESR_CloudsDetail", "TESR_CloudsExtra",
+		"TESR_CloudsMotion", "TESR_WaterSettings", "TESR_CameraData", "TESR_CameraPosition", "TESR_CloudsTint", "TESR_CloudsTower",
+		"TESR_PhysSky", "TESR_PhysSkySun" };
+	const UINT CloudsOptionalVectors = 2;
+	struct CloudsUniforms {
+		D3DXMATRIX	Matrices[_countof(CloudsMatrixNames)];
+		D3DXVECTOR4	Vectors[_countof(CloudsVectorNames)];
+	};
+	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, towers, prefilter; };
+
+	const D3DXVECTOR4* CloudsRegistered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DBaseTexture9* CloudsNamedTexture(const char* name) {
+		std::string text = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(text);
+		return slot ? *slot : nullptr;
+	}
+}
+
+bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	int pass;
+	switch (techniqueIndex) {
+	case 0: pass = 0; break;
+	case 1: case 6: case 7: case 8: pass = 1; break;
+	case 2: pass = 2; break;
+	case 4: case 10: case 11: pass = 3; break;
+	default: return false;
+	}
+	if (ClearRenderTarget || (pass != 0 && RenderTarget != RenderedSurface)) return false;
+	static const char* const SpvNames[4] = { "VolumetricCloudsComposite", "VolumetricCloudsMarch", "VolumetricCloudsTemporal", "VolumetricCloudsShadowMap" };
+
+	const bool physicalSky = ParameterHandle(physicalSkyCache, "TESR_SkyViewLUT") != NULL;
+	IDirect3DBaseTexture9* weather = ExtFileTexture("TESR_CloudWeather");
+	IDirect3DBaseTexture9* blueNoise = ExtFileTexture("TESR_BlueNoiseSampler");
+	IDirect3DBaseTexture9* textures[6] = {};
+	bool volume[6] = {};
+	UINT count = 0;
+	switch (pass) {
+	case 0: {
+		IDirect3DBaseTexture9* depth = CloudsNamedTexture("TESR_DepthBuffer");
+		textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = CloudsNamedTexture("TESR_NormalsBuffer");
+		textures[3] = Textures.ShadowTexture ? Textures.ShadowTexture : depth;
+		textures[4] = Textures.HistoryRead; count = 5; break;
+	}
+	case 1: case 3:
+		textures[0] = weather; textures[1] = ExtFileTexture("TESR_CloudShape"); textures[2] = ExtFileTexture("TESR_CloudDetail");
+		textures[3] = ExtFileTexture("TESR_NoiseVolume"); volume[1] = volume[2] = volume[3] = true; count = 4;
+		if (pass == 1) {
+			textures[4] = blueNoise;
+			textures[5] = physicalSky ? CloudsNamedTexture("TESR_SkyViewLUT") : blueNoise;
+			count = 6;
+		}
+		break;
+	case 2: textures[0] = Textures.CurrentTexture; textures[1] = Textures.HistoryRead; count = 2; break;
+	}
+	for (UINT i = 0; i < count; i++) if (!textures[i]) return false;
+
+	ExtPass& ext = extPasses[pass];
+	if (!ext.Tried) {
+		ext.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[11] = {};
+		for (UINT i = 0; i < count; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i;
+			bindings[i].ViewType = volume[i] ? NVR_EXT_VIEW_3D : NVR_EXT_VIEW_2D;
+		}
+		bindings[count] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 4; s++) {
+			bindings[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; bindings[count + 1 + s].Slot = s; bindings[count + 1 + s].PushOffset = s * 4;
+		}
+		ext.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvNames[pass], bindings, count + 5, sizeof(CloudsPush), true);
+	}
+	ID3D9NvrExtSampler* samplers[4] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap(),
+		DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP) };
+	if (!ext.Pipeline || !samplers[0] || !samplers[1] || !samplers[2] || !samplers[3]) return false;
+
+	CloudsUniforms uniforms = {};
+	for (UINT i = 0; i < _countof(CloudsMatrixNames); i++) {
+		const D3DXVECTOR4* value = CloudsRegistered(CloudsMatrixNames[i]);
+		if (!value) return false;
+		memcpy(&uniforms.Matrices[i], value, sizeof(D3DXMATRIX));
+	}
+	for (UINT i = 0; i < _countof(CloudsVectorNames); i++) {
+		const D3DXVECTOR4* value = CloudsRegistered(CloudsVectorNames[i]);
+		if (value) uniforms.Vectors[i] = *value;
+		else if (i < _countof(CloudsVectorNames) - CloudsOptionalVectors) return false;
+		if (!strcmp(CloudsVectorNames[i], "TESR_CloudsMarch")) uniforms.Vectors[i].x = (float)ExtMarchSteps;
+	}
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[11] = {};
+	for (UINT i = 0; i < count; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = buffer;
+	for (UINT s = 0; s < 4; s++) {
+		resources[count + 1 + s].Slot = s; resources[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; resources[count + 1 + s].pResource = samplers[s];
+	}
+	CloudsPush push = {};
+	push.fixedExit = techniqueIndex == 6 || techniqueIndex == 8 ? 1 : 0;
+	push.towers = techniqueIndex >= 7 && techniqueIndex <= 10 ? 1 : 0;
+	push.prefilter = techniqueIndex == 11 ? 1 : 0;
+	push.physicalSky = physicalSky ? 1 : 0;
+
+	if (pass == 0)
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, ext.Pipeline, resources, count + 5, &push, sizeof(push), true);
+	if (!ExtDrawTo(ext.Pipeline, &RenderTarget, 1, resources, count + 5, &push, sizeof(push))) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
+	return true;
 }

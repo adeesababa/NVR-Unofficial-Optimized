@@ -127,6 +127,12 @@
     <ClInclude Include="..\src\effects\Rain.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\GpuParticles.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\GpuGrass.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\ShadowsInteriors.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -175,6 +181,9 @@
     <ClInclude Include="..\src\effects\BloodFlowBoxes.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\BloodFluid.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Skin.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -215,6 +224,9 @@
       <Filter>Effects</Filter>
     </ClInclude>
     <ClInclude Include="..\src\effects\WetWorld.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\CoverMap.h">
       <Filter>Effects</Filter>
     </ClInclude>
     <ClInclude Include="..\src\base\Logger.h">
@@ -313,6 +325,21 @@
     <ClInclude Include="..\src\core\RenderManager.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\Sm6Pass.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\DxvkCompute.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\HiZ.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\Upscaler.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\NvrDxvkExt.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\RenderPass.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -405,6 +432,9 @@
     <ClCompile Include="..\src\effects\BloodLens.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\BarrelHaze.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\BloomLegacy.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
@@ -447,7 +477,19 @@
     <ClCompile Include="..\src\effects\POM.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\PointShadows2.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\PointShadows.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\Rain.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\GpuParticles.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\GpuGrass.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp">
@@ -495,6 +537,9 @@
     <ClCompile Include="..\src\effects\BloodFlow.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\BloodFluid.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\Skin.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
@@ -529,6 +574,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\WetWorld.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\CoverMap.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\base\Logger.cpp">
@@ -606,6 +654,15 @@
     <ClCompile Include="..\src\core\RenderManager.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\core\Sm6Pass.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\DxvkCompute.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\HiZ.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\core\RenderPass.cpp">
       <Filter>Core</Filter>
     </ClCompile>
@@ -666,6 +723,18 @@
     <ClCompile Include="..\src\effects\TAA.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\TAAFSR.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\TAAUpscale.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\Upscaler.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\UpscalerDlss.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
@@ -681,4 +750,4 @@
       <Filter>Main</Filter>
     </ResourceCompile>
   </ItemGroup>
-</Project>
+</Project>

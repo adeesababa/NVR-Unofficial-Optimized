@@ -1,3 +1,4 @@
+
 float3 DiffuseDir   : register(c0);
 float3 DiffuseColor : register(c1);
 float3 ScaleMask    : register(c2);

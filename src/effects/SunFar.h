@@ -47,6 +47,7 @@ public:
 	void	BeforeDraw(IDirect3DDevice9* Device);
 	void	RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Scene);
 	IDirect3DTexture9*	FactorTexture() const { return Constants.Apply.x > 0.5f ? Texture : nullptr; }
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
 private:
 	IDirect3DBaseTexture9*	layerTextures[4] = {};
@@ -54,4 +55,6 @@ private:
 	double	drift[4][2] = {};
 	double	lastDays = -1.0;
 	bool	cloudsReady = false;
+	ExtPass				extPass;
+	ExtUniformBuffer	extUniforms;
 };

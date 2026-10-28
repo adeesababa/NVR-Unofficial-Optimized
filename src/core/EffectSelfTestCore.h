@@ -602,6 +602,7 @@ namespace SelfTestCore {
 		bool Done() const { return step >= count * PerBlock(); }
 	};
 
+
 	struct BounceValues {
 		float neonSpill = 0, spillReach = 0, spillLightLevel = 0, spillNear = 0, spillFar = 0, spillCap = 0, spillMemorySeconds = 0;
 		float spillSeparateDepth = 0, spillHardEdges = 0, spillHoldAfterTurn = 0, spillCapSceneLight = 0, spillMaskSpillOnly = 0;

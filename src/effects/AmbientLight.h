@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../core/NvrDxvkExt.h"
+
 class AmbientLightEffect : public EffectRecord
 {
 public:
@@ -57,10 +59,24 @@ public:
 	int					normalSmoothing = 36;
 	float				normalSmoothingWorld = 0.0f;
 	float				horizonBias = 0.0f;
+	int					hizLogQ = 0;
+	bool				hizEstimateFailed = false;
+	bool				hizEstimateChecked = false;
+	UINT				hizEstimateFrames = 0;
+	bool	HiZWanted() const { return false; }
 	CachedHandle		paramEdges, techSmooth;
 	bool				prepared = false;
 	bool	RenderPrepare(IDirect3DDevice9* Device);
 	IDirect3DTexture9* SmoothedNormals() const { return prepared ? prepTexture : nullptr; }
+	static const int	SmoothComputeMaxReach = 64;
+	ID3D9NvrExtPipeline*	smoothPipeline = nullptr;
+	ID3D9NvrExtBuffer*		smoothResult = nullptr;
+	UINT				smoothWidth = 0, smoothHeight = 0;
+	bool				smoothComputeFailed = false;
+	bool				smoothComputeReachLogged = false;
+	UINT				smoothComputeFrames = 0;
+	bool	SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height);
+	void	SmoothComputeRelease();
 	IDirect3DTexture9*	statsTexture = nullptr;
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};
@@ -120,6 +136,36 @@ public:
 	void	RenderGrid(IDirect3DDevice9* Device, bool sun, bool screen);
 	bool				foldShadow = false;
 	bool				shadowApplied = false;
+
+	bool	RenderBlurCompute(const D3DXVECTOR4& layout, UINT width, UINT height);
+	ID3D9NvrExtPipeline*	blurPipeline = nullptr;
+	bool				blurComputeTried = false;
+	bool				blurComputeOk = false;
+	UINT				blurComputeFrames = 0;
+
+	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtEstimateHiZ,
+		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply, ExtShaderCount };
+	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];
+	ExtUniformBuffer	extUniforms;
+	CachedHandle		extHandles[38];
+	bool	ExtOn() const;
+	bool	ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport);
+
+	bool				computeGI = false;
+	float				giStrength = 1.0f;
+	float				giThickness = 100.0f;
+	int					giQuality = 0;
+	bool				giThinOcclusion = false;
+	int					giTest = 0;
+	IDirect3DTexture9*	giLightTexture = nullptr;
+	IDirect3DSurface9*	giLightSurface = nullptr;
+	bool				giLightTried = false;
+	bool				giFailed = false;
+	int					giFiles = -1;
+	int					giReported = -1;
+	UINT				giFrames = 0;
+	bool				giDrawn = false;
+	bool	GIActive();
 
 	void	EnsureBuffers();
 	void	UpdateConstants() {};

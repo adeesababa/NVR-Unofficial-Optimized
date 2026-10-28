@@ -13,4 +13,10 @@ public:
 	void	RegisterConstants() {};
 	void	UpdateSettings() {};
 
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	ExtPass				extPass;
+	ExtUniformBuffer	extUniforms;
+	IDirect3DTexture9*	copyTexture = nullptr;
+	IDirect3DSurface9*	copySurface = nullptr;
+
 };

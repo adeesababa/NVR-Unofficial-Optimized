@@ -41,6 +41,10 @@ public:
 	};
 	BloomTexturesStruct		Textures;
 
+	IDirect3DVertexBuffer9*	RectVertexBuffer[MaxPasses] = {};
+	D3DXVECTOR3				RectVertexKey[MaxPasses] = {};
+	IDirect3DVertexBuffer9*	LevelQuad(int i);
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	RegisterTextures();
@@ -49,4 +53,13 @@ public:
 
 	void    RenderPass(IDirect3DDevice9* Device, UINT techniqueIndex, bool ClearRenderTarget);
 	void	RenderBloomBuffer(IDirect3DSurface9* RenderTarget);
+
+	bool	RenderBloomExt(IDirect3DDevice9* Device, int passes);
+	ExtPass	extDownFirst, extDown, extUp, extUpLast;
+	bool	extLevelsTried = false;
+	struct ExtLevelsStruct {
+		IDirect3DTexture9* Texture[MaxPasses - 1];
+		IDirect3DSurface9* Surface[MaxPasses - 1];
+	};
+	ExtLevelsStruct	extLevels = {};
 };

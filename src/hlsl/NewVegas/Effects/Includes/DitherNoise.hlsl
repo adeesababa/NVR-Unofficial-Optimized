@@ -1,3 +1,4 @@
+
 float DitherGradientNoise(float2 p)
 {
     return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));

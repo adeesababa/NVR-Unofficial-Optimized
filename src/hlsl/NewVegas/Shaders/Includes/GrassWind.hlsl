@@ -1,3 +1,4 @@
+
 float GrassPushWeight(float height) {
     return saturate(saturate(height * 0.01f) * 2.0f);
 }

@@ -24,6 +24,7 @@ namespace BloodFlowBoxes {
 		int			DecalCode = 0;
 		float		Tint = 0.0f;
 		bool		Visible = true;
+		float		SlopeX = 0.0f, SlopeY = 0.0f;
 	};
 
 	inline float Length(const D3DXVECTOR3& v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }

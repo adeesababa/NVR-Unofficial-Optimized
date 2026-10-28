@@ -40,4 +40,9 @@ public:
 		if (fixedTrace && Effect && Effect->GetTechnique(fastPaths ? 4 : 3)) return fastPaths ? 4 : 3;
 		return fastPaths && Effect && Effect->GetTechnique(2) ? 2 : 0;
 	}
+
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	ExtPass				extMap;
+	ExtPass				extWet;
+	ExtUniformBuffer	extUniforms;
 };
