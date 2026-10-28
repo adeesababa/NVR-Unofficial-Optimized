@@ -47,6 +47,8 @@ public:
 		D3DXVECTOR4		SkyLook = D3DXVECTOR4(1.0f, 0.3f, 0.0f, 0.0f);
 		// UNOFFICIAL 2026-10-26: for VolumetricFog's sky colour, rgb SkyTint x SkyTintHorizon (the sky at the horizon), w saturation
 		D3DXVECTOR4		FogSkyLook = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		// UNOFFICIAL 2026-10-27: VolumetricFog's own TESR_SkyColor / SkyLowColor / HorizonColor, FogSkyLook already in them (UpdateFogSky)
+		D3DXVECTOR4		FogSkyColor, FogSkyLowColor, FogHorizonColor;
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
 	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; bool LightsObjects; };
@@ -63,6 +65,7 @@ public:
 	bool lastProjectionValid = false;
 
 	void	UpdateConstants();
+	void	UpdateFogSky();	// UNOFFICIAL 2026-10-27 the fog's tinted sky colours (ShaderManager::UpdateConstants, after the weather's)
 	void	UpdateMoonlight();	// UNOFFICIAL 2026-10-25 MoonBrightness: the game's night directional light (ShaderManager::UpdateConstants)
 	void	RegisterConstants();
 	void	UpdateSettings();

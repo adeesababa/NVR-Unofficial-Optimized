@@ -21,6 +21,9 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyTintHorizon", &Constants.SkyTintHorizon);	// UNOFFICIAL 2026-10-26
 	TheShaderManager->RegisterConstant("TESR_SkyLook", &Constants.SkyLook);
 	TheShaderManager->RegisterConstant("TESR_FogSkyLook", &Constants.FogSkyLook);
+	TheShaderManager->RegisterConstant("TESR_FogSkyColor", &Constants.FogSkyColor);	// UNOFFICIAL 2026-10-27 (UpdateFogSky)
+	TheShaderManager->RegisterConstant("TESR_FogSkyLowColor", &Constants.FogSkyLowColor);
+	TheShaderManager->RegisterConstant("TESR_FogHorizonColor", &Constants.FogHorizonColor);
 }
 
 // UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
@@ -117,6 +120,30 @@ static D3DXVECTOR3 SkyLook(D3DXVECTOR3 c, float up, const D3DXVECTOR4& tint, con
 	overhead = overhead * overhead * (3.0f - 2.0f * overhead);	// smoothstep(0, look.y, saturate(up))
 	for (int k = 0; k < 3; k++) c[k] *= tint[k] * (horizonTint[k] + (1.0f - horizonTint[k]) * overhead);
 	return c;
+}
+
+// UNOFFICIAL 2026-10-27 (user: "tint horizon still seems to do nothing"): near the horizon VolumetricFog lies over the sky and
+// coloured itself with the weather's untinted sky colours, so the horizon tint (and the main tint and saturation) were painted over
+// there; only the SM6 build of the fog took them (a register more broke the ps_3_0 composite, X4507). Now the fog reads its own
+// copies of the three colours with the sky look already in them, as the SM6 build applied it to the colour they make (SkyLook at the
+// horizon: saturation, then SkyTint x SkyTintHorizon; both are linear in the colour, so applying them to each input of GetSkyColor's
+// blend is the same): no register more, and the Vulkan fog passes take the same copies. Back in sRGB, as the shaders linearize.
+static float LinearToSrgb(float c) {
+	c = (std::max)(c, 0.0f);
+	return (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+}
+
+void SkyShaders::UpdateFogSky() {
+	const D3DXVECTOR4* from[3] = { &TheShaderManager->ShaderConst.skyColor, &TheShaderManager->ShaderConst.skyLowColor, &TheShaderManager->ShaderConst.horizonColor };
+	D3DXVECTOR4* to[3] = { &Constants.FogSkyColor, &Constants.FogSkyLowColor, &Constants.FogHorizonColor };
+	const D3DXVECTOR4& f = Constants.FogSkyLook;
+	const bool look = Enabled && (f.x != 1.0f || f.y != 1.0f || f.z != 1.0f || f.w != 1.0f);	// the game's sky (NVR's off): untinted, as it is drawn
+	static const D3DXVECTOR4 white(1.0f, 1.0f, 1.0f, 1.0f);
+	for (int i = 0; i < 3; i++) {
+		if (!look) { *to[i] = *from[i]; continue; }
+		const D3DXVECTOR3 c = SkyLook(Linearize(*from[i]), 0.0f, D3DXVECTOR4(f.x, f.y, f.z, 1.0f), white, D3DXVECTOR4(f.w, 1.0f, 0.0f, 0.0f));
+		*to[i] = D3DXVECTOR4(LinearToSrgb(c.x), LinearToSrgb(c.y), LinearToSrgb(c.z), from[i]->w);
+	}
 }
 
 static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, const D3DXVECTOR4& skyData,

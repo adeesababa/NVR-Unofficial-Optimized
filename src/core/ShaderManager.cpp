@@ -618,6 +618,7 @@ void ShaderManager::UpdateConstants() {
 	ShaderConst.skyColor.y = WorldSky->skyUpper.g;
 	ShaderConst.skyColor.z = WorldSky->skyUpper.b;
 	ShaderConst.skyColor.w = 1.0f;
+	Shaders.Sky->UpdateFogSky();	// UNOFFICIAL 2026-10-27 VolumetricFog's copies of the three sky colours with the sky look in them
 
 	// replicate vanilla behavior of enforcing max fog distance in interiors
 	ShaderConst.fogData.y = WorldSky->fogFarPlane;
