@@ -1,5 +1,6 @@
 #include "DxvkCompute.h"
 #include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
+#include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 (DisplaceObjectsLayout)
 
 ID3D9NvrExt*	DxvkCompute::Ext = nullptr;
 NVR_EXT_INFO	DxvkCompute::ExtInfo = {};
@@ -517,6 +518,11 @@ static const char* DisplaceDefine(const D3DXMACRO* Defines, const char* Name) {
 }
 
 bool DxvkCompute::DisplaceObjectsLayout() {
+	// UNOFFICIAL 2026-10-28 CapturedNormals (core/CapturedNormals.h): the layout has no channel left for the smooth normal, so every
+	// parallax rock and cliff wrote none and kept the depth-rebuilt, per-triangle one (user: snow in shards on NVN_RockCanyon08, a
+	// parallax mesh, with object displacement off). With captured normals compiled in, the layout is used only when object displacement
+	// ([Shaders.POM.Displacement] Enabled) is on at startup; turning it on later then needs a restart.
+	if (CapturedNormals::CompiledIn() && !TheSettingManager->GetSettingI("Shaders.POM.Displacement", "Enabled")) return false;
 	return DisplaceSwitch() && Ext != nullptr;
 }
 
