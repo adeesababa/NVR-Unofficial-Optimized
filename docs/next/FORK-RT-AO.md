@@ -117,7 +117,9 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
 - Next on resume: run list rt-ao-2 (lucky22; AmbientLight on; RT DebugView 4 = the view distance the helper got, 5 = the normal's
   up component) to tell an empty/garbled input from a ray-space mismatch; then rt-ao-1 again with AmbientLight on in the run toml
   and the shot lines fixed (settings FOLLOW their `shot` line). Queue with a retry on `RESULT: WAIT` (a low-memory WAIT drops the
-  ticket). Bench files: workenchoundations\listst-ao-1.txt / rt-ao-2.txt, run toml workench\deep-roadmaptao\.
+  ticket). Bench files: work/bench/foundations/lists/rt-ao-1.txt and rt-ao-2.txt, run toml work/bench/deep-roadmap/rtao/.
+t-ao-1.txt / rt-ao-2.txt, run toml workench\deep-roadmap
+tao\.
 - Nothing queued, no loop, no monitor running. To fill: per scene (lucky22 interior, og-desert, a porch / overhang exterior) the occlusion views side by
 side, the inside view (should be nearly empty), the sky views, and the cost per ray count on the iGPU at 1280x720 (NVR's F10 lines + the
 helper's own timing).
