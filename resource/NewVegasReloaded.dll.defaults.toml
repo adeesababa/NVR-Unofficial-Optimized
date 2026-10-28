@@ -1436,6 +1436,21 @@ LogLamps = false                     # DIAGNOSTIC, for finding faults: write to 
 ScopeFix = true                      # B42 Optics (picture-in-picture scopes): no lamp shadows (indoors) or sun shadows (outdoors) on the scope's lens or in the scope's picture, where they would land in the wrong places (it is drawn from another camera). Off = as before.
 DebugView = 0                        # 1: the light a shadow takes away is drawn in the lamp's own colour instead. 2: each lamp that casts shadows tints what it lights in its colour. 3 (diagnostic): only the red lamp's shadow map, read at every pixel whatever lamps the object has: red = blocked, pale colours = the six sides of its shadow map, a checker every 64 units, objects that lamp does not light at a third of the brightness. 0 off.
 
+[_Shaders.ShadowsInteriors.RT]
+Enabled = false                      # UNOFFICIAL (2026-10-28), EXPERIMENTAL, needs a restart, needs NVR DXVK with ray tracing AND a GPU that has it (an AMD RX 6000 / Radeon 680M-780M or newer, an NVIDIA RTX, an Intel Arc; NOT a GTX 10-series: there it stays off and nothing changes): indoor lamp shadows traced against the scene instead of read from each lamp's shadow cube map, per object as the per-object lamp shadows ([Shaders.ShadowsInteriors.Forward] Enabled, needed) draw them. No cube-map stair-steps, no seams, no blur from the map's resolution; shadows sharp where things touch and softer further away (LampRadius). The lamps are still picked as before (LightPoints, LampRanking); the cube maps stay as the fallback and for the A/B (Live). The log and the startup line say whether it is on and why not. docs/next/FORK-RT-LAMPS.md.
+Live = true                          # Live A/B: true = the traced shadows, false = the cube maps again (same lamps, same shaders). Applies immediately.
+MaxLamps = 8                         # [0-64] How many of the lamps with shadows (by shadow slot, the best-ranked first) are traced; the others keep their cube-map shadow. Each traced lamp costs about one ray per pixel it lights per Rays. Applies immediately.
+Rays = 1                             # [1-8] Rays per lamp per pixel. 1 = cheapest; with LampRadius above 0 the soft edge is then noise that TAA smooths (with TAA off use 4 or more). Applies immediately.
+LampRadius = 4.0                     # [0-32] World units (about 70 to a metre): the size of the lamp the rays aim at, for soft shadows (sharp where things touch, softer further away). 0 = a point: hard shadows, no noise. Applies immediately.
+InvisibleLightRadius = 24.0          # [-1-128] The same for the game's invisible lights (fill and mood lights with no lamp; see InvisibleLightShadowStrength): broad light, so a large size. -1 = LampRadius. Applies immediately.
+Jitter = true                        # Turn the rays' pattern every frame (for TAA to average). false = a fixed pattern (still noise in space, but steady). Applies immediately.
+StartOffset = 0.5                    # [0-31] World units a ray starts off the surface (and ignores before that), against a surface shadowing itself. Applies immediately.
+LampStop = 12.0                      # [0-64] A ray stops this many world units short of its lamp: the bulb and glass round the light point never shadow it. Applies immediately.
+SkipLampModels = true                # The lamp models (fixtures, shades, chandeliers, fans: LampModelShadows' list) do not shadow their own light: over the last LampModelDistance ([Shaders.ShadowsInteriors.Forward]) of each ray they are skipped, so a chandelier still shadows the room's other lamps. Needs the fork to mark them (else no effect). Applies immediately.
+SkipLampGlass = true                 # Lamp glass, bulbs and glow meshes never block a ray (they are the light). Needs the fork to mark them. Applies immediately.
+Actors = true                        # People (and creatures) cast traced shadows (if the fork's scene holds them). Applies immediately.
+DebugView = 0                        # 1 = compare: each traced lamp's light white where rays and cube map agree it is lit, black where both are blocked, RED where only the rays find a blocker, GREEN where only the cube map does. 0 off. Applies immediately.
+
 [_Shaders.ShadowsInteriors.Status]
 Enabled = true                      # Post process pointlights shadows in exteriors.
 

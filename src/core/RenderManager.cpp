@@ -1,6 +1,7 @@
 #define RESZ_CODE 0x7FA05000
 #include "ShaderWarmUp2.h"	// UNOFFICIAL 2026-10-18: ShaderWarmUp2 device hooks go in with the render manager
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
+#include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28 RT lamp shadows
 
 void RenderManager::CreateD3DMatrix(D3DMATRIX* Matrix, NiTransform* Transform) {
 
@@ -366,6 +367,7 @@ void RenderManager::Initialize() {
 	if (TheSettingManager->SettingsMain.Main.AnisotropicFilter >= 2) device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, TheSettingManager->SettingsMain.Main.AnisotropicFilter);
 	BackBuffer = CreateHDRRenderTarget();
 	DxvkCompute::Initialize(device);	// UNOFFICIAL 2026-10-23 (NVR DXVK): is the NVR extension on this d3d9.dll? (logged)
+	RtLampShadows::Initialize();	// UNOFFICIAL 2026-10-28: POINT_SHADOW_RT for the session, before any shader is loaded (logged)
 	ShaderWarmUp2::Install(device);	// UNOFFICIAL ShaderWarmUp2 (off unless [Main.Main.Performance] ShaderWarmUp2 is 1 or 2): before any shader is created
 }
 

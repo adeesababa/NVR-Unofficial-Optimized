@@ -2021,6 +2021,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.ShadowsInteriors.Forward",     "EvenTaps",           RestartRule::Changed },	// POINT_SHADOW_EVEN (deep/lampedge)
 	{ "Shaders.ShadowsInteriors.Forward",     "MagnifiedSoftness",  RestartRule::TurnOn },	// POINT_SHADOW_MAG when above 0 at start; 0 is live
 	{ "Shaders.ShadowsInteriors.Forward",     "TexelFilter",        RestartRule::Changed },	// POINT_SHADOW_TEXEL (deep/lampedge)
+	{ "Shaders.ShadowsInteriors.RT",          "Enabled",            RestartRule::Changed },	// POINT_SHADOW_RT (RtLampShadows.h); Live is live
 	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },	// cube maps made at start (ShadowManager)
 	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },

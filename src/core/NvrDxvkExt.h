@@ -967,3 +967,38 @@ __CRT_UUID_DECL(ID3D9NvrExtShare,       0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,
 __CRT_UUID_DECL(ID3D9NvrExtSharedImage, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x27);
 __CRT_UUID_DECL(ID3D9NvrExtSharedFence, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x28);
 #endif
+
+/**
+ * UNOFFICIAL 2026-10-28 "rtlamp" (fork patch nvr-rtlamp; docs/next/FORK-RT-LAMPS.md): ray queries inside D3D9 pixel shaders, for the
+ * RT lamp shadows, against a scene of the RT core (ID3D9NvrExtRt, "1.8-rt"). With the hook on, every pixel shader DXVK converts
+ * afterwards has each texCUBEgrad (texldd on a cube sampler; no game or NVR shader samples a cube with gradients otherwise)
+ * replaced by one opaque ray query against that scene, its address baked into the shader:
+ *   coordinate.xyz = origin (the scene's space: NVR's camera-relative world), ddx.xyz = the ray (t 0..1 along it, unnormalised),
+ *   ddy = (tMin, tMax, cull mask: ANDed with the instances' Mask)
+ *   result = 1 in every component when nothing is hit, 0 when something is.
+ * The scene must stay alive while the device does (its address never changes: ID3D9NvrExtRtScene::GetAddress), and a shader
+ * may trace it only after a BuildScene (until then NVR keeps the rays switched off in its constants).
+ * QueryInterface(__uuidof(ID3D9NvrExtRtLamp)); a d3d9.dll without it answers E_NOINTERFACE.
+ */
+#define NVR_EXT_RTLAMP_HOOK_ON               0x1u   /* EnableCubeGradRayQueries took a scene */
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d340")
+ID3D9NvrExtRtLamp : public IUnknown {
+  /** NVR_EXT_RTLAMP_* flags. */
+  virtual HRESULT STDMETHODCALLTYPE GetRayQueryInfo(
+          UINT*                           pFlags) = 0;
+
+  /** SceneAddress != 0: pixel shaders converted from now on trace that scene (call before NVR loads its shaders). 0: later
+      shaders are converted as by stock DXVK. D3DERR_NOTAVAILABLE when the device has no ray queries. */
+  virtual HRESULT STDMETHODCALLTYPE EnableCubeGradRayQueries(
+          UINT64                          SceneAddress) = 0;
+
+  /** Cumulative: shader conversions patched, ray queries put in (one per marked sample). */
+  virtual HRESULT STDMETHODCALLTYPE GetRayQueryStats(
+          UINT*                           pShaders,
+          UINT*                           pSamples) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtRtLamp,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x40);
+#endif

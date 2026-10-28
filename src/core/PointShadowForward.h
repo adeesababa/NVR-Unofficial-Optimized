@@ -2,6 +2,7 @@
 
 #include "PointShadowSchedule.h"
 #include "LampFixtures.h"
+#include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
 //
@@ -406,6 +407,7 @@ namespace PointShadowForward {
 				capped & 2 ? " no contact hardening or LampSize" : "");
 		}
 		DebugView = (float)forward.DebugView;
+		RtLampShadows::Update();	// UNOFFICIAL 2026-10-28 RT lamp shadows: this frame's c215-c217
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 		if (ScopeInView != ScopeWasInView && ScopeLogs < 20) {
@@ -541,6 +543,7 @@ namespace PointShadowForward {
 		IDirect3DCubeTexture9* neutral = NeutralCube();
 		for (int k = 0; k < 6; k++) bound[k] = neutral;
 		int matched = 0;
+		unsigned rayBits = 0;					// UNOFFICIAL 2026-10-28 RT lamp shadows: the draw's lights that take rays (MaxLamps by cube slot)
 		const bool trace = DebugView > 2.5f;	// DebugView 3: PointShadowTrace (PointShadowForward.hlsl)
 		int focusIndex = -1;					// view 3: which light of the draw the focus lamp is
 		bool wanted = false;
@@ -566,6 +569,7 @@ namespace PointShadowForward {
 					// red for cube slot 0 alone (DebugView 3's lamp); the other slots share the other ten colours
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
+					if (Slots[s].slot < RtLampShadows::MaxLamps) rayBits |= 1u << k;
 					matched++;
 					break;
 				}
@@ -602,6 +606,7 @@ namespace PointShadowForward {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
+		RtLampShadows::SetForPass(trace ? 0u : rayBits, force);	// c215-c217 (nothing without POINT_SHADOW_RT)
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }
 	}
 
