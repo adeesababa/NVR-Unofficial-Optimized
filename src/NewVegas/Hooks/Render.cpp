@@ -2608,6 +2608,52 @@ void AttachGrassFirstRenderPassHook() {
 		GrassFirst::Installed = DetourAttach(&(PVOID&)GrassFirst::RenderPassImmediately, &GrassFirst::RenderPassImmediatelyHook) == NO_ERROR;
 }
 
+// UNOFFICIAL 2026-10-27 / 2026-10-28 [Shaders.PBR.Main] GameShaderEyes: an eyeball's draw uses the game's own shaders (see SetShadersHook).
+// Per draw on the device only: Before (draw hooks) notes an eye draw and puts the bound pass's game shaders on the device; OnBind does it
+// again when the game binds inside that draw; After puts NVR's back. Off, or not an eye: nothing changes.
+namespace GameEyes {
+	static bool Active = false;
+	static NiD3DPixelShaderEx* PS = nullptr;
+	static NiD3DVertexShaderEx* VS = nullptr;
+
+	static void Apply(NiD3DPixelShaderEx* ps, NiD3DVertexShaderEx* vs) {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		const bool nvrPixel = ps && ps->ShaderHandleBackup && ps->ShaderHandle != ps->ShaderHandleBackup;
+		const bool nvrVertex = vs && vs->ShaderHandleBackup && vs->ShaderHandle != vs->ShaderHandleBackup;
+		PS = nvrPixel ? ps : nullptr;
+		VS = nvrVertex ? vs : nullptr;
+		if (PS) device->SetPixelShader((IDirect3DPixelShader9*)PS->ShaderHandleBackup);
+		if (VS) device->SetVertexShader((IDirect3DVertexShader9*)VS->ShaderHandleBackup);
+		static bool announced = false;
+		if ((PS || VS) && !announced) {
+			announced = true;
+			Logger::Log("UNOFFICIAL GameShaderEyes: eyeballs drawn with the game's own shaders, per draw (first: %s + %s)",
+				vs && vs->Name ? vs->Name : "?", ps && ps->Name ? ps->Name : "?");
+		}
+	}
+
+	static void Before(const PointShadowForward::RenderPassView* pass) {
+		Active = false;
+		if (!GameShaderEyes || !pass || !pass->geometry) return;
+		const BSShaderProperty* prop = static_cast<const BSShaderProperty*>(((NiGeometry*)pass->geometry)->GetProperty(NiProperty::kType_Shade));
+		if (!prop || !prop->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) return;
+		Active = true;
+		NiD3DPass* bound = *(NiD3DPass**)0x0126F74C;
+		if (bound) Apply((NiD3DPixelShaderEx*)bound->PixelShader, (NiD3DVertexShaderEx*)bound->VertexShader);
+	}
+
+	static void OnBind(NiD3DPixelShaderEx* ps, NiD3DVertexShaderEx* vs) { if (Active) Apply(ps, vs); }
+
+	static void After() {
+		if (!Active) return;
+		Active = false;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (PS) device->SetPixelShader(PS->ShaderHandle);
+		if (VS) device->SetVertexShader(VS->ShaderHandle);
+		PS = nullptr; VS = nullptr;
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -2692,21 +2738,11 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	// lamps' falloff across it, its own sun shadow and the eyelids' -- so half of each eye went dark, where the game's own shader keeps it
 	// evenly bright with its environment map. The game marks its eye meshes (Eye_Environment_Mapping, BSSP flag 17): those draw with the
 	// game's own shaders, as the race menu's face above (the next bind picks NVR's again). Off: NVR's shaders, as before.
-	if (GameShaderEyes && Geometry) {
-		const BSShaderProperty* eyeProp = static_cast<const BSShaderProperty*>(Geometry->GetProperty(NiProperty::kType_Shade));
-		if (eyeProp && eyeProp->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) {
-			const bool nvrPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
-			const bool nvrVertex = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
-			if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
-			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
-			static bool announced = false;
-			if ((nvrPixel || nvrVertex) && !announced) {
-				announced = true;
-				Logger::Log("UNOFFICIAL GameShaderEyes: eyeballs drawn with the game's own shaders (first: %s, %s + %s)", Geometry->m_pcName ? Geometry->m_pcName : "?",
-					VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader && PixelShader->Name ? PixelShader->Name : "?");
-			}
-		}
-	}
+	// 2026-10-28 (user: "pbr will pop in and out on a couple objects when im turning while standing still"; PbrPopLog + LinearSceneCensus,
+	// Freeside: road pieces and walls switching 0 <-> 1 lamp were drawn with the GAME's SLS2011 / SLS2000 ~30 times a frame): the swap above
+	// changed the shared shader object, and the game binds once for a whole run of one pass kind, so every object after an eye in that run
+	// (roads, walls, windows) was drawn with the game's flat shader too, depending on what was on screen. Now only the eye's own draw gets the
+	// game's shaders on the device (GameEyes::Before / OnBind / After, the draw hooks below); the shader objects keep NVR's.
 	// UNOFFICIAL lit particles (Shaders.Particles): the NOLIGHT replacements are shader model 3, and D3D9 cannot pair a
 	// 3.0 shader with the game's 2.x one. Where only one side of a NOLIGHT draw has a replacement -- NOLIGHTTEXVC.pso
 	// behind the game's glow/muzzle-flash vertex shaders, or NOLIGHT016/017.vso in front of the flame/spark pixel
@@ -2741,6 +2777,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	GameEyes::OnBind(PixelShader, VertexShader);	// UNOFFICIAL GameShaderEyes: inside an eye's draw, the game's shaders on the device (see above)
 	MaterialRulesDraw::AfterBind();	// UNOFFICIAL material rules: this object's class again over the bind's "no rule"
 	ReflectionProbe::AfterBind();  // UNOFFICIAL ReflectionClipFix: the clip plane re-issued once the pass's shaders are bound
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
@@ -2934,7 +2971,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
+	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GameShaderEyes, per draw
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
@@ -2985,7 +3024,9 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
+	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GameShaderEyes, per draw
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
