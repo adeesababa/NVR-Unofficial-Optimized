@@ -428,7 +428,16 @@ static NVR_EXT_TESS_STATE	DisplaceSent = {};
 static bool					DisplaceSentOnce = false;
 static float				DisplaceObjectBlend = 0.0f;	// floor = ObjectBlendWidth, fraction / 0.99 = ObjectBlendKeep; 0 = off
 
-static void DisplaceSend(const NVR_EXT_TESS_STATE& State) {
+// 2026-10-28 objects ([Shaders.POM.Displacement], family 3): their own state, the shaders registered (vertex, pixel), the pixel shaders
+// the registration turned away, and which family's state SetTessState last got (the fork keeps one state for every family).
+static NVR_EXT_TESS_STATE	DisplaceObj = {};
+static UINT					DisplaceObjRegistered[2] = {};
+static UINT					DisplaceObjSkipped = 0;
+static unsigned				DisplaceSentFamily = DxvkCompute::kDisplaceLand;
+static unsigned				DisplaceObjBinds = 0;	// object shader binds that sent the objects' state (the log's proof that they bind)
+
+static void DisplaceSend(const NVR_EXT_TESS_STATE& State, unsigned Family = DxvkCompute::kDisplaceLand) {
+	DisplaceSentFamily = Family;
 	if (DisplaceSentOnce && !memcmp(&State, &DisplaceSent, sizeof(State))) return;
 	DisplaceSent = State;
 	DisplaceSentOnce = true;
@@ -447,14 +456,14 @@ static bool DisplaceSwitch() {
 }
 
 // A [Shaders.Terrain.Displacement] switch, Missing when the key is in neither file (a DLL used with an older defaults toml)
-static bool DisplaceSettingOr(const char* Key, bool Missing) {
+static bool DisplaceSettingOr(const char* Key, bool Missing, const char* Section = "Shaders.Terrain.Displacement") {
 	SettingManager::Configuration::ConfigNode node;
-	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.IntValue != 0 : Missing;
+	return TheSettingManager->Config.FillNode(&node, Section, Key) ? node.IntValue != 0 : Missing;
 }
 
-static float DisplaceFloatOr(const char* Key, float Missing) {
+static float DisplaceFloatOr(const char* Key, float Missing, const char* Section = "Shaders.Terrain.Displacement") {
 	SettingManager::Configuration::ConfigNode node;
-	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.FloatValue : Missing;
+	return TheSettingManager->Config.FillNode(&node, Section, Key) ? node.FloatValue : Missing;
 }
 
 static ID3D9NvrExtTess* DisplaceTess() {
@@ -476,19 +485,101 @@ bool DxvkCompute::DisplaceOn() {
 		&& DisplaceRegistered[0] && DisplaceRegistered[1];
 }
 
-void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size) {
-	if (!Name || !Bytecode || !Size) return;
-	// 2026-10-27 CastShadows: the land's shadow casters (Shadows\ShadowMapLand.vso, ShadowMapLand-t<N>.pso from ShadowMapLand.pso.hlsl)
-	const bool shadow = Vertex ? !strcmp(Name, "ShadowMapLand.vso") : TemplateName && !strcmp(TemplateName, "ShadowMapLand.pso");
-	if (!shadow && (!TemplateName || strcmp(TemplateName, "TerrainTemplate"))) return;
-	if (!DisplaceSwitch() || !Ext) return;	// off at load (or native D3D9 / stock DXVK): nothing at all
-	ID3D9NvrExtTess* tess = DisplaceTess();
-	if (!tess) return;
+// 2026-10-28 objects: a define in the shader's list (Template.Defines, after ShaderRecord::BuildDefines)
+static const char* DisplaceDefine(const D3DXMACRO* Defines, const char* Name) {
+	for (const D3DXMACRO* m = Defines; m && m->Name; m++)
+		if (!strcmp(m->Name, Name)) return m->Definition ? m->Definition : "";
+	return nullptr;
+}
 
-	const UINT family = shadow ? 2 : 1;	// the land drawn by the camera / into the sun's shadow maps
+bool DxvkCompute::DisplaceObjectsLayout() {
+	return DisplaceSwitch() && Ext != nullptr;
+}
+
+// 2026-10-28 objects (see DxvkCompute.h and docs/next/FORK2-DISPLACE.md "Objects"): ParallaxTemplate's vertex shaders (PAR2000-2019.vso,
+// ModelViewProj in c0-c3) with ObjectDisplace.tcs, its pixel shaders with ObjectDisplace-h<HeightMap's sampler>.tes. The DIFFUSE lamp
+// passes write TEXCOORD2 instead of COLOR0 (their light's attenuation; vs_3_0 has room for 10 outputs): the -c shaders. Only shaders
+// compiled in the displacement layout (NVR_DISPLACE_OBJECTS); a pixel shader whose height map is elsewhere stays untessellated (logged).
+static unsigned RegisterDisplaceObject(ID3D9NvrExtTess* Tess, const char* Name, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size) {
+	const char* layout = DisplaceDefine(Defines, "NVR_DISPLACE_OBJECTS");
+	if (!layout || strcmp(layout, "1")) return 0;
+	const bool diffuse = DisplaceDefine(Defines, "DIFFUSE") != nullptr;
+
 	if (Vertex) {
 		std::vector<char> tcs;
-		if (!LoadSpirv("Tess\\TerrainDisplace.tcs", tcs)) return;
+		if (!DxvkCompute::LoadSpirv(diffuse ? "Tess\\ObjectDisplace-c.tcs" : "Tess\\ObjectDisplace.tcs", tcs)) return 0;
+		NVR_EXT_TESS_VS_DESC desc = {};
+		desc.pBytecode = Bytecode;
+		desc.BytecodeSize = Size;
+		desc.Family = DxvkCompute::kDisplaceObjects;
+		desc.pControlSpirv = tcs.data();
+		desc.ControlSpirvSize = (UINT)tcs.size();
+		for (UINT k = 0; k < 4; k++) desc.VsFloatRegisters[k] = k;	// ModelViewProj's rows, c0-c3
+		desc.pDebugName = Name;
+		const HRESULT result = Tess->RegisterTessVertexShader(&desc);
+		if (SUCCEEDED(result)) DisplaceObjRegistered[0]++;
+		else Logger::Log("UNOFFICIAL NVR DXVK: displacement: object vertex shader %s refused (%08lX; DXVK's log says why): its objects stay flat", Name, result);
+		return SUCCEEDED(result) ? DxvkCompute::kDisplaceObjects : 0;
+	}
+
+	// The height map's sampler, from the bytecode's constant table (s3 in the main pass, s2 in the others)
+	int slot = -1;
+	{
+		ID3DXConstantTable* table = nullptr;
+		if (SUCCEEDED(D3DXGetShaderConstantTableEx((const DWORD*)Bytecode, D3DXCONSTTABLE_LARGEADDRESSAWARE, &table)) && table) {
+			D3DXHANDLE handle = table->GetConstantByName(NULL, "HeightMap");
+			if (handle) slot = (int)table->GetSamplerIndex(handle);
+			table->Release();
+		}
+	}
+	char cw[64], ccw[64];
+	_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\ObjectDisplace-h%d%s.tes", slot, diffuse ? "-c" : "");
+	_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\ObjectDisplace-h%d%s-ccw.tes", slot, diffuse ? "-c" : "");
+	std::vector<char> tes, tesCcw;
+	if (slot < 2 || slot > 3 || !DxvkCompute::LoadSpirv(cw, tes)) {
+		DisplaceObjSkipped++;
+		Logger::Log("UNOFFICIAL NVR DXVK: displacement: object pixel shader %s: height map at s%d, no %s.spv: drawn flat (its object's other passes may not be)", Name, slot, cw);
+		return 0;
+	}
+	const bool haveCcw = DxvkCompute::LoadSpirv(ccw, tesCcw);
+
+	NVR_EXT_TESS_PS_DESC desc = {};
+	desc.pBytecode = Bytecode;
+	desc.BytecodeSize = Size;
+	desc.Family = DxvkCompute::kDisplaceObjects;
+	desc.pEvalSpirv[0] = tes.data();
+	desc.EvalSpirvSize[0] = (UINT)tes.size();
+	desc.pEvalSpirv[1] = haveCcw ? tesCcw.data() : nullptr;
+	desc.EvalSpirvSize[1] = haveCcw ? (UINT)tesCcw.size() : 0;
+	desc.TextureMask = 1u << slot;			// HeightMap
+	desc.PsFloatRegisters[0] = 0xFFFFFFFF;	// every parallax object has its height map
+	desc.PsFloatRegisters[1] = 0xFFFFFFFF;
+	desc.pDebugName = Name;
+	const HRESULT result = Tess->RegisterTessPixelShader(&desc);
+	if (SUCCEEDED(result)) DisplaceObjRegistered[1]++;
+	else {
+		DisplaceObjSkipped++;
+		Logger::Log("UNOFFICIAL NVR DXVK: displacement: object pixel shader %s refused (%08lX; DXVK's log says why): drawn flat", Name, result);
+	}
+	return SUCCEEDED(result) ? DxvkCompute::kDisplaceObjects : 0;
+}
+
+unsigned DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size) {
+	if (!Name || !Bytecode || !Size) return 0;
+	// 2026-10-28: the parallax objects (family 3)
+	const bool object = TemplateName && !strcmp(TemplateName, "ParallaxTemplate");
+	// 2026-10-27 CastShadows: the land's shadow casters (Shadows\ShadowMapLand.vso, ShadowMapLand-t<N>.pso from ShadowMapLand.pso.hlsl)
+	const bool shadow = Vertex ? !strcmp(Name, "ShadowMapLand.vso") : TemplateName && !strcmp(TemplateName, "ShadowMapLand.pso");
+	if (!shadow && !object && (!TemplateName || strcmp(TemplateName, "TerrainTemplate"))) return 0;
+	if (!DisplaceSwitch() || !Ext) return 0;	// off at load (or native D3D9 / stock DXVK): nothing at all
+	ID3D9NvrExtTess* tess = DisplaceTess();
+	if (!tess) return 0;
+	if (object) return RegisterDisplaceObject(tess, Name, Defines, Vertex, Bytecode, Size);
+
+	const UINT family = shadow ? kDisplaceLandShadow : kDisplaceLand;	// the land drawn by the camera / into the sun's shadow maps
+	if (Vertex) {
+		std::vector<char> tcs;
+		if (!LoadSpirv("Tess\\TerrainDisplace.tcs", tcs)) return 0;
 		NVR_EXT_TESS_VS_DESC desc = {};
 		desc.pBytecode = Bytecode;
 		desc.BytecodeSize = Size;
@@ -501,13 +592,13 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 		if (SUCCEEDED(result)) { if (shadow) DisplaceShadowVs++; else DisplaceRegistered[0]++; }
 		Logger::Log("UNOFFICIAL NVR DXVK: displacement: land %svertex shader %s %s (%08lX)", shadow ? "shadow caster " : "", Name,
 			SUCCEEDED(result) ? "registered" : "refused (DXVK's log says why)", result);
-		return;
+		return SUCCEEDED(result) ? family : 0;
 	}
 
 	int layers = 0;
 	for (const D3DXMACRO* m = Defines; m && m->Name; m++)
 		if (!strcmp(m->Name, "TEX_COUNT") && m->Definition) layers = atoi(m->Definition);
-	if (layers < 1 || layers > 7) return;	// not one of the land's lit pixel shaders
+	if (layers < 1 || layers > 7) return 0;	// not one of the land's lit pixel shaders
 
 	// 2026-10-27 ObjectBlend: a land pixel shader compiled with the scene's depth copy at s6 (TESR_DisplaceDepth, below 7 layers with
 	// NVR_DISPLACE_DEPTH) gets the TES that reads it (-d); any other (7 layers, or a .spv missing) the plain one, which keeps its bumps.
@@ -547,7 +638,7 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 		}
 		if (!LoadSpirv(cw, tes)) {
 			if (shadow) Logger::Log("UNOFFICIAL NVR DXVK: displacement: %s: no %s.spv (copy the new Compute\\Tess shaders): %d-layer land casts flat shadows", Name, cw, layers);
-			return;
+			return 0;
 		}
 		haveCcw = LoadSpirv(ccw, tesCcw);
 	}
@@ -575,6 +666,7 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 	}
 	else Logger::Log("UNOFFICIAL NVR DXVK: displacement: land %spixel shader %s refused (%08lX; DXVK's log says why): its land stays flat%s", shadow ? "shadow caster " : "",
 		Name, result, shadow ? " in the sun's shadow maps" : "");
+	return SUCCEEDED(result) ? family : 0;
 }
 
 void DxvkCompute::NoteLandPixelShader(IDirect3DPixelShader9* Shader, const D3DXMACRO* Defines) {
@@ -637,8 +729,65 @@ void DxvkCompute::DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY) {
 	DisplaceSend(state);
 }
 
+void DxvkCompute::DisplaceBind(unsigned Family) {
+	if (!DisplaceInterface) return;
+	if (Family == kDisplaceObjects) {
+		DisplaceObjBinds++;
+		DisplaceSend(DisplaceObj, kDisplaceObjects);
+	}
+	// The land: back to its base state after the objects' (a land shader with ObjectBlend's s6 then refines it, DisplaceSceneDepth)
+	else if (Family == kDisplaceLand && DisplaceSentFamily == kDisplaceObjects) DisplaceSend(DisplaceBase);
+}
+
+// 2026-10-28 objects: [Shaders.POM.Displacement] into their state (every 8 frames, from DisplaceTick). A missing key (a DLL used with an
+// older defaults toml) reads as the shipped default.
+static void DisplaceObjectSettings() {
+	const char* s = "Shaders.POM.Displacement";
+	NVR_EXT_TESS_STATE& state = DisplaceObj;
+	state.Enable = DisplaceSwitch() && DisplaceSettingOr("Enabled", false, s) ? TRUE : FALSE;	// off unless switched on
+	const int debugView = std::clamp((int)DisplaceFloatOr("DebugView", 0.0f, s), 0, 1);
+	state.Winding = (int)DisplaceFloatOr("Winding", 0.0f, s) == 1 ? 1 : 0;
+	state.Wireframe = debugView == 1 ? 1 : 0;
+	const float strength = std::clamp(DisplaceFloatOr("Strength", 8.0f, s), 0.0f, 64.0f);
+	const float fadeStart = (std::max)(DisplaceFloatOr("FadeStart", 1024.0f, s), 0.0f);
+	// ObjectDisplace.tesc push data
+	state.ControlParams[0] = (float)std::clamp((int)DisplaceFloatOr("MaxFactor", 16.0f, s), 1, 64)
+		+ 128.0f * (float)std::clamp((int)DisplaceFloatOr("FixedFactor", 0.0f, s), 0, 64);
+	state.ControlParams[1] = std::clamp(DisplaceFloatOr("EdgePixels", 12.0f, s), 2.0f, 64.0f);
+	state.ControlParams[2] = 0.5f * (float)TheRenderManager->width;
+	state.ControlParams[3] = fadeStart;
+	state.ControlParams[4] = (std::max)(DisplaceFloatOr("FadeEnd", 2048.0f, s), fadeStart + 1.0f);
+	state.ControlParams[5] = 0.5f * (float)TheRenderManager->height;
+	// The view test's margin: the most the surface can move (Strength, with Center at an end) times a clip-space slope above any field of
+	// view the game uses, scopes included (x moves by up to Strength x (ModelViewProj's x scale + 1); about 12 at a 10 degree scope)
+	state.ControlParams[6] = 16.0f * strength + 1.0f;
+	state.ControlParams[7] = 0.0f;
+	// ObjectDisplace.tese push data
+	state.EvalParams[0] = strength;
+	state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 2.0f, s), 0.0f, 32.0f) * 16.0f + 0.5f)
+		+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f, s), 0.0f, 1.0f);
+	state.EvalParams[2] = std::clamp(DisplaceFloatOr("LodBias", 0.0f, s), -2.0f, 4.0f) + 4.0f;
+	state.EvalParams[3] = std::clamp(DisplaceFloatOr("EdgeFade", 1.5f, s), 0.0f, 8.0f);
+}
+
 void DxvkCompute::DisplaceTick() {
-	if (!DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1]) return;
+	if (!DisplaceInterface) return;
+
+	// 2026-10-28 objects: their settings, and once a frame their state again if the objects were the last to bind (their shaders may stay
+	// bound into the next frame); proof in the log every 600 frames
+	const bool objects = DisplaceObjRegistered[0] && DisplaceObjRegistered[1];
+	static unsigned objFrame = 0;
+	if (objects) {
+		if ((objFrame % 8) == 0) DisplaceObjectSettings();
+		if (DisplaceSentFamily == kDisplaceObjects) DisplaceSend(DisplaceObj, kDisplaceObjects);
+		if ((objFrame % 600) == 599)
+			Logger::Log("NVR TESS objects %s: %u vertex, %u pixel shaders registered (%u left flat), %.1f object shader binds a frame",
+				DisplaceObj.Enable ? "on" : "off", DisplaceObjRegistered[0], DisplaceObjRegistered[1], DisplaceObjSkipped, (double)DisplaceObjBinds / 600.0);
+		if ((objFrame % 600) == 599) DisplaceObjBinds = 0;
+		objFrame++;
+	}
+
+	if (!DisplaceRegistered[0] || !DisplaceRegistered[1]) return;
 
 	// The settings, re-read every 8 frames (menu and test-list changes apply within that)
 	NVR_EXT_TESS_STATE& state = DisplaceBase;
@@ -688,8 +837,9 @@ void DxvkCompute::DisplaceTick() {
 	const bool shadowsHold = DisplaceCastShadows && DisplaceShadowVs && DisplaceShadowAge <= 16;
 	state.EvalParams[2] = viewParams + (shadowsHold ? 256.0f : 0.0f);
 	// Once a frame the base (ObjectBlend off: the first land draws of a frame are the water's reflection, whose view the copy is not);
-	// the world scene's land binds then switch it on (DisplaceSceneDepth). SetTessState only when it changes.
-	DisplaceSend(state);
+	// the world scene's land binds then switch it on (DisplaceSceneDepth). SetTessState only when it changes. 2026-10-28: not while the
+	// objects' state is the one in use (their shaders may still be bound); the next land bind sends this (DisplaceBind).
+	if (DisplaceSentFamily != kDisplaceObjects) DisplaceSend(state);
 
 	// Proof in the log that it runs: every 600 frames, per frame, how many land draws ran tessellated
 	if ((frame % 600) == 1) {

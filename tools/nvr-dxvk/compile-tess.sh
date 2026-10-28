@@ -8,6 +8,10 @@
 #   TerrainDisplace.tese x TEX_COUNT 1-7, SHADOW_CASTER -> TerrainDisplace-t<N>-s.tes.spv (+ -s-ccw), and 1-6 with OBJECT_DEPTH too
 #                                           -> -t<N>-sd.tes.spv (+ -sd-ccw): the land drawn into the sun's shadow cascades
 #                                           ([Shaders.Terrain.Displacement] CastShadows, core/DisplaceShadows.h; 2026-10-27)
+#   ObjectDisplace.tesc [SKIP_COLOR0]       -> ObjectDisplace.tcs.spv / ObjectDisplace-c.tcs.spv: the parallax objects (rocks, cliffs;
+#                                           [Shaders.POM.Displacement], 2026-10-28), for vertex shaders without TEXCOORD2 / without COLOR0
+#   ObjectDisplace.tese x HEIGHT_SLOT 3 / 2 -> ObjectDisplace-h3.tes.spv (main pass), -h2 (lamp, highlight, texture-only passes) and
+#                                           -h2-c (the DIFFUSE lamp passes: SKIP_COLOR0), each + -ccw
 # Every result is checked with spirv-val. Windows (Git Bash): PATH="/c/VulkanSDK/1.3.296.0/Bin:$PATH" bash tools/nvr-dxvk/compile-tess.sh
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../src/hlsl/NewVegas/Compute/Tess"
@@ -31,5 +35,17 @@ for t in 1 2 3 4 5 6 7; do
     build "TerrainDisplace-t$t-sd-ccw.tes.spv" TerrainDisplace.tese "-DTEX_COUNT=$t" -DOBJECT_DEPTH -DSHADOW_CASTER -DWINDING_CCW
     n=$((n+4))
   fi
+done
+# 2026-10-28: the parallax objects (docs/next/FORK2-DISPLACE.md "Objects")
+build ObjectDisplace.tcs.spv ObjectDisplace.tesc
+build ObjectDisplace-c.tcs.spv ObjectDisplace.tesc -DSKIP_COLOR0
+n=$((n+2))
+for v in "h3:-DHEIGHT_SLOT=3" "h2:-DHEIGHT_SLOT=2" "h2-c:-DHEIGHT_SLOT=2 -DSKIP_COLOR0"; do
+  name="${v%%:*}"; defs="${v#*:}"
+  # shellcheck disable=SC2086
+  build "ObjectDisplace-$name.tes.spv" ObjectDisplace.tese $defs
+  # shellcheck disable=SC2086
+  build "ObjectDisplace-$name-ccw.tes.spv" ObjectDisplace.tese $defs -DWINDING_CCW
+  n=$((n+2))
 done
 echo "compiled $n tessellation shaders"

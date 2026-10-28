@@ -91,9 +91,18 @@ public:
 	// TerrainDisplace-t<layers>.tes.spv (+ -ccw), all under one family. DXVK then draws the land's triangle lists as patches through
 	// them; everything else is untouched. DisplaceTick (once a frame, TerrainShaders::UpdateConstants) sends the live settings and
 	// logs 'NVR TESS' counters every 600 frames. Off at load, no NVR DXVK, or an older one: nothing is registered, nothing changes.
+	// 2026-10-28: returns the family the shader was registered under (0: none), kept on its ShaderRecord for DisplaceBind.
 	static bool					DisplaceOn();
-	static void					RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
+	static unsigned				RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
 	static void					DisplaceTick();
+	// 2026-10-28 objects ([Shaders.POM.Displacement]; docs/next/FORK2-DISPLACE.md "Objects"): the parallax objects (ParallaxTemplate.hlsl,
+	// rocks and cliffs) are family 3: their vertex shaders with Compute\Tess\ObjectDisplace[-c].tcs, their pixel shaders with
+	// ObjectDisplace-h<height slot>[-c].tes. They need settings of their own, and the fork has ONE tessellation state for every family, so
+	// a registered pixel shader's bind (ShaderRecord::SetCT, kDisplaceLand / kDisplaceObjects) sends its family's state when the other's
+	// was the last sent. DisplaceObjectsLayout: compile ParallaxTemplate with NVR_DISPLACE_OBJECTS (the switch on under NVR DXVK).
+	enum : unsigned { kDisplaceLand = 1, kDisplaceLandShadow = 2, kDisplaceObjects = 3 };
+	static void					DisplaceBind(unsigned Family);
+	static bool					DisplaceObjectsLayout();
 	// 2026-10-27 ObjectBlend ([Shaders.Terrain.Displacement] ObjectBlend / ObjectBlendWidth / ObjectBlendKeep): the bumps fade out
 	// where the land meets anything drawn before it. DisplaceDepthWanted: the world scene should take terrain blending's depth copy
 	// for it (Terrain.cpp BeginWorldScene). DisplaceSceneDepth: a land pixel shader carrying that copy at s6 binds (Terrain.cpp

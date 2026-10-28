@@ -158,6 +158,36 @@
 // no shadow term at all, so every parallax-material object rendered fully sunlit once the
 // deferred sun was switched off.
 
+// UNOFFICIAL 2026-10-28 object displacement ([Shaders.POM.Displacement], NVR DXVK 1.7-displace; docs/next/FORK2-DISPLACE.md "Objects"):
+// with [Main.Main.Performance] NvrDxvkDisplacement on at startup under NVR DXVK (NVR_DISPLACE_OBJECTS, ShaderRecord::BuildDefines) the
+// parallax objects (rocks, cliffs, walls) are drawn through Compute\Tess\ObjectDisplace.tcs / .tes, which move their surface along the
+// normal by this shader's own height map. Those shaders pass the vertex shader's outputs on by location, and DXVK numbers TEXCOORD8 and
+// TEXCOORD9 by their order in each shader (only NORMAL0, TEXCOORD0-7 and COLOR0-1 have fixed places), so in this layout:
+//  - every vertex shader writes exactly 10 of NORMAL0, TEXCOORD0-7 and COLOR0-1 (vs_3_0 has 10 outputs besides the position), unused
+//    ones as 0: all but TEXCOORD2, or all but COLOR0 in the DIFFUSE lamp passes (TEXCOORD2 is their light's attenuation). A control
+//    shader for each of the two sets serves every vertex shader (DXVK checks that it reads only what the vertex shader writes);
+//  - shadowUVs and shadowWorldPos move to TEXCOORD5 / TEXCOORD6 in the variants with a vertex colour or fog (those have at most 2
+//    lights), else to COLOR0 / COLOR1 (the lamp and highlight passes have neither; DXVK does not clamp colours in shader model 3);
+//  - NORMAL0 carries the clip position again and TEXCOORD0's zw the object normal (octahedral), for the tessellation only.
+// Off (the default), or native D3D9 / stock DXVK: the shaders exactly as before.
+#if defined(NVR_DISPLACE_OBJECTS) && NVR_DISPLACE_OBJECTS
+    #define DISPLACE_LAYOUT
+    #if !defined(NO_VERTEX_COLOR) || !defined(NO_FOG)
+        #define DISPLACE_COLORS
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            #error "displacement layout: TEXCOORD5/6 are taken by the third light"
+        #endif
+        #define SEM_SHADOW_UVS TEXCOORD5
+        #define SEM_SHADOW_POS TEXCOORD6
+    #else
+        #define SEM_SHADOW_UVS COLOR0
+        #define SEM_SHADOW_POS COLOR1
+    #endif
+#else
+    #define SEM_SHADOW_UVS TEXCOORD8
+    #define SEM_SHADOW_POS TEXCOORD9
+#endif
+
 struct VS_INPUT
 {
     float4 position : POSITION;
@@ -179,7 +209,34 @@ struct VS_OUTPUT
     float4 fogColor : COLOR1;
 #endif
     float4 sPosition : POSITION;
+#ifdef DISPLACE_LAYOUT
+    float4 uv : TEXCOORD0;              // xy the uv, zw the object normal (octahedral): for the tessellation only
+    float4 displaceClip : NORMAL0;      // the clip position again: for the tessellation only
+    // The slots this variant leaves unused, written as 0 (see the top)
+    #if defined(NO_LIGHT)
+        float4 displaceFill1 : TEXCOORD1;
+    #endif
+    #if !(LIGHTS > 1) && !(NUM_PT_LIGHTS > 1)
+        float4 displaceFill3 : TEXCOORD3;
+    #endif
+    #if !(LIGHTS > 1)
+        float4 displaceFill4 : TEXCOORD4;
+    #endif
+    #if !(LIGHTS > 2) && !(NUM_PT_LIGHTS > 2) && !(defined(DISPLACE_COLORS) && defined(PROJ_SHADOW))
+        float4 displaceFill5 : TEXCOORD5;
+    #endif
+    #if !(LIGHTS > 2) && !defined(DISPLACE_COLORS)
+        float4 displaceFill6 : TEXCOORD6;
+    #endif
+    #if defined(NO_VERTEX_COLOR) && !defined(DIFFUSE) && (defined(DISPLACE_COLORS) || !defined(PROJ_SHADOW))
+        float4 displaceFill9 : COLOR0;
+    #endif
+    #if defined(NO_FOG) && defined(DISPLACE_COLORS)
+        float4 displaceFill10 : COLOR1;
+    #endif
+#else
     float2 uv : TEXCOORD0;
+#endif
 #ifndef NO_LIGHT
     float4 lightDir : TEXCOORD1;
     #ifdef DIFFUSE
@@ -201,12 +258,12 @@ struct VS_OUTPUT
     float4 light3Dir : TEXCOORD5;
 #endif
 #ifdef PROJ_SHADOW
-    float4 shadowUVs : TEXCOORD8;
+    float4 shadowUVs : SEM_SHADOW_UVS;
 #endif
     float4 viewDir : TEXCOORD7;
 
-    // TEXCOORD0-8 are taken by this template; 9 is the first free slot.
-    float4 shadowWorldPos : TEXCOORD9;
+    // TEXCOORD0-8 are taken by this template; 9 is the first free slot. (Displacement layout: see the top.)
+    float4 shadowWorldPos : SEM_SHADOW_POS;
 };
 
 #ifdef VS
@@ -236,7 +293,7 @@ VS_OUTPUT main(VS_INPUT IN)
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     
     OUT.sPosition.xyzw = mul(ModelViewProj, IN.position.xyzw);
-    OUT.uv = IN.uv.xy;
+    OUT.uv.xy = IN.uv.xy;
     
     float3 eye = EyePosition.xyz - IN.position.xyz;
     OUT.viewDir.xyz = mul(tbn, eye);
@@ -307,6 +364,34 @@ VS_OUTPUT main(VS_INPUT IN)
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
 
+    #ifdef DISPLACE_LAYOUT
+        // UNOFFICIAL 2026-10-28 object displacement (see the top): what the tessellation reads, and 0 in the unused slots.
+        float3 displaceNormal = IN.normal.xyz * rsqrt(max(dot(IN.normal.xyz, IN.normal.xyz), 1.0e-12f));
+        OUT.uv = float4(IN.uv.xy, ShadowEncodeNormal(displaceNormal));
+        OUT.displaceClip = OUT.sPosition;
+        #if defined(NO_LIGHT)
+            OUT.displaceFill1 = 0;
+        #endif
+        #if !(LIGHTS > 1) && !(NUM_PT_LIGHTS > 1)
+            OUT.displaceFill3 = 0;
+        #endif
+        #if !(LIGHTS > 1)
+            OUT.displaceFill4 = 0;
+        #endif
+        #if !(LIGHTS > 2) && !(NUM_PT_LIGHTS > 2) && !(defined(DISPLACE_COLORS) && defined(PROJ_SHADOW))
+            OUT.displaceFill5 = 0;
+        #endif
+        #if !(LIGHTS > 2) && !defined(DISPLACE_COLORS)
+            OUT.displaceFill6 = 0;
+        #endif
+        #if defined(NO_VERTEX_COLOR) && !defined(DIFFUSE) && (defined(DISPLACE_COLORS) || !defined(PROJ_SHADOW))
+            OUT.displaceFill9 = 0;
+        #endif
+        #if defined(NO_FOG) && defined(DISPLACE_COLORS)
+            OUT.displaceFill10 = 0;
+        #endif
+    #endif
+
     return OUT;
 };
 
@@ -345,10 +430,10 @@ struct PS_INPUT
     float4 light3Dir : TEXCOORD5_centroid;
 #endif
 #ifdef PROJ_SHADOW
-    float4 shadowUVs : TEXCOORD8;
+    float4 shadowUVs : SEM_SHADOW_UVS;
 #endif
     float4 viewDir : TEXCOORD7_centroid;
-    float4 shadowWorldPos : TEXCOORD9;
+    float4 shadowWorldPos : SEM_SHADOW_POS;
 };
 
 struct PS_OUTPUT {
