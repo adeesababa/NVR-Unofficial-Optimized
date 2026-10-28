@@ -1334,10 +1334,19 @@ namespace ClothWind {
 	// 2026-10-27 (Conor: grass sun shadows matched nothing): not when c248 holds a non-cloth shader's own data (GrassInC248: the grass
 	// shaders' inverse projection, the particles' lamp colours). Zeroed after the first grass draw, the rest of the batch (the game sends
 	// the constants once) rebuilt its positions from a broken matrix. NoteVertexShader clears it before the next cloth-carrying bind.
-	inline void AfterDraw(IDirect3DDevice9* device) {
+	// 2026-10-28 (Conor, grass sun shadows in streaks with cloth on: "still cooked, it's the cloth"): the same rule for ForGeometry's
+	// returns on an object that is no cloth. It zeroed c248 at the start of every such pass, grass included, so with cloth compiled in
+	// the grass shaders' inverse projection lost its first row (NVR may not send an unchanged constant again): the grass shadow casters
+	// (GrassShadows), which place each tuft through it, came out squeezed into streaks. A cloth-carrying bind still clears it first
+	// (NoteVertexShader), so no cloth code ever reads the grass values.
+	inline void ZeroCloth(IDirect3DDevice9* device) {
 		if (GrassInC248) { ActiveWeights = nullptr; ActiveWalk = nullptr; ActiveSkin = nullptr; ActiveStill = nullptr; return; }
 		if (device) Zero(device);
 	}
+	inline void AfterDraw(IDirect3DDevice9* device) { ZeroCloth(device); }
+	// ForGeometry's returns: the shadow maps bind their own vertex shaders (no NoteVertexShader to clear grass values first), so there c248
+	// is always cleared, as before.
+	inline void ZeroFor(IDirect3DDevice9* device, bool shadowPass) { if (shadowPass) Zero(device); else ZeroCloth(device); }
 
 	// 2026-10-19 (user: 'make it more dramatic for our armor so we see the trench coat moving around when we walk'): worn clothing
 	// follows its wearer -- the hem trails behind as they walk or run and swings past and settles when they stop (a damped spring),
@@ -1413,7 +1422,7 @@ namespace ClothWind {
 		ActiveWeights = nullptr;
 		// 2026-10-19: indoors (no wind) worn clothing still follows its wearer (MotionIndoors); everything else stays still there
 		// (2026-10-21: unless the indoor set is on -- then Exterior is true and all cloth gets its gentle wind)
-		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
+		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { ZeroFor(device, shadowPass); return; }
 		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
 		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
 		// Pip-Boy piece, same shaders), so SetShadersHook never notes it. Such a pass draws with the vertex shader bound now: judge it by
@@ -1436,17 +1445,17 @@ namespace ClothWind {
 				auto c = ClothPassCounts.find(geometry);
 				if (c != ClothPassCounts.end()) { if (!SeenLast.count(geometry)) c->second.notSeen++; else c->second.vanilla++; }
 			}
-			Zero(device); return;
+			ZeroFor(device, shadowPass); return;
 		}
-		if (shadowPass && VanillaLast.count(geometry)) { Zero(device); return; }
+		if (shadowPass && VanillaLast.count(geometry)) { ZeroFor(device, shadowPass); return; }
 		BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
 		const UInt32 vtable = property ? *(UInt32*)property : 0;
-		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { Zero(device); return; }	// BSShaderPPLightingProperty, Lighting30ShaderProperty
+		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { ZeroFor(device, shadowPass); return; }	// BSShaderPPLightingProperty, Lighting30ShaderProperty
 		BSShaderPPLightingProperty* lighting = (BSShaderPPLightingProperty*)property;
 		const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
-		if (!diffuse || !diffuse->ddsPath1) { Zero(device); return; }
+		if (!diffuse || !diffuse->ddsPath1) { ZeroFor(device, shadowPass); return; }
 		const bool skinned = geometry->skinInstance != nullptr;
-		if (!Exterior && !skinned) { Zero(device); return; }
+		if (!Exterior && !skinned) { ZeroFor(device, shadowPass); return; }
 		bool cloth;
 		auto known = ByTexture.find(diffuse);
 		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) cloth = known->second.second;
@@ -1466,7 +1475,7 @@ namespace ClothWind {
 			if (autoVerdict && autoVerdict->state == 2) cloth = true; else autoVerdict = nullptr;
 		}
 		// The vertex colour is the mask: without colours in the mesh, only the whole-mesh mode applies.
-		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
+		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { ZeroFor(device, shadowPass); return; }
 		// Into the vertex shader's space: world for skinned meshes, the object's own for the rest.
 		float dir[3] = { WorldDir[0], WorldDir[1], WorldDir[2] };
 		float scale = 1.0f;
@@ -1485,7 +1494,7 @@ namespace ClothWind {
 			// 2026-10-20 still cloth by its own mesh (mask 6, StillOf): still until its weights are ready
 			if (S.MaskMode == 2 && S.StillWeights && StillHookOn) {
 				StillMesh* sm = StillOf(geometry, diffuse->ddsPath1);
-				if (!sm) { Zero(device); return; }
+				if (!sm) { ZeroFor(device, shadowPass); return; }
 				mode = 6.0f; ActiveStill = sm;
 			}
 		}
@@ -1501,7 +1510,7 @@ namespace ClothWind {
 			// 2026-10-19 (user: 'cloth is causing unintended meshes to flicker and distort'): a piece on a human skeleton without legs --
 			// a Pip-Boy or spurs sharing the outfit's texture folder, gloves, a hat, first-person arms -- is no cloth: it stays still
 			// (it got the old height mask and the walking offset before)
-			if (skeleton && !skeleton->ok && skeleton->actor) { Zero(device); return; }
+			if (skeleton && !skeleton->ok && skeleton->actor) { ZeroFor(device, shadowPass); return; }
 			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
 			else if (skeleton && skeleton->ok) {	// 2026-10-19: the garment's own skeleton (SkeletonOf); c226-c239
 				mode = 4.0f;

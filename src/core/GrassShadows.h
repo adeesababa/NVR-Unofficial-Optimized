@@ -123,6 +123,13 @@ namespace GrassShadows {
 		float light[4][4];
 		for (int r = 0; r < 4; r++) { for (int c = 0; c < 3; c++) light[r][c] = viewToLight.m[r][c]; light[r][3] = view[r][3]; }
 		device->SetVertexShaderConstantF(252, &light[0][0], 4);
+		// 2026-10-28 (Conor, streaks with cloth on): c248-c251, the camera's inverse projection the caster places each tuft with, written
+		// here as NVR's constant table sends it for the grass VS (TESR_InvProjectionTransform = RenderManager::InvProjMatrix), not
+		// trusted from the device: other code may have touched c248 (ClothWind cleared it before every non-cloth pass), and NVR does not
+		// send an unchanged constant again.
+		float proj[4][4];
+		const bool projSaved = SUCCEEDED(device->GetVertexShaderConstantF(248, &proj[0][0], 4));
+		device->SetVertexShaderConstantF(248, (const float*)&TheRenderManager->InvProjMatrix, 4);
 
 		// MinBlend: no depth test, the nearer depth kept by the blend (BLENDOP MIN ignores the factors). Else the shadow maps' own test.
 		static const D3DRENDERSTATETYPE kStates[] = { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ZFUNC, D3DRS_CULLMODE, D3DRS_ALPHATESTENABLE,
@@ -183,6 +190,7 @@ namespace GrassShadows {
 		if (oldPS) oldPS->Release();
 		for (unsigned i = 0; i < sizeof(kStates) / sizeof(kStates[0]); i++) if (saved[i] != want[i]) device->SetRenderState(kStates[i], saved[i]);
 		device->SetVertexShaderConstantF(252, &view[0][0], 4);
+		if (projSaved) device->SetVertexShaderConstantF(248, &proj[0][0], 4);
 		return hr;
 	}
 
