@@ -655,6 +655,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
 	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
 	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
+	PbrPop::SpecDistance::BeginFrame();	// UNOFFICIAL 2026-10-27 SpecularDistance (before the scene walk builds the objects' passes)
 	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)

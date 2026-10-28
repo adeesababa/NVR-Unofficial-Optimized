@@ -183,6 +183,43 @@ namespace PbrPop {
 		}
 	}
 
+	// ---- 4. SpecularDistance ([Shaders.PBR.Main] SpecularDistance, live; UNOFFICIAL 2026-10-27) ----
+	// User: "why pbr pops in almost selectively on meshes and pops in at a different range depending on first or third person? can we
+	// just apply pbr to these meshes all the time instead of it turning on and off?" Beyond the game's highlight distance
+	// (fSpecularLODEnd, 2300 units, measured from the CAMERA: in third person that line lies metres nearer the player than in first)
+	// the game draws every shiny object with its plain shaders and no highlight passes. NVR's PBR (highlights, metal, the rmaos maps'
+	// shine) is in the shiny family only, so it switched off at that line -- only on meshes with a specular map, hence "selectively".
+	// This sets that distance (fSpecularLODEnd = the setting, fSpecularLODStartFade = it minus the game's own fade range) and keeps it
+	// there every frame (the game's Specularity Fade slider rewrites both); every object rebuilds its passes when it changes. 0 = the
+	// game's own distance. (The test tool below, PbrPopSpecLODEnd, writes the same two values when it is set.)
+	namespace SpecDistance {
+		inline float OrigStart = 0.0f, OrigEnd = 0.0f, Target = 0.0f;
+		inline bool Saved = false;
+		constexpr UInt32 kRebuildBit = 0x04000000;	// read nowhere else (all readers mask 0x10, 0x20 or 0xF; see LampsInOnePass.h)
+		inline void BeginFrame() {
+			float& start = *BSShaderManager::fSpecularLODStartFade;
+			float& end = *BSShaderManager::fSpecularLODEnd;
+			if (!Saved) { OrigStart = start; OrigEnd = end; Saved = true; }
+			const float want = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Main", "SpecularDistance"), 0.0f);
+			if (want <= 0.0f) {
+				if (Target > 0.0f) {	// switched back to the game's own
+					start = OrigStart; end = OrigEnd; Target = 0.0f;
+					*(UInt32*)kEnabledPasses ^= kRebuildBit;
+					Logger::Log("UNOFFICIAL SpecularDistance: the game's own highlight distance %.0f-%.0f (every object's passes rebuilt)", start, end);
+				}
+				return;
+			}
+			const float wantStart = (std::max)(want - (OrigEnd - OrigStart), 1.0f);
+			if (start == wantStart && end == want) return;
+			const bool announce = want != Target;
+			start = wantStart; end = want; Target = want;
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			if (announce)
+				Logger::Log("UNOFFICIAL SpecularDistance: objects keep their full PBR shading (highlights, metal) out to %.0f units (the game's own: "
+					"%.0f); every object's passes rebuilt", want, OrigEnd);
+		}
+	}
+
 #if NVR_TEST_TOOLS
 	// ---- TEST: move the game's highlight distance in place ([Main.Main.Misc] PbrPopSpecLODEnd, 0 = the game's own) ----
 	// fSpecularLODEnd = the value, fSpecularLODStartFade = the value minus the game's own fade range; every object rebuilds its passes, so
