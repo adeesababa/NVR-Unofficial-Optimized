@@ -10,7 +10,7 @@
 #ifndef NVR_CAPTURED_NORMALS_READ_HLSL
 #define NVR_CAPTURED_NORMALS_READ_HLSL
 
-float4 TESR_CapturedNormalsData;	// x: 1 = holds this frame's normals, y: the distance match's share of the distance, z: and units
+float4 TESR_CapturedNormalsData;	// x: 1 = holds this frame's normals, y: the distance match's share of the distance, z: and units, w: CapturedNormalAgrees' least cosine
 
 float3 CapturedDecodeNormal(float2 e)
 {
@@ -27,6 +27,15 @@ bool CapturedNormal(float2 uv, float distance, out float3 n)
 	float4 c = tex2Dlod(TESR_CapturedNormalsBuffer, float4(uv, 0.0f, 0.0f));
 	n = CapturedDecodeNormal(c.rg);
 	return c.a > 0.99f && abs(c.b - distance) <= distance * TESR_CapturedNormalsData.y + TESR_CapturedNormalsData.z;
+}
+
+// As CapturedNormal, and only where the captured normal is within about 60 degrees of the depth-rebuilt one (rebuilt: world space, unit;
+// cosine TESR_CapturedNormalsData.w). A smooth normal differs from its triangle's flat one by far less on any real mesh; the first bench
+// run (2026-10-28, og-desert) showed a few thin pieces at a slab's edge whose captured normal was 90+ degrees off (not found yet which
+// shader draws them): those keep the depth-rebuilt normal. Use this one in effects.
+bool CapturedNormalAgrees(float2 uv, float distance, float3 rebuilt, out float3 n)
+{
+	return CapturedNormal(uv, distance, n) && dot(n, rebuilt) > TESR_CapturedNormalsData.w;
 }
 
 #endif

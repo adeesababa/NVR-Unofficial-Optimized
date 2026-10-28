@@ -40,7 +40,7 @@ layout(set = 2, binding = 0, std140) uniform Consts {
     vec4 shadowLightPosition[12];   // TESR_ShadowLightPosition
     vec4 lightPosition[12];         // TESR_LightPosition
     vec4 lightColor[24];            // TESR_LightColor
-    vec4 capturedData;              // UNOFFICIAL 2026-10-28 TESR_CapturedNormalsData (x 1 = this frame's, y z the distance match)
+    vec4 capturedData;              // UNOFFICIAL 2026-10-28 TESR_CapturedNormalsData (x 1 = this frame's, y z the distance match, w least cosine)
     vec4 snowExtra;                 // TESR_SnowAccumulationExtra (x CapturedNormals, y CapturedNormalsDebugView)
 } c;
 
@@ -295,16 +295,17 @@ bool capturedNormalRaw(vec2 coord, float dist, out vec3 n) {
     n = capturedDecode(v.rg);
     return v.a > 0.99 && abs(v.b - dist) <= dist * c.capturedData.y + c.capturedData.z;
 }
-bool snowCapturedNormal(vec2 coord, float dist, out vec3 n) {
+bool snowCapturedNormal(vec2 coord, float dist, vec3 rebuilt, out vec3 n) {
     n = vec3(0.0, 0.0, 1.0);
     if (c.snowExtra.x <= 0.0) return false;
-    return capturedNormalRaw(coord, dist, n);
+    return capturedNormalRaw(coord, dist, n) && dot(n, rebuilt) > c.capturedData.w;	// CapturedNormalAgrees
 }
 vec4 snowCapturedView(vec2 coord, float dist) {
     vec3 rebuilt = getWorldNormal(coord);
     vec3 n;
     bool captured = capturedNormalRaw(coord, dist, n);
-    if (c.snowExtra.y > 1.5) return vec4(vec3(captured ? saturate(1.0 - dot(n, rebuilt)) : 0.0), 1.0);
+    if (c.snowExtra.y > 1.5) return captured && dot(n, rebuilt) <= c.capturedData.w ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(vec3(captured ? saturate(1.0 - dot(n, rebuilt)) : 0.0), 1.0);
+    captured = captured && dot(n, rebuilt) > c.capturedData.w;
     return vec4(captured ? n * 0.5 + 0.5 : (rebuilt * 0.5 + 0.5) * 0.3, 1.0);
 }
 
@@ -323,7 +324,7 @@ vec4 snowPass(vec2 coordIn) {
     float ortho = texture(SAMP_CLAMP(t_rendered), coordIn).x;
     vec3 norm = getWorldNormal(coordIn);
     vec3 capturedNorm;	// UNOFFICIAL 2026-10-28 CapturedNormals
-    bool captured = snowCapturedNormal(coordIn, length(cameraVector), capturedNorm);
+    bool captured = snowCapturedNormal(coordIn, length(cameraVector), norm, capturedNorm);
     if (captured) norm = capturedNorm;
 
     // early out for the character gun, water surfaces/areas and surfaces above the ortho map (such as actors)

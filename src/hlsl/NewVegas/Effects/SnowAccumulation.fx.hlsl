@@ -81,21 +81,22 @@ VSOUT FrameVS(VSIN IN)
 // proposal. The snow's slope (where it may lie) and its lighting took the normal rebuilt from depth, one flat normal per triangle, so on
 // rocks the snow came and went triangle by triangle. Where the surface wrote its smooth vertex normal while it drew (and the depth agrees),
 // that normal instead; elsewhere the depth-rebuilt one, as before. distance: the pixel's camera distance (length of its camera vector).
-bool SnowCapturedNormal(float2 uv, float distance, out float3 n)
+bool SnowCapturedNormal(float2 uv, float distance, float3 rebuilt, out float3 n)
 {
 	n = float3(0.0f, 0.0f, 1.0f);
 	[branch] if (TESR_SnowAccumulationExtra.x <= 0.0f) return false;
-	return CapturedNormal(uv, distance, n);
+	return CapturedNormalAgrees(uv, distance, rebuilt, n);
 }
 
 // CapturedNormalsDebugView: 1 the normal the snow takes, bright where captured, dimmed where it falls back to the depth-rebuilt one;
-// 2 how far the two differ (white = 90 degrees or more), black where nothing was captured.
+// 2 how far the two differ (white = 90 degrees or more; red: written but too far off, so not taken), black where nothing was captured.
 float4 SnowCapturedView(float2 uv, float distance)
 {
 	float3 rebuilt = GetWorldNormal(uv);
 	float3 n;
 	bool captured = CapturedNormal(uv, distance, n);
-	if (TESR_SnowAccumulationExtra.y > 1.5f) return float4((captured ? saturate(1.0f - dot(n, rebuilt)) : 0.0f).xxx, 1.0f);
+	if (TESR_SnowAccumulationExtra.y > 1.5f) return captured && dot(n, rebuilt) <= TESR_CapturedNormalsData.w ? float4(1.0f, 0.0f, 0.0f, 1.0f) : float4((captured ? saturate(1.0f - dot(n, rebuilt)) : 0.0f).xxx, 1.0f);
+	captured = captured && dot(n, rebuilt) > TESR_CapturedNormalsData.w;
 	return float4(captured ? n * 0.5f + 0.5f : (rebuilt * 0.5f + 0.5f) * 0.3f, 1.0f);
 }
 
@@ -304,7 +305,7 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	float ortho = tex2D(TESR_RenderedBuffer, IN.UVCoord).x;
 	float3 norm = GetWorldNormal(IN.UVCoord);
 	float3 capturedNorm;	// UNOFFICIAL 2026-10-28 CapturedNormals: the surface's own smooth normal where it was captured
-	bool captured = SnowCapturedNormal(IN.UVCoord, length(camera_vector), capturedNorm);
+	bool captured = SnowCapturedNormal(IN.UVCoord, length(camera_vector), norm, capturedNorm);
 	if (captured) norm = capturedNorm;
 
 	// early out for the character gun, water surfaces/areas and surfaces above the ortho map (such as actors)
@@ -884,7 +885,7 @@ float4 SA5_Snow(VSOUT IN, uniform bool persist) : COLOR0 {
     float3 originalNorm = GetWorldNormal(IN.UVCoord);
     // UNOFFICIAL 2026-10-28 CapturedNormals: the surface's own smooth normal where it was captured (no smoothing needed there)
     float3 capturedNorm;
-    bool captured = SnowCapturedNormal(IN.UVCoord, length(camera_vector), capturedNorm);
+    bool captured = SnowCapturedNormal(IN.UVCoord, length(camera_vector), originalNorm, capturedNorm);
     if (captured) originalNorm = capturedNorm;
     float3 norm = originalNorm;
     [branch] if (!captured) norm = SA_SmoothSnowNormal(IN.UVCoord, depth, originalNorm);

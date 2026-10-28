@@ -34,7 +34,7 @@ namespace CapturedNormals {
 	inline IDirect3DSurface9* MsaaSurface = nullptr;	// with the game's MSAA: what the draws write, resolved into Texture after the list
 	inline D3DSURFACE_DESC Made = {};
 	inline int Recreations = 0;
-	inline D3DXVECTOR4 Data = { 0.0f, 0.004f, 2.0f, 0.0f };	// TESR_CapturedNormalsData: x 1 = holds this frame's, y z the distance match's share and units
+	inline D3DXVECTOR4 Data = { 0.0f, 0.004f, 2.0f, 0.5f };	// TESR_CapturedNormalsData: x 1 = holds this frame's, y z the distance match's share and units, w the least cosine to the depth normal (CapturedNormalAgrees)
 	inline std::unordered_set<IDirect3DPixelShader9*> Writers;	// the templates' pixel shaders compiled with CAPTURED_NORMALS_ON (ShaderRecord)
 	inline IDirect3DPixelShader9* LastPS = nullptr;  inline bool LastWriter = false;
 	inline UInt32 Frames = 0, Writes = 0, Masked = 0, Unbinds = 0;
