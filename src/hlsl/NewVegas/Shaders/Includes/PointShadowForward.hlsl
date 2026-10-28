@@ -120,7 +120,8 @@ float4 NVR_PointShadowRT      : register(c215); // x: 0 = the cube maps (as with
                                                 // log2(farZ) / 4095 (the depth code's unit); w: 1 = the darker of traced and cube map
                                                 // (the RT scene has no people yet: their shadows come from the cube maps)
 float4 NVR_PointShadowRTSlot[2] : register(c216); // the draw's lights 0-3 and 4-5: their slot 0-17 in the traced result, -1 = cube
-sampler2D NVR_RtLampVis : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_RtLampVis : register(s15);          // point / clamp, set by the DLL (PointShadowForward::Bind; no sampler_state:
+                                                // the POINT variants define POINT, and raw shader compiles ignore it anyway)
                                                 // on s15, the sixth lamp's cube map's: every other sampler is taken in some variant
                                                 // (s9 the sun atlas, s10 the live cube). So with RT the sixth light of a draw (rare: the
                                                 // six-lamp OPT passes) has no cube map: traced where it can be, else lit; DebugView 3
