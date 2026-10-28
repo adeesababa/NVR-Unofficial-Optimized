@@ -299,6 +299,29 @@ ground flow looks nice; the colour "kinda grey, almost reflective"). Branch clau
   sRGB (the matched colour lifted to at least that, hue kept); fluid only: the field's slope bends the normal by its thickness
   (edges), at most 0.5. Same pool at 14 degrees now about (0.25 0.05 0.07). Test toggles: [Shaders.BloodFlow.Main] OldLook,
   [Shaders.BloodFlow.Fluid] OldThrow (both exactly the old code paths). Shot list bench\foundations\lists\bloodfix-bulk.txt.
+2026-10-27 evening (user, playing the fork: "we still get the weird half circles with bloodflow and the color of the fluid
+simulation ones seems pretty off, almost looks like ketchup"; then "the fluid blood appears full bright as though it does not
+respond to shaders or lighting conditions"). Branch claude/bloodflow-halfcircle. Found by reading the code (the user was playing;
+not run in game yet):
+- Half circles, three straight cuts on sloped ground. (1) A pool's height was the body's lowest bone less 1.5 units; on a slope
+  that bone is the body's downhill end, well under the ground below the body's middle (25 degrees, 70-unit body: ~15 units), so
+  BloodPS's ground test (height over the centre, + slope room) kept only the downhill half. Now BloodFlow.cpp GroundUnderBones:
+  the plane under the body's lower bones (least squares, twice, the second time only bones on or below the first plane; a pull
+  toward level; slope capped 0.6), moved down to 1.5 under the lowest point along it: level ground gives the old height. (2) The
+  fluid's pool lay on a LEVEL fallback floor at that height: the uphill half sat under the ground, hidden, never drawn. The pool's
+  emitter now carries the slope (dir.xy) and each pool particle keeps it (flags bits 8-23, BloodFluid.glsl PackSlope/SlopeOf);
+  info.x follows the plane under the particle. (3) The fallback floor was applied wherever the drop was not well in front of the
+  seen surface: blood running down a slope the camera saw, once below the fallback height (a splat's: the player's floor or its
+  own height less 1), was lifted back to it every step, a level sheet over the slope cut along a line by the draw's slab test. Now
+  not where the camera sees a floor there (normal z > 0.6), and only blood lying ON the fallback counts as on it (hidden blood
+  below it is held, not lifted). Old paths: OldThrow.
+- Ketchup / full bright (BloodFluidDraw.frag, look4.x; OldColour = the old look): BloodPS's look took the fluid's film (mostly just
+  over the threshold) for a thin stain: sunlit sand showed through it bright and pure red (sRGB ~0.66 0.31 0.24 at the edges,
+  0.55 0.11 0.09 a little in), and its light was at least the open sky's wherever the image was darker (shade, under a body, a
+  dark room lit as outdoors). Now: thick at 1.2 over the threshold (2.5), optical depth 0.6 + 2.4 thick (0.25 + 2), thick blood
+  x0.45 (0.6), light at most 3x the image's own estimate, the sky sheen x how open the spot is, a 4 % floor in every channel. Model:
+  work\bench\deep-roadmap\evidence\bloodhalf\look_model.py (sunlit sand: edge 0.54 0.12 0.09, in 0.36 0.03 0.03, thick 0.23 0.01
+  0.01). No colour-space bug found: every binding is a UNORM view, colours linearized as BloodPS does.
 FINDING (affects every depth effect tested on the fork): DXVK 3.0.1 offers AMD's RESZ depth resolve only when the adapter
 reports AMD. On the GTX 1070 NVR fell back to NVAPI, which initializes but cannot copy depth on a DXVK device, so NVR's
 world depth (TESR_DepthBuffer) was EMPTY in every fork slot run (the Depth Resolve plugin, which normally covers this, is
