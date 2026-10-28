@@ -1264,6 +1264,7 @@ BlurRadius = 1.0                     # Blur strength for denoising screenspace s
 Enabled = true                       # Wether to render screen space contact/detail shadows
 RenderDistance = 180000              # Max distance at which to compute screen space shadows
 Intensity = 0.315                    # Rescale the intensity of screenspace shadows, to combat jitter and blur making them very faint even at maximum brightness.
+NearFade = 400.0                     # UNOFFICIAL (2026-10-27), applies immediately: contact shadows fade in with distance from the camera, none nearer than half of this, full from this (game units, 70 = 1 m). Up close the sharp sun shadows already show the real shapes, and the contact shadows drew low-poly noses, brows and collars as hard triangles on characters (the 'facets', worst with Sharp). 0 = everywhere, as before.
 Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
 FastPaths = true                     # UNOFFICIAL (2026-10-17): the same contact shadows for less GPU time: the march's early exits (too far, surface turned away from the sun) really skip work (the shader compiler had turned them into work every pixel did). Off = the original pass. Applies immediately
 

@@ -401,12 +401,19 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	return cascadeSettingsChanged;
 }
 
+// UNOFFICIAL 2026-10-27 [Shaders.ShadowsExteriors.ScreenSpace] NearFade: TESR_ShadowScreenSpaceFade (SunShadows.fx ContactNearFade; the
+// Vulkan passes take x, y in their flags.y, z): contact shadows none nearer than x, full from y (view depth). Here, not in Constants, so
+// the header (and everything that includes it) stays as it was.
+static D3DXVECTOR4 ScreenSpaceFade(0.0f, 0.0f, 0.0f, 0.0f);
+
 void ShadowsExteriorEffect::UpdateSettings() {
 
 	Constants.ScreenSpaceData.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Enabled") && Enabled;
 	Constants.ScreenSpaceData.y = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "BlurRadius");
 	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
+	const float nearFade = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "NearFade"), 0.0f);
+	ScreenSpaceFade = D3DXVECTOR4(nearFade * 0.5f, nearFade, 0.0f, 0.0f);
 	Settings.ScreenSpace.Sharp = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Sharp") != 0;	// UNOFFICIAL
 
 	// Sun smoothing settings.
@@ -837,6 +844,7 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowForwardData", &Constants.ForwardData);
 	TheShaderManager->RegisterConstant("TESR_ShadowBlur", &Constants.ShadowBlur);
 	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceData", &Constants.ScreenSpaceData);
+	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceFade", &ScreenSpaceFade);	// UNOFFICIAL 2026-10-27 NearFade
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_PointShadowNear", &Constants.PointShadowNear);

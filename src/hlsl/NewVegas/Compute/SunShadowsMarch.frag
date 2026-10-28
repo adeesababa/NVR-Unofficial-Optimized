@@ -42,7 +42,7 @@ void main() {
             pos = pos2;
             total += 1.0 / step1 + 1.0 / step2;
         }
-        occlusion = pows(occlusion / total, 0.3) * facing;
+        occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);   // (NearFade, 2026-10-27)
         color.r = mix(1.0 - occlusion, 1.0, hlslSmoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z));
         result = color;
     }

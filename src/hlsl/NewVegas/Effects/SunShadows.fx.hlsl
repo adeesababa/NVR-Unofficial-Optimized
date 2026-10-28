@@ -11,6 +11,12 @@ float4 TESR_ViewSpaceLightDir;
 float4 TESR_ShadowData; // x: quality, y: darkness, z: texel size
 float4 TESR_ShadowFormatData; // x: mode, y: format bits per pixels
 float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistance, w: intensity
+// UNOFFICIAL 2026-10-27 [Shaders.ScreenSpace] NearFade (a tester: triangle "facets" on characters with Sharp contact shadows, gone with
+// them off): the contact shadows draw whatever blocks the ray toward the sun with hard edges, and up close a character's low-poly nose,
+// brow and collar block it as sharp triangles. There the near sun cascade and the character shadow map already give the real, soft
+// shadows, so the contact shadows fade in with distance: none nearer than x, full from y (view depth, game units; y 0 = no fade).
+float4 TESR_ShadowScreenSpaceFade;
+float ContactNearFade(float z) { return TESR_ShadowScreenSpaceFade.y > 0.0f ? smoothstep(TESR_ShadowScreenSpaceFade.x, TESR_ShadowScreenSpaceFade.y, z) : 1.0f; }
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
 // Injected as a D3DXMACRO by EffectRecord from [Shaders.ShadowsExteriors.Main] ForwardShadows,
@@ -340,7 +346,7 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 		total += 1/step1 + 1/step2; // weight samples inversely with distance
 	}
 
-    occlusion = pows(occlusion / total, 0.3) * facing; // get an average shading based on total weights
+    occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z); // get an average shading based on total weights (NearFade: UNOFFICIAL 2026-10-27)
 	
 
     // save result of SSS in red channel, and fade contribution with distance
@@ -393,7 +399,7 @@ float4 ScreenSpaceShadowFast(VSOUT IN) : COLOR0
 			pos = pos2;
 			total += 1/step1 + 1/step2;
 		}
-		occlusion = pows(occlusion / total, 0.3) * facing;
+		occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);	// (NearFade)
 		color.r = lerp(1.0f - occlusion, 1.0, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z));
 		result = color;
 	}
@@ -486,7 +492,7 @@ float4 SharpContactShadow(VSOUT IN) : COLOR0
 		occlusion += (delta > bias && delta < SSS_THICKNESS) * w;
 		total += w;
 	}
-	occlusion = pows(occlusion / total, 0.3) * facing;
+	occlusion = pows(occlusion / total, 0.3) * facing * ContactNearFade(pos.z);	// (NearFade)
 	return float4(lerp(1.0f - occlusion, 1.0f, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z)), color.g, 0, 1);
 }
 

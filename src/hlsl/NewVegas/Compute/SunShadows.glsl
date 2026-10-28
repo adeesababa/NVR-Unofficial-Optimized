@@ -37,7 +37,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 farCenter;             // TESR_ShadowFarCenter
     vec4 lodCenter;             // TESR_ShadowLodCenter
     vec4 cameraData;            // TESR_CameraData (x nearZ, y farZ)
-    vec4 flags;                 // x: FORWARD_SHADOWS as the effect was compiled (1 or 0)
+    vec4 flags;                 // x: FORWARD_SHADOWS as the effect was compiled (1 or 0); y, z: NearFade's start and end (TESR_ShadowScreenSpaceFade, 2026-10-27)
     mat4 charShadowCameraToLight; // TESR_CharShadowCameraToLight (2026-10-26, CharacterShadowMap)
     vec4 charShadowCenter;      // TESR_CharShadowCenter
     vec4 charShadowData;        // TESR_CharShadowData
@@ -70,6 +70,9 @@ const float SlopeBias = 1.0;
 #define farZ cb.cameraData.y
 
 // HLSL smoothstep (GLSL's is undefined for edge0 >= edge1)
+float hlslSmoothstep(float a, float b, float x);
+// (UNOFFICIAL 2026-10-27, as SunShadows.fx's ContactNearFade) the contact shadows fade in with distance: none nearer than flags.y, full from flags.z
+float ContactNearFade(float z) { return cb.flags.z > 0.0 ? hlslSmoothstep(cb.flags.y, cb.flags.z, z) : 1.0; }
 float hlslSmoothstep(float a, float b, float x) {
     float t = saturate((x - a) / (b - a));
     return t * t * (3.0 - 2.0 * t);
