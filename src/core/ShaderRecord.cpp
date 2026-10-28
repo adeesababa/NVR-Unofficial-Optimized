@@ -293,28 +293,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// shader was compiled assuming EVSM4 regardless of Quality, so GetSunShadow's
 	// "TESR_ShadowFormatData.x != SHADOW_FIXED_MODE" check only ever matched at Quality 3/Full,
 	// and forward shadows silently no-op'd (return unshadowed) at every other quality level.
-	{
-		int quality = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality");
-		int shadowMode;
-		switch (quality) {
-		case 0:
-		case 1:
-			shadowMode = 0; // VSM
-			break;
-		case 2:
-			shadowMode = 1; // EVSM2
-			break;
-		case 3:
-			shadowMode = 2; // EVSM4
-			break;
-		default: // 4 (Custom), or an out-of-range value -- fall back to the raw setting.
-			shadowMode = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode");
-			if (shadowMode < 0) shadowMode = 0;
-			if (shadowMode > 3) shadowMode = 3;	// UNOFFICIAL: 3 = PCF
-			break;
-		}
-		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
-	}
+	// UNOFFICIAL 2026-10-27: always 3 (PCF), as ShadowsExteriorEffect::UpdateSettingsFromQuality forces it (user: "force pcf from now on
+	// no other options"); Quality and the old Mode setting no longer pick VSM / EVSM.
+	AppendDefine("SHADOW_FIXED_MODE", "3");
 	// UNOFFICIAL 2026-10-23 CharacterObjectReach: CharacterShadowReach's slack cap compiled into the object pixel shaders for the draws
 	// flagged as an actor's head, hair, face mask or headgear (ObjectTemplate.hlsl, Includes/Shadow.hlsl SHADOW_SLACK_CAP_ACTOR). Defined
 	// only when on, and last, so that off the list and the shaders are exactly what they were and it never pushes another define out.

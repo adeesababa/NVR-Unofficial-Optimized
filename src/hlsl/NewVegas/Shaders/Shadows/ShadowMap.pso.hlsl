@@ -3,7 +3,7 @@
 // Shaders/Includes/Shadow.hlsl which decodes what this writes.
 //   0 = VSM, 1 = EVSM2, 2 = EVSM4 (toml default)
 #ifndef SHADOW_FIXED_MODE
-    #define SHADOW_FIXED_MODE 2
+    #define SHADOW_FIXED_MODE 3   // UNOFFICIAL 2026-10-27: PCF always (ShaderRecord defines 3 for every shader)
 #endif
 
 float4 TESR_ShadowData : register(c0);

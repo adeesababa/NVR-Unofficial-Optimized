@@ -199,8 +199,8 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	
 	// Custom settings.
 	if (quality < 0 || quality > 3) {
-		Settings.ShadowMaps.Mode = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode"), 0, Modes-1);
-		Settings.ShadowMaps.FormatBits = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Format"), 0, FormatBits-1);
+		// (UNOFFICIAL 2026-10-27: Mode and Format are no longer read: PCF always, below.)
+		Settings.ShadowMaps.FormatBits = 0;
 
 		Settings.ShadowMaps.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "Distance"), 100.0f);
 		Settings.ShadowMaps.CascadeLambda = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CascadeLambda"), 0.0f, 1.0f);
@@ -228,7 +228,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.CascadeResolution = cascadeRes;
 
-		Settings.ShadowMaps.MSAA = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "MSAA");
+		Settings.ShadowMaps.MSAA = 0;	// (PCF: below)
 
 		// Mipmaps and anisotropy are disabled due to deferred shadows - derivatives are messed up and causing artifacts.
 		// https://aras-p.info/blog/2010/01/07/screenspace-vs-mip-mapping/
@@ -240,7 +240,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.Anisotropy = (std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Anisotropy"), 0, 2)) * 8;*/
 
-		Settings.ShadowMaps.Prefilter = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Prefilter");
+		Settings.ShadowMaps.Prefilter = 0;	// (PCF: below)
 
 		for (int shadowType = 0; shadowType <= MapLod; shadowType++) {
 			char sectionName[256] = "Shaders.ShadowsExteriors.Forms";
@@ -326,37 +326,36 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		switch (quality) {
 		case 0:
-			Settings.ShadowMaps.Mode = 0;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 3000.0f;
 			Settings.ShadowMaps.CascadeResolution = 1024;
 			Settings.ShadowMaps.MSAA = 0;
 			break;
 		case 1:
-			Settings.ShadowMaps.Mode = 0;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 4000.0f;
 			Settings.ShadowMaps.CascadeResolution = 1024;
 			break;
 		case 2:
-			Settings.ShadowMaps.Mode = 1;
-			Settings.ShadowMaps.FormatBits = 1;
 			Settings.ShadowMaps.Distance = 4500.0f;
 			Settings.ShadowMaps.CascadeResolution = 2048;
 			break;
 		case 3:
-			Settings.ShadowMaps.Mode = 2;
-			Settings.ShadowMaps.FormatBits = 0;
 			Settings.ShadowMaps.Distance = 6000.0f;
 			Settings.ShadowMaps.CascadeResolution = 2048;
 			break;
 		}
 	}
 	
+	// UNOFFICIAL 2026-10-27 (user: "force pcf from now on no other options"): the sun shadow maps are always Mode 3 (PCF), at every
+	// Quality and whatever a settings file says. A tester's file saved by an earlier build still held Mode 2 (EVSM4, the default
+	// before 2026-10-14), and Quality 0-3 picked VSM / EVSM themselves: every character-shadow fix since is PCF-only (and EVSM has
+	// no normal offset), so faces and clothing shaded their own triangles there. Quality 0-3 keep their distance and resolution.
 	// UNOFFICIAL 2026-10-14 Mode 3 (PCF): the atlas holds the depth itself, compared at lookup (Shadow.hlsl ShadowPCF3x3), so
 	// there is nothing to prefilter (the blur is what made VSM/EVSM soft, and its cost), and MSAA's resolve would average depths
 	// across edges (shadow acne and gaps), so both are off.
-	if (Settings.ShadowMaps.Mode == 3) { Settings.ShadowMaps.Prefilter = 0; Settings.ShadowMaps.MSAA = 0; }
+	Settings.ShadowMaps.Mode = 3;
+	Settings.ShadowMaps.FormatBits = 0;
+	Settings.ShadowMaps.Prefilter = 0;
+	Settings.ShadowMaps.MSAA = 0;
 	Settings.ShadowMaps.Format = Formats[Settings.ShadowMaps.Mode][Settings.ShadowMaps.FormatBits];
 
 	// Set clear color for clearing the cascades.

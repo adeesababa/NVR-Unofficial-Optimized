@@ -2013,8 +2013,6 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Main.Main.Performance",                "ShaderWarmUp",       RestartRule::Changed },	// runs once, at the main menu
 	{ "Main.Main.Performance",                "SlimDepthBuffer",    RestartRule::Changed },	// depth texture format (CombineDepth)
 	{ "Shaders.ShadowsExteriors.Main",        "ForwardShadows",     RestartRule::TurnOn },
-	{ "Shaders.ShadowsExteriors.Main",        "Quality",            RestartRule::Changed },	// picks SHADOW_FIXED_MODE (Quality 0-3)
-	{ "Shaders.ShadowsExteriors.ShadowMaps",  "Mode",               RestartRule::Changed },	// SHADOW_FIXED_MODE (Quality 4)
 	{ "Shaders.ShadowsExteriors.SunSmoothing","CrossFade",          RestartRule::Changed },
 	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },	// hooks + shader overrides at start
@@ -2071,15 +2069,6 @@ static void CaptureStartupValues() {
 		s_startupValues[std::string(r.Section) + "." + r.Key] = NumericSetting(r.Section, r.Key);
 }
 
-// The shadow mode the shaders are compiled with (mirrors ShaderRecord::BuildDefines' SHADOW_FIXED_MODE).
-static int ShadowModeFrom(float quality, float mode) {
-	const int q = (int)quality;
-	if (q == 0 || q == 1) return 0;
-	if (q == 2) return 1;
-	if (q == 3) return 2;
-	return std::clamp((int)mode, 0, 3);
-}
-
 // What the start-up reads make of the setting: the value itself, or the on/off the define is built from.
 static float RestartState(const RestartSetting& r, bool atStart) {
 	auto get = [atStart](const char* section, const char* key) {
@@ -2092,9 +2081,6 @@ static float RestartState(const RestartSetting& r, bool atStart) {
 		return (get("Shaders.PBR.Metal", "CubeReflections") > 0.0f || get("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f) ? 1.0f : 0.0f;
 	if (key == "HudDrops") return get(r.Section, r.Key) > 0.0f ? 1.0f : 0.0f;
 	if (key == "SmithCorrelated") return get(r.Section, r.Key) == 1.0f ? 1.0f : 0.0f;
-	if ((!strcmp(r.Section, "Shaders.ShadowsExteriors.Main") && key == "Quality") ||
-		(!strcmp(r.Section, "Shaders.ShadowsExteriors.ShadowMaps") && key == "Mode"))
-		return (float)ShadowModeFrom(get("Shaders.ShadowsExteriors.Main", "Quality"), get("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
 	return get(r.Section, r.Key);
 }
 
@@ -2149,10 +2135,6 @@ static bool IsDeadSetting(const char* section, const char* key) {
 	return false;
 }
 
-static int CurrentShadowMode() {
-	return ShadowModeFrom(NumericSetting("Shaders.ShadowsExteriors.Main", "Quality"), NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
-}
-
 static const char* InactiveReason(const char* section, const char* key) {
 	static char reason[256];
 	const std::string sec = section;
@@ -2169,24 +2151,10 @@ static const char* InactiveReason(const char* section, const char* key) {
 	if (shadowMaps || forms) {
 		const int quality = (int)NumericSetting("Shaders.ShadowsExteriors.Main", "Quality");
 		const bool custom = quality < 0 || quality > 3;
-		if (!custom && (forms || is({ "Mode", "Format", "Distance", "CascadeLambda", "SmoothFilter", "LimitFrequency", "CascadeResolution", "MSAA", "Prefilter" }))) {
+		if (!custom && (forms || is({ "Distance", "CascadeLambda", "SmoothFilter", "LimitFrequency", "CascadeResolution" }))) {
 			sprintf_s(reason, "Not used now: shadow Quality (Shadows Exteriors > Main) is %d, which sets this itself. Only Quality 4 (Custom) reads it.", quality);
 			return reason;
 		}
-		if (custom && shadowMaps) {
-			const int mode = std::clamp((int)NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"), 0, 3);
-			if (mode == 3 && is({ "Prefilter", "MSAA" }))
-				return "Not used in Mode 3 (PCF): PCF keeps depths and compares them when it reads, so there is nothing to blur "
-					"(Prefilter) or average (MSAA). For softer PCF edges use SmoothFilter; Prefilter works in Modes 0-2.";
-			if (mode == 3 && is({ "Format" })) return "Not used in Mode 3 (PCF): PCF always stores 32-bit depth.";
-			if (mode != 3 && is({ "SmoothFilter" })) return "Only used in Mode 3 (PCF). Modes 0-2 soften their edges with Prefilter.";
-		}
-	}
-	// Contact-hardening sun shadows (Shadow.hlsl): Mode 2 (EVSM4) and 3 (PCF) only; Modes 0-1 take the plain lookup.
-	if (sec == "Shaders.ContactHardening.Main" && CurrentShadowMode() < 2) {
-		sprintf_s(reason, "Not used with the current sun shadows: contact hardening needs shadow Mode 2 (EVSM4) or 3 (PCF); "
-			"the current Quality/Mode give Mode %d.", CurrentShadowMode());
-		return reason;
 	}
 	if (sec == "Shaders.ShadowsExteriors.SunSmoothing" && is({ "CrossFade" }) && NumericSetting("Shaders.ShadowsExteriors.Main", "ForwardShadows") == 0.0f)
 		return "Only used with ForwardShadows on (Shadows Exteriors > Main).";
@@ -2533,9 +2501,6 @@ static const char* kTonemappingModeNames[] = {
 static const char* kCinemaDofModeNames[] = {
 	"0 - Always", "1 - Not during dialog", "2 - Only during dialog", "3 - Disabled",
 };
-static const char* kShadowsModeNames[] = {
-	"0 - VSM", "1 - EVSM2", "2 - EVSM4", "3 - PCF (restart)",	// UNOFFICIAL 2026-10-14: 3 was in the code (ShaderRecord SHADOW_FIXED_MODE) but not here
-};
 // SleepingMode.Mode has no TOML comment; values derived from
 // src/core/Hooks/SleepingCommon.cpp's ShowSleepWaitMenuHook.
 static const char* kSleepingModeNames[] = {
@@ -2574,7 +2539,6 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.DepthOfField.ThirdPersonView.Mode",             ENUM_OPT(kCinemaDofModeNames) },
 	{ "Shaders.DepthOfField.VanityView.Mode",                  ENUM_OPT(kCinemaDofModeNames) },
 	{ "Main.SleepingMode.Main.Mode",                           ENUM_OPT(kSleepingModeNames) },
-	{ "Shaders.ShadowsExteriors.ShadowMaps.Mode",              ENUM_OPT(kShadowsModeNames) },
 	{ "Shaders.ShadowsExteriors.Main.Quality",                 ENUM_OPT(kShadowQualityNames) },
 	{ "Shaders.ShadowsExteriors.ShadowMaps.Format",            ENUM_OPT(kShadowFormatNames) },
 	{ "Shaders.ShadowsExteriors.ShadowMaps.CascadeResolution", ENUM_OPT(kShadowCascadeResolutionNames) },

@@ -1136,7 +1136,7 @@ Splashes = true                      # A landed rain drop is a small splash for 
 
 [_Shaders.ShadowsExteriors.Main]
 TwoSidedCasters = false                # UNOFFICIAL: sun shadows (and the volumetric light, which reads them) are cast by both sides of every object. Fixes sunlight and light shafts shining through one-sided walls (the game uses them where you never see the other side). Same picture for closed objects; a little more shadow-map drawing.
-Quality = 4                          # Quality preset - 0: Low, 1: Medium, 2: High, 3: Full, 4: Custom
+Quality = 4                          # Quality preset - 0: Low, 1: Medium, 2: High, 3: Full, 4: Custom (UNOFFICIAL 2026-10-27: every preset uses PCF sun shadow maps; the presets set distance and resolution; the old VSM / EVSM modes and their Mode, Format, Prefilter and MSAA settings are gone)
 Enabled = true                       # Enable sun shadows using rendered shadow maps.
 ForwardShadows = true                # Evaluate sun shadows per-object in the lighting shaders
                                      # instead of as a screen-space composite. Scales only the
@@ -1268,15 +1268,11 @@ Sharp = false                        # UNOFFICIAL: sharper, steadier contact sha
 FastPaths = true                     # UNOFFICIAL (2026-10-17): the same contact shadows for less GPU time: the march's early exits (too far, surface turned away from the sun) really skip work (the shader compiler had turned them into work every pixel did). Off = the original pass. Applies immediately
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
-Mode = 3							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
-Format = 0							 # Texture format, higher means higher quality, but higher bandwidth cost. 0: 16 bit, 1: 32 bit
 CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 1536, 2: 2048, 3: 2560, 4: 3072, 5: 3584, 6: 4096 (UNOFFICIAL; 6 needs about 256 MB of video memory with PCF shadows, Max Quality uses it).
                                      # 3: 2560, 4: 3072, 5: 3584. The atlas holds 2x2 cascades, so
                                      # VRAM and shadow-pass bandwidth scale with the square of this:
                                      # 3 is ~2.6x the cost of 2, and 5 is ~5x. Clamped down if it
                                      # exceeds the device's maximum texture size.
-Prefilter = true					 # Enable prefiltering the shadow maps. Prefiltering is a blur.
-MSAA = true							 # Enable multisample antialiasing for shadow maps.
 Mipmaps = false						 # DISABLED. Enable mipmaps for the shadow maps.
 Anisotropy = 0						 # DISABLED. Anisotropic filteric for mipmaps, 0: disabled, 1: 8x, 2: 16x
 Distance = 6000                      # Distance to render shadows for. The unit is the same as the game uses for i.e. fog values. 

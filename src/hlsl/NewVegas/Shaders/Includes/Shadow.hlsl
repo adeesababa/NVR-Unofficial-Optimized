@@ -104,7 +104,7 @@ sampler2D TESR_ShadowAtlasOld : register(SHADOW_OLD_ATLAS_SAMPLER_REG) = sampler
 // variants. Must match [_Shaders.ShadowsExteriors.ShadowMaps] Mode.
 //   0 = VSM, 1 = EVSM2, 2 = EVSM4 (toml default)
 #ifndef SHADOW_FIXED_MODE
-    #define SHADOW_FIXED_MODE 2
+    #define SHADOW_FIXED_MODE 3   // UNOFFICIAL 2026-10-27: PCF always (ShaderRecord defines 3 for every shader)
 #endif
 
 static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
