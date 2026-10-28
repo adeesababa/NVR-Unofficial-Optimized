@@ -14,7 +14,7 @@ float4 TESR_ShadowData;
 float4 TESR_ShadowScreenSpaceData;
 float4 TESR_OrthoData;
 
-float4 TESR_SnowAccumulationExtra;	// UNOFFICIAL 2026-10-28: x 1 = CapturedNormals, y CapturedNormalsDebugView
+float4 TESR_SnowAccumulationExtra;	// UNOFFICIAL 2026-10-28: x 1 = CapturedNormals, y CapturedNormalsDebugView, zw this frame's jitter (screen units; see SnowRay)
 float4 TESR_GameTime;	// (Look 1)
 float4 TESR_SnowData;	// (Look 1) x: active snowfall amount (0 = not snowing, 1 = full snow)
 
@@ -76,6 +76,22 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Normals.hlsl"
 #include "Includes/BlurDepth.hlsl"
 #include "Includes/CapturedNormals.hlsl"
+
+// UNOFFICIAL 2026-10-28 (user: "taa jitter is causing the same flickering we had with clouds with snow on the ground"): with FSR / DLSS
+// LowResEffects this pass draws into the small JITTERED frame before the upscale, where the depth at a pixel is the jittered sample's,
+// but toWorld / reconstructWorldPosition build the view ray with the unjittered camera: every world position (the coverage noise, the
+// slope test, the snow normal map, the footprints, the sparkles) was off by the jitter, differently each frame, so the snow's pattern
+// shimmered against the ground under it. As VolumetricClouds' composite (2026-10-28): a pixel of the jittered frame shows the
+// unjittered screen at + TESR_SnowAccumulationExtra.zw (TAAEffect::LowResJitterUV, set per frame; 0 in any other frame).
+float3 SnowRay(float2 uv) { return toWorld(uv + TESR_SnowAccumulationExtra.zw * TESR_RenderScale.xy); }
+float4 SnowWorldPosition(float2 uv, out float viewDepth) {
+	float2 s01 = rectToScreen(uv) + TESR_SnowAccumulationExtra.zw;
+	float4 clipSpace = float4(s01.x * 2 - 1, (1 - s01.y) * 2 - 1, projectedDepthFromLinear(tex2D(TESR_DepthBuffer, uv).x), 1.0f);
+	float4 viewSpace = mul(clipSpace, TESR_InvProjectionTransform);
+	viewSpace /= viewSpace.w;
+	viewDepth = viewSpace.z;
+	return float4(mul(viewSpace, TESR_InvViewTransform).xyz, 1.0f);
+}
 
 // UNOFFICIAL 2026-10-28 CapturedNormals ([Shaders.SnowAccumulation.Main] CapturedNormals; docs/next/CAPTURED-NORMALS.md): macintroll's
 // proposal. The snow's slope (where it may lie) and its lighting took the normal rebuilt from depth, one flat normal per triangle, so on
@@ -181,7 +197,7 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 	if (uv.x > TESR_RenderScale.x || uv.y > TESR_RenderScale.y) return white;	// UNOFFICIAL 2026-10-27 RenderScale v2: a quarter of the drawn part
 	
     float depth;
-    float4 world = reconstructWorldPosition(uv, depth);
+    float4 world = SnowWorldPosition(uv, depth);	// UNOFFICIAL 2026-10-28: the jittered pixel's own ray (SnowRay)
 
 	if (depth > TESR_OrthoData.x) return white; // early out for the sky pixels
 
@@ -277,7 +293,7 @@ float3 SnowSmoothNormal(float2 uv, float3 center, float3 norm, float depth)
 		float2 tapUV = screenToRect(saturate(raw));
 		float onScreen = all(raw == saturate(raw)) ? 1.0f : 0.0f;
 		float tapDepth = readDepthLod(tapUV);
-		float3 tapPos = toWorld(tapUV) * tapDepth;
+		float3 tapPos = SnowRay(tapUV) * tapDepth;
 		float3 tapNormal = GetWorldNormalLod(tapUV);
 		float weight = saturate(1.0f - length(tapPos - center) / (2.0f * radius)) * (tapDepth < farZ * 0.99f ? 1.0f : 0.0f) * onScreen *
 			smoothstep(0.5f, 0.85f, dot(tapNormal, norm));
@@ -293,7 +309,7 @@ float3 SnowSmoothNormal(float2 uv, float3 center, float3 norm, float depth)
 float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
-	float3 world = toWorld(IN.UVCoord);
+	float3 world = SnowRay(IN.UVCoord);	// UNOFFICIAL 2026-10-28: the jittered pixel's own ray
 	
 	float depth = readDepth(IN.UVCoord);
 	float3 camera_vector = world * depth;
@@ -498,7 +514,7 @@ float3 SA_SmoothSnowNormal(float2 uv, float centerDepth, float3 original) {
     float radius = SA_NormalRadiusWorld;
     if (radius <= 0.0f || centerDepth >= farZ * 0.99f) return original;
     float3 center = normalize(original);
-    float3 centerPos = toWorld(uv) * centerDepth;
+    float3 centerPos = SnowRay(uv) * centerDepth;
     float3 total = center * 2.0f;
     static const float2 offsets[8] = {
         float2(0.5f,0), float2(-0.5f,0), float2(0,0.5f), float2(0,-0.5f),
@@ -517,7 +533,7 @@ float3 SA_SmoothSnowNormal(float2 uv, float centerDepth, float3 original) {
         float2 sampleUV = screenToRect(saturate(tapScreen));
         float sampleDepth = readDepthLod(sampleUV);
         float3 sampled = normalize(GetWorldNormalLod(sampleUV));
-        float3 samplePos = toWorld(sampleUV) * sampleDepth;
+        float3 samplePos = SnowRay(sampleUV) * sampleDepth;
         // Fixed 3D-distance rejection replaces the depth-relative tolerance.
         float separation = length(samplePos - centerPos);
         float weight = 1.0f - smoothstep(0.5f * radius, 2.0f * radius, separation);
@@ -707,7 +723,7 @@ float4 SA5_SnowCoverage(VSOUT IN) : COLOR0 {
     if (uv.x > TESR_RenderScale.x || uv.y > TESR_RenderScale.y) return 1.0f.xxxx;	// RenderScale v2: a quarter of the drawn part (as Look 0)
 
     float  depth;
-    float4 world = reconstructWorldPosition(uv, depth);
+    float4 world = SnowWorldPosition(uv, depth);	// UNOFFICIAL 2026-10-28: the jittered pixel's own ray (SnowRay)
     if (depth > TESR_OrthoData.x) return 1.0f.xxxx;
     if (depth >= 3500.0f)         return 1.0f.xxxx;
 
@@ -777,7 +793,7 @@ float SA5_SnowFootprint(float3 rel, out float2 relief)
 float4 SA5_Snow(VSOUT IN, uniform bool persist) : COLOR0 {
     float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 
-    float3 world = toWorld(IN.UVCoord);
+    float3 world = SnowRay(IN.UVCoord);	// UNOFFICIAL 2026-10-28: the jittered pixel's own ray
     float  depth = readDepth(IN.UVCoord);
 
     float vmDepthX = tex2D(TESR_DepthBufferViewModel, IN.UVCoord).x;

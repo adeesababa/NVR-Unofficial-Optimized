@@ -17,6 +17,7 @@ public:
 	D3DXVECTOR4		Extra = { 0.0f, 0.0f, 0.0f, 0.0f };	// UNOFFICIAL 2026-10-28 TESR_SnowAccumulationExtra: x CapturedNormals, y CapturedNormalsDebugView
 
 	bool	CapturedNormals = false;	// UNOFFICIAL 2026-10-28 [Shaders.SnowAccumulation.Main] CapturedNormals (core/CapturedNormals.h)
+	bool	FollowJitter = true;		// UNOFFICIAL 2026-10-28 [Shaders.SnowAccumulation.Main] FollowJitter (SnowAccumulation.fx.hlsl SnowRay)
 	int		Look = 0;					// UNOFFICIAL 2026-10-28 [Shaders.SnowAccumulation.Main] Look: 0 as before, 1 macintroll's version 5
 
 	float increaseRate;

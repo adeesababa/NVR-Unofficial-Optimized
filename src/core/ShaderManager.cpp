@@ -2056,6 +2056,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// off) no longer matches the normals drawn at the internal resolution: the readers keep the depth-rebuilt normal then. (With
 		// LowResEffects on the effects run in the drawn rect before the upscale, as the normals were drawn: they match.)
 		if (TAAEffect::UpscaledBeforeEffects()) CapturedNormals::Data.x = 0.0f;
+		// UNOFFICIAL 2026-10-28: the frame's jitter in an FSR / DLSS LowResEffects frame (0 otherwise): snow builds its world positions along
+		// the jittered pixel's own ray (SnowAccumulation.fx.hlsl SnowRay), as the clouds' composite reads at it.
+		{
+			const D3DXVECTOR2 jitterUV = Effects.TAA && Effects.SnowAccumulation->FollowJitter ? Effects.TAA->LowResJitterUV() : D3DXVECTOR2(0.0f, 0.0f);
+			Effects.SnowAccumulation->Extra.z = jitterUV.x;
+			Effects.SnowAccumulation->Extra.w = jitterUV.y;
+		}
 		{
 			Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
 				Effects.SnowAccumulation->Technique(TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0), false, SourceSurface);	// UNOFFICIAL 2026-10-28 Look

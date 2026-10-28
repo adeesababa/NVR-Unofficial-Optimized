@@ -44,6 +44,7 @@ void SnowAccumulationEffect::UpdateSettings(){
 	Extra.y = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "CapturedNormalsDebugView"), 0, 2);
 	// UNOFFICIAL 2026-10-28 Look (techniques 2 and 3 of SnowAccumulation.fx.hlsl): 1 = tester macintroll's version 5. Live.
 	Look = std::clamp(TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "Look"), 0, 1);
+	FollowJitter = TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "FollowJitter") != 0;	// UNOFFICIAL 2026-10-28, live
 }
 
 UINT SnowAccumulationEffect::Technique(UINT persistent) {
