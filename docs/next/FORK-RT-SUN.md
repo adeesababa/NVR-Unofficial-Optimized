@@ -87,6 +87,10 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   RtCore::Frame), the flush-before-signal order.
 - **Best lead:** the fork's StageGeometry conversion (game VB/IB -> arena) is the one untested link; second, the pass inputs
   (the trace pass takes only 0.33 ms for 921k pixels, so most pixels may not trace at all).
+- **rt-reflections' alignment check (run 20261028-150909-slotA, Ultra-Luxe):** camera rays from p.origin toward each pixel's
+  depth-rebuilt surface (tMin 1, tMax 2x the distance + 500, mask 0xFF) miss on 100% of pixels, with no reflection inputs
+  involved. So the scene itself is wrong (positions from the arena, the transforms / space, or an empty TLAS in practice),
+  not the sun pass inputs. This points to the first lead; DebugView 6 + the probes in rtsun-4 should say which.
 - **Next step:** run bench list foundations\liststsun-4.txt as is (the diagnostics are committed, 435889eb; DLL and helper
   built; the helper copy is in bench\deep-roadmaptsun\extra). DebugView 6 white -> the scene: compare "RT CORE probe" (NVR log)
   with "probe geometry" (NvrRtHelper.log); DebugView 6 depth-like -> the inputs: read DebugView 5's codes and "RT sun constants".
