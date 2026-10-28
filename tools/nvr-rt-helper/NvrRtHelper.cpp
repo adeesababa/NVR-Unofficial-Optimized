@@ -16,6 +16,8 @@
 //   binding 0      accelerationStructureEXT     the scene
 //   binding 1      uniform block (std140)        the pass's constants (NvrRtPass::constants, up to 512 bytes)
 //   binding 2 + i  image2D (storage, GENERAL)    the pass's images[i] (declare the format, e.g. r32f, rgba16f, r16f)
+//   binding 10     readonly SSBO                 NvrRtInstanceRecord per instance (albedo, flags, where its triangles are)
+//   binding 11     readonly SSBO                 uint words: every geometry's float3 positions and uint triangle list
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -134,6 +136,7 @@ namespace {
 	const uint32_t kCmdRing = 4;
 	const uint32_t kQueriesPerSlot = 4;	// start, after the builds, after the scene, end
 	const VkDeviceSize kPoolBlock = 64ull << 20;
+	const uint32_t kDataWords = 32u << 20;	// the geometry data (binding 11): 128 MB of positions and indices
 
 	// ---------------------------------------------------------------------------------------------------------------------
 	// The device: the GPU NVR's DXVK uses, with ray queries, acceleration structures, buffer addresses, timeline semaphores and
@@ -392,6 +395,35 @@ namespace {
 		uint32_t					block = 0;
 		VkDeviceSize				offset = 0, size = 0;
 		uint32_t					triangles = 0;
+		uint32_t					vertexOffset = NVR_RT_NO_DATA;	// words in the geometry data (binding 11)
+		uint32_t					indexOffset = NVR_RT_NO_DATA;
+		uint32_t					dataWords = 0;
+	};
+
+	// The geometry data's words: first fit.
+	struct WordPool {
+		std::map<uint32_t, uint32_t> free;	// offset -> count
+		void Init(uint32_t words) { free.clear(); free[0] = words; }
+		uint32_t Allocate(uint32_t words) {
+			for (auto it = free.begin(); it != free.end(); ++it) {
+				if (it->second < words) continue;
+				const uint32_t at = it->first, rest = it->second - words;
+				free.erase(it);
+				if (rest) free[at + words] = rest;
+				return at;
+			}
+			return NVR_RT_NO_DATA;
+		}
+		void Free(uint32_t at, uint32_t words) {
+			if (at == NVR_RT_NO_DATA || !words) return;
+			auto it = free.emplace(at, words).first;
+			auto next = std::next(it);
+			if (next != free.end() && it->first + it->second == next->first) { it->second += next->second; free.erase(next); }
+			if (it != free.begin()) {
+				auto prev = std::prev(it);
+				if (prev->first + prev->second == it->first) { prev->second += it->second; free.erase(it); }
+			}
+		}
 	};
 
 	struct SharedImage {
@@ -402,29 +434,59 @@ namespace {
 		uint32_t		width = 0, height = 0;
 	};
 
+	// The importer's VkImage must have the exporter's layout. The game's driver is the 32-bit one, this is the 64-bit one: with the
+	// same create info they may still disagree on the size (2026-10-28, AMD 25.10: a 1280x720 R32F image is 3686400 bytes in the
+	// game, 3957104 here = compression metadata the 32-bit driver did not add). So: the exporter's create info first; if that needs
+	// more memory than the game allocated, variants that commonly switch the metadata off (the usage bits that ask for it, a
+	// mutable format), taking the first whose size is EXACTLY the game's (the same size = the same plain layout).
 	bool ImportImage(const VulkanDevice& vk, const NvrRtImageDesc& d, uint32_t index, SharedImage& out) {
 		VkExternalMemoryImageCreateInfo external = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
 		external.handleTypes = (VkExternalMemoryHandleTypeFlags)d.handleType;
-		VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &external };
-		info.flags = d.flags;
-		info.imageType = VK_IMAGE_TYPE_2D;
-		info.format = (VkFormat)d.vkFormat;
-		info.extent = { d.width, d.height, 1 };
-		info.mipLevels = 1;
-		info.arrayLayers = 1;
-		info.samples = VK_SAMPLE_COUNT_1_BIT;
-		info.tiling = (VkImageTiling)d.tiling;
-		info.usage = d.usage;
-		info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VK_CHECK(vkCreateImage(vk.device, &info, nullptr, &out.image), "vkCreateImage (shared)");
+		VkFormat viewFormat = (VkFormat)d.vkFormat;
+		VkImageFormatListCreateInfo formatList = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, &external };
+		formatList.viewFormatCount = 1;
+		formatList.pViewFormats = &viewFormat;
+		struct Variant { const char* name; VkImageUsageFlags usageOff; VkImageCreateFlags flagsOn; bool list; };
+		const Variant variants[] = {
+			{ "as the game made it", 0, 0, false },
+			{ "without colour attachment use", VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, false },
+			{ "mutable format", 0, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, false },
+			{ "mutable format, one view format", 0, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, true },
+			{ "without colour attachment use, mutable format", VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, false },
+			{ "without sampled / colour attachment use", VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, false },
+		};
 		VkMemoryRequirements requirements = {};
-		vkGetImageMemoryRequirements(vk.device, out.image, &requirements);
-		if (requirements.size > d.allocationSize || !(requirements.memoryTypeBits & (1u << d.memoryTypeIndex))) {
-			Status("Vulkan: shared image %u does not fit the game's allocation (needs %llu bytes, types 0x%X; the game's: %llu bytes, type %u)",
-				index, (unsigned long long)requirements.size, requirements.memoryTypeBits, (unsigned long long)d.allocationSize, d.memoryTypeIndex);
+		const Variant* chosen = nullptr;
+		for (const Variant& v : variants) {
+			VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, v.list ? (const void*)&formatList : (const void*)&external };
+			info.flags = d.flags | v.flagsOn;
+			info.imageType = VK_IMAGE_TYPE_2D;
+			info.format = (VkFormat)d.vkFormat;
+			info.extent = { d.width, d.height, 1 };
+			info.mipLevels = 1;
+			info.arrayLayers = 1;
+			info.samples = VK_SAMPLE_COUNT_1_BIT;
+			info.tiling = (VkImageTiling)d.tiling;
+			info.usage = d.usage & ~v.usageOff;
+			info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkImage image = VK_NULL_HANDLE;
+			if (vkCreateImage(vk.device, &info, nullptr, &image) != VK_SUCCESS) continue;
+			vkGetImageMemoryRequirements(vk.device, image, &requirements);
+			const bool typeOk = (requirements.memoryTypeBits & (1u << d.memoryTypeIndex)) != 0;
+			const bool fits = &v == &variants[0] ? requirements.size <= d.allocationSize : requirements.size == d.allocationSize;
+			if (typeOk && fits) { out.image = image; chosen = &v; break; }
+			Log("shared image %u (%ux%u, format %u, usage 0x%X, flags 0x%X): %s needs %llu bytes (types 0x%X), the game's is %llu (type %u)",
+				index, d.width, d.height, d.vkFormat, info.usage, info.flags, v.name, (unsigned long long)requirements.size, requirements.memoryTypeBits,
+				(unsigned long long)d.allocationSize, d.memoryTypeIndex);
+			vkDestroyImage(vk.device, image, nullptr);
+		}
+		if (!out.image) {
+			Status("Vulkan: shared image %u (%ux%u, format %u) does not fit the game's allocation in any layout this driver offers (see the log)",
+				index, d.width, d.height, d.vkFormat);
 			return false;
 		}
+		if (chosen != &variants[0]) Log("shared image %u imported %s (the 64-bit driver's default layout differs from the game's)", index, chosen->name);
 		VkMemoryDedicatedAllocateInfo dedicated = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
 		dedicated.image = out.image;
 		VkImportMemoryWin32HandleInfoKHR import = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR, d.dedicated ? &dedicated : nullptr };
@@ -488,6 +550,7 @@ namespace {
 		uint64_t		frame = 0;			// the frame last submitted from this slot (0 = none)
 		Buffer			instances;			// host-visible VkAccelerationStructureInstanceKHR[NVR_RT_MAX_INSTANCES]
 		Buffer			constants;			// host-visible, NVR_RT_PASS_CONSTANTS per pass
+		Buffer			records;			// host-visible NvrRtInstanceRecord[NVR_RT_MAX_INSTANCES] (binding 10)
 		VkDescriptorSet	sets[NVR_RT_MAX_PASSES] = {};
 		bool			measured[3] = {};	// which sections had work (build, scene, trace) in that frame
 	};
@@ -508,6 +571,8 @@ namespace {
 		VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
 		VkDeviceSize	tlasScratch = 0;
 		StructurePool	structures;
+		Buffer			geometryData;		// binding 11
+		WordPool		dataWords;
 		std::unordered_map<uint32_t, Geometry> geometries;
 		std::vector<PendingFree> pendingFrees;
 		uint64_t		triangles = 0;
@@ -556,19 +621,22 @@ namespace {
 	}
 
 	bool CreatePipelineLayout(Helper& h) {
-		VkDescriptorSetLayoutBinding bindings[2 + NVR_RT_PASS_IMAGES] = {};
-		VkDescriptorBindingFlags flags[2 + NVR_RT_PASS_IMAGES] = {};
+		const uint32_t bindingCount = 2 + NVR_RT_PASS_IMAGES + 2;
+		VkDescriptorSetLayoutBinding bindings[2 + NVR_RT_PASS_IMAGES + 2] = {};
+		VkDescriptorBindingFlags flags[2 + NVR_RT_PASS_IMAGES + 2] = {};
 		bindings[0] = { 0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		bindings[1] = { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		for (uint32_t i = 0; i < NVR_RT_PASS_IMAGES; i++) {
 			bindings[2 + i] = { 2 + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 			flags[2 + i] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 		}
+		bindings[2 + NVR_RT_PASS_IMAGES] = { NVR_RT_BINDING_RECORDS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+		bindings[3 + NVR_RT_PASS_IMAGES] = { NVR_RT_BINDING_GEOMETRY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlags = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO };
-		bindingFlags.bindingCount = 2 + NVR_RT_PASS_IMAGES;
+		bindingFlags.bindingCount = bindingCount;
 		bindingFlags.pBindingFlags = flags;
 		VkDescriptorSetLayoutCreateInfo setInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, &bindingFlags };
-		setInfo.bindingCount = 2 + NVR_RT_PASS_IMAGES;
+		setInfo.bindingCount = bindingCount;
 		setInfo.pBindings = bindings;
 		VK_CHECK(vkCreateDescriptorSetLayout(h.vk.device, &setInfo, nullptr, &h.setLayout), "vkCreateDescriptorSetLayout");
 		VkPipelineLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
@@ -576,13 +644,14 @@ namespace {
 		layoutInfo.pSetLayouts = &h.setLayout;
 		VK_CHECK(vkCreatePipelineLayout(h.vk.device, &layoutInfo, nullptr, &h.pipelineLayout), "vkCreatePipelineLayout");
 		const uint32_t sets = kCmdRing * NVR_RT_MAX_PASSES;
-		VkDescriptorPoolSize sizes[3] = {
+		VkDescriptorPoolSize sizes[4] = {
 			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets },
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * NVR_RT_PASS_IMAGES } };
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * NVR_RT_PASS_IMAGES },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2 } };
 		VkDescriptorPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		poolInfo.maxSets = sets;
-		poolInfo.poolSizeCount = 3;
+		poolInfo.poolSizeCount = 4;
 		poolInfo.pPoolSizes = sizes;
 		VK_CHECK(vkCreateDescriptorPool(h.vk.device, &poolInfo, nullptr, &h.descriptorPool), "vkCreateDescriptorPool");
 		for (Slot& s : h.slots) {
@@ -654,6 +723,7 @@ namespace {
 			if (p.frame > done) return false;
 			h.vk.destroyAs(h.vk.device, p.geometry.as, nullptr);
 			h.structures.Free(p.geometry.block, p.geometry.offset, p.geometry.size);
+			h.dataWords.Free(p.geometry.vertexOffset, p.geometry.dataWords);
 			return true;
 		});
 		h.pendingFrees.erase(it, h.pendingFrees.end());
@@ -728,6 +798,7 @@ namespace {
 			ranges.reserve(builds);
 			VkDeviceSize scratchTotal = 0;
 			std::vector<VkDeviceSize> scratchOffsets;
+			std::vector<VkBufferCopy> dataCopies;
 			const VkDeviceSize align = h.vk.asProperties.minAccelerationStructureScratchOffsetAlignment;
 			for (uint32_t i = 0; i < f.opCount; i++) {
 				const NvrRtGeometryOp& op = f.ops[i];
@@ -775,6 +846,14 @@ namespace {
 				VkAccelerationStructureDeviceAddressInfoKHR addressInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
 				addressInfo.accelerationStructure = geo.as;
 				geo.address = h.vk.asAddress(h.vk.device, &addressInfo);
+				// its positions and triangle list kept for the shaders (binding 11), when there is room
+				geo.dataWords = (uint32_t)texels;
+				geo.vertexOffset = h.dataWords.Allocate(geo.dataWords);
+				if (geo.vertexOffset != NVR_RT_NO_DATA) {
+					geo.indexOffset = geo.vertexOffset + 3u * op.vertexCount;
+					dataCopies.push_back({ (VkDeviceSize)op.arenaTexel * 4, (VkDeviceSize)geo.vertexOffset * 4, (VkDeviceSize)texels * 4 });
+				}
+				else geo.dataWords = 0;
 				h.geometries[op.id] = geo;
 				h.triangles += geo.triangles;
 				geoms.push_back(g);
@@ -794,6 +873,7 @@ namespace {
 					rangePointers[i] = &ranges[i];
 				}
 				h.vk.cmdBuildAs(cmd, (uint32_t)infos.size(), infos.data(), rangePointers.data());
+				if (!dataCopies.empty()) vkCmdCopyBuffer(cmd, h.staging.buffer, h.geometryData.buffer, (uint32_t)dataCopies.size(), dataCopies.data());
 				FullBarrier(cmd);
 				s.measured[0] = true;
 			}
@@ -804,11 +884,17 @@ namespace {
 
 		// 2. the scene from this frame's instances
 		VkAccelerationStructureInstanceKHR* out = (VkAccelerationStructureInstanceKHR*)s.instances.mapped;
+		NvrRtInstanceRecord* records = (NvrRtInstanceRecord*)s.records.mapped;
 		uint32_t count = 0;
 		for (uint32_t i = 0; i < std::min<uint32_t>(f.instanceCount, NVR_RT_MAX_INSTANCES); i++) {
 			const NvrRtInstance& in = f.instances[i];
 			auto it = h.geometries.find(in.geometryId);
 			if (it == h.geometries.end()) continue;
+			NvrRtInstanceRecord& r = records[count];
+			r = f.records[i];
+			r.geometryId = in.geometryId;
+			r.vertexOffset = it->second.vertexOffset;
+			r.indexOffset = it->second.indexOffset;
 			VkAccelerationStructureInstanceKHR& o = out[count++];
 			memcpy(&o.transform, in.transform, sizeof(o.transform));
 			o.instanceCustomIndex = in.customIndex & 0xFFFFFF;
@@ -855,14 +941,18 @@ namespace {
 			asWrite.pAccelerationStructures = &h.tlas;
 			VkDescriptorBufferInfo ubo = { s.constants.buffer, (VkDeviceSize)p * NVR_RT_PASS_CONSTANTS, NVR_RT_PASS_CONSTANTS };
 			VkDescriptorImageInfo imageInfos[NVR_RT_PASS_IMAGES] = {};
-			VkWriteDescriptorSet writes[2 + NVR_RT_PASS_IMAGES] = {};
+			VkWriteDescriptorSet writes[2 + NVR_RT_PASS_IMAGES + 2] = {};
+			VkDescriptorBufferInfo recordInfo = { s.records.buffer, 0, VK_WHOLE_SIZE };
+			VkDescriptorBufferInfo dataInfo = { h.geometryData.buffer, 0, VK_WHOLE_SIZE };
 			writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &asWrite, s.sets[p], 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR };
 			writes[1] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo };
 			for (uint32_t i = 0; i < pass.imageCount; i++) {
 				imageInfos[i] = { VK_NULL_HANDLE, h.images[pass.images[i]].view, VK_IMAGE_LAYOUT_GENERAL };
 				writes[2 + i] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], 2 + i, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imageInfos[i] };
 			}
-			vkUpdateDescriptorSets(h.vk.device, 2 + pass.imageCount, writes, 0, nullptr);
+			writes[2 + pass.imageCount] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], NVR_RT_BINDING_RECORDS, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &recordInfo };
+			writes[3 + pass.imageCount] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], NVR_RT_BINDING_GEOMETRY, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dataInfo };
+			vkUpdateDescriptorSets(h.vk.device, 4 + pass.imageCount, writes, 0, nullptr);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, h.pipelineLayout, 0, 1, &s.sets[p], 0, nullptr);
 			vkCmdDispatch(cmd, std::max(1u, pass.groupsX), std::max(1u, pass.groupsY), std::max(1u, pass.groupsZ));
@@ -885,6 +975,7 @@ namespace {
 			h.frame.passCount = std::min<uint32_t>(h.frame.passCount, NVR_RT_MAX_PASSES);
 			memcpy(h.frame.ops, ring.ops, sizeof(NvrRtGeometryOp) * h.frame.opCount);
 			memcpy(h.frame.instances, ring.instances, sizeof(NvrRtInstance) * h.frame.instanceCount);
+			memcpy(h.frame.records, ring.records, sizeof(NvrRtInstanceRecord) * h.frame.instanceCount);
 			memcpy(h.frame.passes, ring.passes, sizeof(NvrRtPass) * h.frame.passCount);
 		} else {
 			// NVR waits before reusing a slot, so this means NVR skipped the frame: nothing to do but release its wait
@@ -1021,7 +1112,8 @@ namespace {
 			if (vkAllocateCommandBuffers(h.vk.device, &cmdInfo, &s.cmd) != VK_SUCCESS) return fail("Vulkan: vkAllocateCommandBuffers failed");
 			if (!CreateBuffer(h.vk, sizeof(VkAccelerationStructureInstanceKHR) * NVR_RT_MAX_INSTANCES,
 					VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true, s.instances) ||
-				!CreateBuffer(h.vk, (VkDeviceSize)NVR_RT_PASS_CONSTANTS * NVR_RT_MAX_PASSES, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, s.constants))
+				!CreateBuffer(h.vk, (VkDeviceSize)NVR_RT_PASS_CONSTANTS * NVR_RT_MAX_PASSES, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, s.constants) ||
+				!CreateBuffer(h.vk, sizeof(NvrRtInstanceRecord) * NVR_RT_MAX_INSTANCES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, s.records))
 				return fail(nullptr);
 		}
 		if (h.vk.timestampBits) {
@@ -1032,13 +1124,23 @@ namespace {
 		}
 		const SharedImage& arena = h.images[NVR_RT_ARENA_IMAGE];
 		if (!CreateBuffer(h.vk, (VkDeviceSize)arena.width * arena.height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-				VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, false, h.staging) ||
+				VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, h.staging) ||
+			!CreateBuffer(h.vk, (VkDeviceSize)kDataWords * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, h.geometryData) ||
 			!CreateTlas(h) || !EnsureScratch(h, h.tlasScratch) || !CreatePipelineLayout(h))
 			return fail(nullptr);
 
 		// The shaders NVR registered at setup are compiled now (a first use mid-game would hold the game's GPU ~2 s on the iGPU)
 		for (uint32_t i = 0; i < std::min<uint32_t>((uint32_t)shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);
 
+		h.dataWords.Init(kDataWords);
+		// The first structure block and a build scratch now, not in the first frame (on the iGPU with the game running, the first
+		// allocations took seconds: the game's GPU would have waited for them)
+		{
+			uint32_t block = 0;
+			VkDeviceSize offset = 0;
+			if (h.structures.Allocate(h.vk, 256, block, offset)) h.structures.Free(block, offset, 256);
+			if (!EnsureScratch(h, 16ull << 20)) return fail(nullptr);
+		}
 		Status("ready: ray tracing on %s (%u shared images, arena %ux%u)", h.vk.properties.deviceName, h.imageCount, arena.width, arena.height);
 		SetState(NVR_RT_STATE_READY);
 
@@ -1082,6 +1184,14 @@ namespace {
 		VulkanDevice vk;
 		if (!CreateVulkanDevice(vk, nullptr, false, nullptr)) { Log("probe: no GPU here can run the ray tracing helper"); return 1; }
 		Log("probe: the helper can run on %s", vk.properties.deviceName);
+		{
+			uint32_t n = 0;
+			vkEnumerateDeviceExtensionProperties(vk.physical, nullptr, &n, nullptr);
+			std::vector<VkExtensionProperties> exts(n);
+			vkEnumerateDeviceExtensionProperties(vk.physical, nullptr, &n, exts.data());
+			Log("probe: VK_KHR_ray_tracing_position_fetch %s, VK_KHR_ray_tracing_pipeline %s", HasExtension(exts, "VK_KHR_ray_tracing_position_fetch") ? "yes" : "no",
+				HasExtension(exts, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) ? "yes" : "no");
+		}
 		vkDestroyDevice(vk.device, nullptr);
 		vkDestroyInstance(vk.instance, nullptr);
 		return 0;
