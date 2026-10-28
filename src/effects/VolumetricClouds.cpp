@@ -629,9 +629,18 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 		// weighted by the depth-rebuilt normals (flat per triangle, striped by the depth's precision): a P82 tester's triangles.
 		const float strength = Constants.Extra.x;
 		if (shadowsViaSunFar) Constants.Extra.x = 0.0f;
+		// UNOFFICIAL 2026-10-28 (user: the cloud flicker "is from a combination of jitter and fsr low res"): with FSR / DLSS LowResEffects
+		// the composite draws into the small JITTERED frame before the upscale, but reads the clouds (drawn whole, unjittered) at the plain
+		// screen position, so the upscaler, which shifts each frame back by its jitter, moved the clouds by the jitter every frame. The
+		// clouds are now read where this frame's jittered pixel looks: the picture moved left / down by (JitterX, JitterY) render pixels
+		// (TAAUpscale.cpp), so a pixel shows the unjittered screen at + (JitterX / width, -JitterY / height). History scale zw = that offset.
+		const D3DXVECTOR2 jitterUV = TheShaderManager->Effects.TAA ? TheShaderManager->Effects.TAA->LowResJitterUV() : D3DXVECTOR2(0.0f, 0.0f);
+		Constants.HistoryScale.z = jitterUV.x;
+		Constants.HistoryScale.w = jitterUV.y;
 		GpuProfileScope gpu(compositeTimer, Device);
 		Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);	// composite
 		Constants.Extra.x = strength;
+		Constants.HistoryScale.z = Constants.HistoryScale.w = 0.0f;
 	}
 
 	lastViewProj = viewProj;

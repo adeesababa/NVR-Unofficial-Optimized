@@ -69,7 +69,7 @@ public:
 		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 		D3DXVECTOR4	Tint;			// UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, its brightness taken out), w: WeatherTint
 		D3DXVECTOR4	Tower;			// UNOFFICIAL 2026-10-25 x: the ordinary layer's share of the taller one (1 off), y: towering 0..1, z: anvil 0..1
-		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);	// UNOFFICIAL 2026-10-27 RenderScale v2: xy the part of the history its frame drew
+		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-27 RenderScale v2: xy the part of the history its frame drew; 2026-10-28 zw: the composite's jitter offset (screen uv)
 	};
 	ConstantsStruct	Constants = {};
 

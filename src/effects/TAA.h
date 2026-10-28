@@ -55,6 +55,9 @@ public:
 	static bool			UpscaledThisFrame();		// this frame's world was drawn at the lower resolution and upscaled (TAA's resolve skips)
 	static void			NoteWorldDraw(bool firstPerson = false);	// RenderPassStandard/SkinnedHook, world (and v2: first-person) passes: counts which viewport they drew with (a check)
 	static D3DXVECTOR4	RenderScaleConstant;		// TESR_RenderScale: xy = render size / screen size while the low-resolution world draws, else 1
+	// UNOFFICIAL 2026-10-28: in an FSR / DLSS LowResEffects frame whose world was jittered, the jitter as a screen-uv offset (a pixel of the
+	// small frame shows the unjittered screen at uv + this); else 0. VolumetricClouds' composite reads its clouds there.
+	D3DXVECTOR2	LowResJitterUV() const;
 
 	struct TAAStruct {
 		D3DXVECTOR4	Data;				// x: history weight, y: clip gamma, z: history valid (0/1), w: debug view (0 = off)

@@ -54,7 +54,7 @@ float4 TESR_CloudsTint;         // UNOFFICIAL 2026-10-25 xyz: the weather's clou
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
 float4 TESR_CloudsTower;       // UNOFFICIAL 2026-10-25 Towering: x: the ordinary clouds' share of the (taller) layer (1 = off),
                                // y: towering 0..1, z: (2026-10-25) anvil 0..1
-float4 TESR_CloudsHistoryScale; // UNOFFICIAL 2026-10-27 RenderScale v2: xy: the part of the history its frame drew (1 = all; the reflection's lookup)
+float4 TESR_CloudsHistoryScale; // UNOFFICIAL 2026-10-27 RenderScale v2: xy: the part of the history its frame drew (1 = all; the reflection's lookup); 2026-10-28 zw: the composite's jitter offset in screen uv (FSR / DLSS LowResEffects frames, else 0)
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -583,7 +583,9 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	// UNOFFICIAL 2026-10-27: the clouds' history is drawn whole in every frame (RenderClouds runs the march as in a native frame), so in
 	// a RenderScale frame it is read at the screen position of this (lower resolution) pixel. At native: the same uv.
-	float2 huv = rectToScreen(uv);
+	// 2026-10-28: + the frame's jitter in an FSR / DLSS LowResEffects frame (VolumetricClouds.cpp), so the upscaler sees the clouds jitter
+	// with the rest of the picture instead of wobbling by it.
+	float2 huv = rectToScreen(uv) + TESR_CloudsHistoryScale.zw;
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
 	[branch] if (depth < farZ * 0.996) {

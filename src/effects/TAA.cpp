@@ -335,6 +335,13 @@ void TAAEffect::BeginJitter(bool firstWorld) {
 	}
 }
 
+// UNOFFICIAL 2026-10-28 (TAA.h): the picture moved left / down by (JitterX, JitterY) render pixels (BeginJitter), so a pixel of the small
+// frame shows the unjittered screen at + (JitterX / width, -JitterY / height). Only while the effects run small before the upscale (Deferred).
+D3DXVECTOR2 TAAEffect::LowResJitterUV() const {
+	if (!Up.Deferred || !Up.Jittered || !Up.RenderWidth || !Up.RenderHeight) return D3DXVECTOR2(0.0f, 0.0f);
+	return D3DXVECTOR2(Up.JitterX / (float)Up.RenderWidth, -Up.JitterY / (float)Up.RenderHeight);
+}
+
 void TAAEffect::EndJitter() {
 	if (mipBiasActive) {
 		SetMipBias(0.0f);
