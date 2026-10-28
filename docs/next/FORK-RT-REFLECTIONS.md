@@ -116,8 +116,10 @@ shore and docks next to it.
 
 Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open points are:
 
-1. The helper pass binding layout (`set 0`: 0 the scene, 1 the pass constants, 2.. the shared images in order). `ReflectionsRT.comp`
-   assumes `Dir`, `Origin` sampled at 2-3 and `Hit` as a storage image at 4, plus its own 48-byte constant block.
+1. The helper pass binding layout: **settled** by `NvrRtProtocol.h` (253a5c32). Set 0: binding 0 the scene, 1 the pass constants
+   (up to 512 B), 2..9 the pass's shared images as storage images. `ReflectionsRT.comp` uses `Dir` and `Origin` at 2-3 (readonly)
+   and `Hit` at 4 (written), plus a 48-byte constant block. The scene is in camera-relative world space, so the offset is 0.
+   Still open: the NVR-side `RtCore` class (registering shared images at setup, CopyToShared / CopyFromShared per pass).
 2. Shared image formats: RGBA32F for `Dir`/`Origin`/`Hit` (RGBA16F would do for `Dir`).
 3. Scene space vs NVR's camera-relative world (`RtCoreClient::Offset`).
 4. Per-instance records by `instanceCustomIndex`: average albedo per draw, the hit normal (tiers 3-4); flag bits for alpha-tested /
