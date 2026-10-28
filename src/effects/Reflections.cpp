@@ -90,7 +90,7 @@ namespace {
 		if (!RtCore::AddPass(RtShader, images, 3, 0x4, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
 		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface);
 	}
-	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord };
+	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
 }
 
 // Once, before the RT core's first frame (ShaderManager, with the other RT users).
