@@ -269,6 +269,7 @@ bool TAAEffect::WillResolveThisFrame() {
 void TAAEffect::BeginJitter(bool firstWorld) {
 	EndJitter(); // never stack two shifts, whatever happened last frame
 	frameJittered = false;
+	if (firstWorld) worldMipBias = 0.0f;	// UNOFFICIAL 2026-10-28 (WorldMipBias): set again below when a bias goes on
 
 	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp): the world scene at the lower internal resolution. The jitter is then FSR
 	// 2's own (Halton, ffxFsr2GetJitterPhaseCount steps, in render pixels) and the mip bias adds log2 of the scale (AMD's advice:
@@ -300,6 +301,7 @@ void TAAEffect::BeginJitter(bool firstWorld) {
 		if (bias < 0.0f) {
 			SetMipBias(bias);
 			mipBiasActive = true;
+			if (firstWorld) worldMipBias = bias;
 		}
 		return;
 	}
@@ -332,6 +334,7 @@ void TAAEffect::BeginJitter(bool firstWorld) {
 	if (Settings.MipBias < 0.0f) {
 		SetMipBias(Settings.MipBias);
 		mipBiasActive = true;
+		if (firstWorld) worldMipBias = Settings.MipBias;
 	}
 }
 

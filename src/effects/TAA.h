@@ -103,6 +103,9 @@ public:
 	// after it (FSR 2 / DLSS on GameSurface's rect -> the whole of it, depths upsampled and re-resolved, CombineDepth + Normals again
 	// at full size, RenderRect::End). UpscaleAfterEffects is also the fallback for frames whose chain did not run (no-op if nothing pends).
 	bool	UpscalePending() const { return Up.Deferred; }
+	// UNOFFICIAL 2026-10-28: the texture mip bias the frame's first world scene was drawn with (SetMipBias in BeginJitter; 0 = none).
+	// The land's tessellation reads it to keep its height lookups at their own detail level ([Shaders.Terrain.Displacement] IgnoreMipBias).
+	float	WorldMipBias() const { return worldMipBias; }
 	void	UpscaleBeginEffects();
 	void	UpscaleAfterEffects(IDirect3DSurface9* GameSurface);
 
@@ -118,6 +121,7 @@ private:
 	float		frustumShiftX = 0.0f;
 	float		frustumShiftY = 0.0f;
 	bool		mipBiasActive = false;
+	float		worldMipBias = 0.0f;	// UNOFFICIAL 2026-10-28 (WorldMipBias)
 	bool		texturesFailed = false;
 
 	bool	EnsureTextures();

@@ -136,6 +136,10 @@ public:
 	// last keeps the tessellation; all three are counted for the 'NVR TESS' line).
 	enum : int { kDisplaceWorld = 0, kDisplaceReflection = 1, kDisplaceOther = 2 };
 	static void					DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, int Context);
+	// 2026-10-28 ContactShadowsOutside ([Shaders.Terrain.Displacement], live, missing key = on; tester: a crusty, darker ring round the
+	// player on tessellated land): while the land's bumps are on, where the screen-space contact shadows should start and be full
+	// (view depth; ShadowsExterior.cpp takes the farther of this and NearFade). False: the bumps are off, or the option is.
+	static bool					DisplaceContactFade(float& Start, float& End);
 
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);
