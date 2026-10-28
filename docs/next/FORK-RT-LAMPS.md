@@ -1,5 +1,33 @@
 # Fork RT: interior lamp shadows traced (2026-10-28)
 
+## PAUSED HERE (2026-10-28 ~15:15, on the user's word via the main session: "pause rt research and dev for now")
+Branch `claude/rt-lamp-shadows-d97675` @ this commit (merged with `claude/rt-sun-core-aa6d6d` d71ecf96). Nothing installed, nothing
+pushed, no bench tickets left. Test tree link: `work\NVR-rtlamp` (2026-10-03 work root) -> this worktree; DLL in `build\optimized`.
+- **Current design (supersedes the 18-lamp / RGBA32F text below):** an RtCore user (`src/core/RtLampShadows.h`, registered next to
+  RtSunShadows in ShaderManager). The helper runs `Compute/Rt/RtLampTrace.spv` at RtCore's frame point: R32F depth + RGBA16F normals
+  in, RG32F out = 4-bit visibility for 9 lamps (cube slots 0-8; r: 0-5, g: 6-8 + a 12-bit log depth code). The lamp shaders
+  (`POINT_SHADOW_RT`) read it NEXT frame on s15, reprojected (c206-c209), with the cube map where it does not match. Mask hook:
+  lamp glass 0x04 / lamp models 0x08 only (RtCore::SetMaskHook). `ActorsFromCubeMaps` (the scene has no people).
+- **What the runs showed (iGPU, 1280x720):**
+  - Lucky 38 (two runs): RT never ran. Run 1 had the old RtCore (screen-size images refused) and timed out at 600 s with 24 shots.
+    Run 2: SLS2051/2052 (the POINT variants) failed to compile because `sampler_state {... = POINT}` meets the POINT macro, so the
+    forward lamp shadows were refused and no lamps got slots. Fixed in cf5d1b89 (no sampler_state); lists trimmed to 16 shots.
+  - Saloon (saloon16, run 20261028-143339-slotA, 15 of 16 shots): RT RAN. Helper up after 1.5 s, 435 instances / 234 geometries /
+    262k triangles, helper GPU 1.25 ms a frame (passes 1.09 ms for 9 lamps x 1 ray; scene 0.15 ms; first builds 42.7 ms). 24 lamps
+    published. BUT the picture does not use the traced result: rt1 vs cube differs less than cube vs cube (3.5 % vs 6.1 % of pixels
+    > 2/255); the compare view (DebugView 1) shows no red or green; the cost shots differ only by noise. So every lamp lookup falls
+    back to its cube map: the reprojection or depth match fails (or the result is not reaching s15).
+- **Next (when resumed):**
+  1. Run `rtlamp-2-saloon16` (list ready: cube, rt1, DebugView 2 coverage at tolerance 0.02 and 0.2, compare). The coverage view
+     (988963c8) colours each traced lamp's light: green = traced value used, blue = off the traced frame's screen, red = depth
+     mismatch (brighter = further off). Blue everywhere -> the reprojection matrix or the camera (CameraLocation vs CameraPosition)
+     is wrong; red -> the depth code / far plane or the depth-buffer convention; nothing at all -> the result texture or s15 binding.
+  2. Then `rtlamp-1-{lucky22,saloon16,save26,save27}` (16 shots each; save26/save27 = the GS bar / Vault 21 saves) for the pictures
+     and the cost per MaxLamps (0/4/9) and Rays 4. Bench env: LOCKTAG rtlamp, FORK_D3D9 = bench\deep-roadmap\rtsun\fork-0028,
+     SLOT_EXTRA = bench\deep-roadmap\rtsun\extra, RUN_TOML = bench\deep-roadmap\rtlamp\run-toml-igpu-rtlamp.toml, SLOT_RES 1280x720,
+     SLOT_D3DDEVICE / SLOT_DXVK_DEVICE "AMD Radeon(TM) Graphics", BENCHQ_SOLO=1. ~23 s a shot on the iGPU: keep lists under ~18 shots.
+  3. Not yet looked at: the save26 run (20261028-144344-slotA folder is the saloon re-run that NVR's self-test stopped at 8 shots).
+
 Item 3 of NVR's hybrid ray-tracing plan (with the RT core + sun shadows, RT AO/sky and RT reflections). Branch
 `claude/rt-lamp-shadows-d97675` (off `claude/p84v3-tessring` 03b62a5a). Nothing pushed, nothing installed.
 
