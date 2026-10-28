@@ -245,6 +245,7 @@
     #define SHADOW_CHARACTER_MAP_IN 1
 #endif
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"
 #if OBJECT_SMOOTH_NORMALS && !(defined(LIGHTS) && LIGHTS >= 4)
     #ifdef ONLY_LIGHT
         #define OBJ_SMOOTH_NORMAL_INTERP 1
@@ -610,7 +611,12 @@ VS_OUTPUT main(VS_INPUT IN) {
 #ifndef SPECULAR_LAMPS6
     #define SPECULAR_LAMPS6 0
 #endif
-#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
+#if defined(MANY_LAMPS_ON) && MANY_LAMPS_ON && LIGHTS == 4 && defined(SPECULAR) && SPECULAR_LAMPS6
+    #define MANY_LAMPS 1
+#endif
+#ifdef MANY_LAMPS
+    #define MAX_LIGHTS 4
+#elif LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -633,6 +639,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #define SHADOW_WP_LOAD(I)     (I).shadowWorldPos.xyz
     #define SHADOW_WP_VALID(I)    SHADOW_VS_PRESENT((I).shadowWorldPos.w)
 #endif
+
 
 struct VS_OUTPUT {
     float4 vertexColor : COLOR0;
@@ -765,18 +772,24 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.lightDir.w = viewDir.x;
     #endif
     
+    #ifdef MANY_LAMPS
+        OUT.light2 = float4(0.0f, 0.0f, 0.0f, viewDir.y);
+        OUT.light3 = float4(0.0f, 0.0f, 0.0f, viewDir.z);
+        OUT.light4 = 0.0f;
+    #else
     lightUsed = 1 < lightsThreshold ? 1.0 : 0.0;
     OUT.light2.xyz = lightUsed * mul(tbn, LightData[lightOffset + 1].xyz - position.xyz);
     OUT.light2.w = viewDir.y;
-    
+
     lightUsed = 2 < lightsThreshold ? 1.0 : 0.0;
     OUT.light3.xyz = lightUsed * mul(tbn, LightData[lightOffset + 2].xyz - position.xyz);
     OUT.light3.w = viewDir.z;
-    
+
     #if MAX_LIGHTS > 3
         lightUsed = 3 < lightsThreshold ? 1.0 : 0.0;
         OUT.light4.xyz = lightUsed * mul(tbn, LightData[lightOffset + 3].xyz - position.xyz);
         OUT.light4.w = lightUsed * LightData[lightOffset + 3].w;
+    #endif
     #endif
     
     #if MAX_LIGHTS > 4
@@ -812,6 +825,11 @@ VS_OUTPUT main(VS_INPUT IN) {
         #endif
         OUT.uv.zw = smoothN.xy;
         OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
+    #endif
+    #ifdef MANY_LAMPS
+        OUT.light2.xyz = tbn[0];
+        OUT.light3.xyz = tbn[1];
+        OUT.light4.xyz = tbn[2];
     #endif
 
     return OUT;
@@ -862,6 +880,13 @@ struct PS_OUTPUT {
     float4 color : COLOR0;
 #if defined(ONLY_SPECULAR)
     float4 highlightCopy : COLOR1;
+#endif
+#if CAPTURED_NORMALS_ON
+    #if !defined(ONLY_SPECULAR)
+    float4 capturedPad1 : COLOR1;
+    #endif
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;
 #endif
 };
 
@@ -1363,6 +1388,22 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if defined(ONLY_SPECULAR)
         OUT.highlightCopy = OUT.color;
     #endif
+#if CAPTURED_NORMALS_ON
+    #if !defined(ONLY_SPECULAR)
+        OUT.capturedPad1 = 0.0f;
+    #endif
+    OUT.capturedPad2 = 0.0f;
+    #if defined(DIFFUSE) || defined(ONLY_SPECULAR) || defined(NVR_SLOT_TIGHT)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #elif defined(OBJ_SMOOTH_NORMAL_INTERP)
+        OUT.capturedNormal = CapturedNormalOut(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);
+    #elif defined(OBJ_SMOOTH_NORMAL_W)
+        OUT.capturedNormal = CapturedNormalOut(ShadowPlainNormal(float2(IN.lightDistSq.w, IN.lightDir.w), IN.vertexColor.a), IN.shadowWorldPos.xyz);
+    #else
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #endif
+#endif
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);
 
     return OUT;
 }
@@ -1372,7 +1413,12 @@ PS_OUTPUT main(PS_INPUT IN) {
 #ifndef SPECULAR_LAMPS6
     #define SPECULAR_LAMPS6 0
 #endif
-#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
+#if defined(MANY_LAMPS_ON) && MANY_LAMPS_ON && LIGHTS == 4 && defined(SPECULAR) && SPECULAR_LAMPS6
+    #define MANY_LAMPS 1
+#endif
+#ifdef MANY_LAMPS
+    #define MAX_LIGHTS 4
+#elif LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -1394,6 +1440,15 @@ PS_OUTPUT main(PS_INPUT IN) {
     #define SHADOW_WP_STORE(O, v) O.shadowWorldPos = float4((v), SHADOW_VS_SENTINEL)
     #define SHADOW_WP_LOAD(I)     (I).shadowWorldPos.xyz
     #define SHADOW_WP_VALID(I)    SHADOW_VS_PRESENT((I).shadowWorldPos.w)
+#endif
+
+#ifdef MANY_LAMPS
+    #define MANY_LAMPS_MAX 13
+    float4 NVR_ManyLamps[1 + 2 * MANY_LAMPS_MAX] : register(c37);
+    #define MANY_LAMPS_B 6
+    #define MANY_LAMPS_C 5
+    float4 NVR_ManyLampsB[2 * MANY_LAMPS_B] : register(c76);
+    float4 NVR_ManyLampsC[2 * MANY_LAMPS_C] : register(c98);
 #endif
 
 struct PS_INPUT {
@@ -1433,10 +1488,18 @@ struct PS_INPUT {
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if CAPTURED_NORMALS_ON
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;
+#endif
 };
 
 sampler2D BaseMap : register(s0);
 sampler2D NormalMap : register(s1);
+#if defined(SI) && !defined(OPT) && defined(MANY_LAMPS_ON) && MANY_LAMPS_ON
+    sampler2D GlowMap : register(s4);
+#endif
 
 #ifdef LINEAR_LIGHTING
     float4 AmbientColorIn : register(c1);
@@ -1536,7 +1599,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
-        #ifdef LAMP_SLOT_SKIP
+        #if defined(LAMP_SLOT_SKIP) || defined(MANY_LAMPS)
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             float a;
             #ifdef OPT
@@ -1619,6 +1682,10 @@ PS_OUTPUT main(PS_INPUT IN) {
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
     }
 
+    #if defined(SI) && !defined(OPT) && defined(MANY_LAMPS_ON) && MANY_LAMPS_ON
+        lighting += baseColor.rgb * LinColor(tex2D(GlowMap, IN.uv.xy).rgb * EmittanceColor.rgb);
+    #endif
+
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = LinEncode(lighting);
     finalColor = MaterialRulesDebug(finalColor, albedoStored);
@@ -1644,6 +1711,16 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
     OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    #if OBJECT_SMOOTH_NORMALS && !defined(NVR_SLOT_TIGHT)
+        OUT.capturedNormal = CapturedNormalOut(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), SHADOW_WP_LOAD(IN));
+    #else
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #endif
+#endif
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);
 
     return OUT;
 }

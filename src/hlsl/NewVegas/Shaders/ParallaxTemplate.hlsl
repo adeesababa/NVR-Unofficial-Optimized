@@ -137,6 +137,7 @@
 #endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"
 
 // Forward sun shadows -- see ObjectTemplate.hlsl. PAR shaders do full sun lighting but had
 // no shadow term at all, so every parallax-material object rendered fully sunlit once the
@@ -205,6 +206,8 @@ struct VS_OUTPUT
     #if defined(NO_FOG) && defined(DISPLACE_COLORS)
         float4 displaceFill10 : COLOR1;
     #endif
+#elif CAPTURED_NORMALS_ON
+    float4 uv : TEXCOORD0;
 #else
     float2 uv : TEXCOORD0;
 #endif
@@ -333,6 +336,13 @@ VS_OUTPUT main(VS_INPUT IN)
     #endif
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+    #if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+        {
+            const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, IN.position.xyz, IN.normal.xyz, OUT.shadowWorldPos.xyz).xyz;
+            OUT.uv.zw = smoothN.xy;
+            OUT.shadowWorldPos.w = 2.0f + 0.5f * smoothN.z;
+        }
+    #endif
 
     #ifdef DISPLACE_LAYOUT
         float3 displaceNormal = IN.normal.xyz * rsqrt(max(dot(IN.normal.xyz, IN.normal.xyz), 1.0e-12f));
@@ -377,7 +387,11 @@ struct PS_INPUT
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
 #endif
+#if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    float4 uv : TEXCOORD0;
+#else
     float2 uv : TEXCOORD0;
+#endif
 #ifndef NO_LIGHT
     float4 lightDir : TEXCOORD1_centroid;
 #endif
@@ -405,8 +419,20 @@ struct PS_INPUT
     float4 shadowWorldPos : SEM_SHADOW_POS;
 };
 
+#if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    #define PAR_SMOOTH_NORMAL float3(IN.uv.zw, (IN.shadowWorldPos.w - 2.0f) * 2.0f)
+    #define PAR_WP_PRESENT(w) (SHADOW_VS_PRESENT(w) || ((w) > 1.499f && (w) < 2.501f))
+#else
+    #define PAR_WP_PRESENT(w) SHADOW_VS_PRESENT(w)
+#endif
+
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if CAPTURED_NORMALS_ON
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;
+#endif
 };
 
 #ifdef PS
@@ -550,8 +576,12 @@ PS_OUTPUT main(PS_INPUT IN)
     // ddx/ddy must stay at top level, outside dynamic flow control.
     // Hoisted out of the shadow block below: the ambient term also needs it, and that runs for
     // DIFFUSE/POINT passes which the shadow block skips. ddx/ddy must stay at top level.
+#if defined(CAPTURED_NORMALS_FORWARD) && CAPTURED_NORMALS_FORWARD && CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    float3 sunShadowNormal = ShadowFacingNormal(PAR_SMOOTH_NORMAL, IN.shadowWorldPos.xyz);
+#else
     float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
-    float shadowWorldPosValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+#endif
+    float shadowWorldPosValid = PAR_WP_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
 
     #if !defined(NO_LIGHT) && !defined(DIFFUSE) && !defined(POINT)
         #if FORWARD_SHADOWS
@@ -679,6 +709,16 @@ PS_OUTPUT main(PS_INPUT IN)
     #else
         OUT.color.a = ReflMaterialAlpha(alpha * AmbientColor.a);
     #endif
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    #if defined(DISPLACE_LAYOUT) || defined(DIFFUSE) || defined(ONLY_SPECULAR)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #else
+        OUT.capturedNormal = CapturedNormalOut(PAR_SMOOTH_NORMAL, IN.shadowWorldPos.xyz);
+    #endif
+#endif
 
     return OUT;
 };

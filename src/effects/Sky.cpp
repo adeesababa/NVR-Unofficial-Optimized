@@ -172,6 +172,11 @@ void SkyShaders::UpdateConstants() {
 	}
 	Constants.SkyLook.x = TheShaderManager->GetTransitionValue(Settings.SaturationDay, Settings.SaturationNight, 1.0f);
 	Constants.SkyLook.y = Settings.TintGradientHeight;
+	if (!Settings.ColorLook) {
+		Constants.SkyTint = D3DXVECTOR4(1.0f, 1.0f, 1.0f, Constants.SkyTint.w);
+		Constants.SkyTintHorizon = D3DXVECTOR4(1.0f, 1.0f, 1.0f, Constants.SkyTintHorizon.w);
+		Constants.SkyLook.x = 1.0f;
+	}
 	Constants.FogSkyLook = D3DXVECTOR4(Constants.SkyTint.x * Constants.SkyTintHorizon.x, Constants.SkyTint.y * Constants.SkyTintHorizon.y,
 		Constants.SkyTint.z * Constants.SkyTintHorizon.z, Constants.SkyLook.x);
 	Constants.MoonData.x = Settings.MoonBrightness;
@@ -391,6 +396,7 @@ void SkyShaders::UpdateSettings() {
 	Settings.SaturationDay = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationDay", 1.0f), 0.0f, 2.0f);
 	Settings.SaturationNight = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationNight", 1.0f), 0.0f, 2.0f);
 	Settings.TintKeepsBrightness = SettingOr("Shaders.Sky.Main", "TintKeepsBrightness", 1.0f) != 0.0f;
+	Settings.ColorLook = SettingOr("Shaders.Sky.Main", "ColorLook", 1.0f) != 0.0f;
 
 	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
 	PhysicalSettings.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Brightness"), 0.0f, 4.0f);
@@ -403,8 +409,7 @@ void SkyShaders::UpdateSettings() {
 	lastProjectionValid = false;
 
 
-	// only add sunset color boost in exteriors
-	if (TheShaderManager->GameState.isExterior) {
+	if (TheShaderManager->GameState.isExterior && Settings.ColorLook) {
 		Constants.SunsetColor.x = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetR");
 		Constants.SunsetColor.y = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetG");
 		Constants.SunsetColor.z = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetB");

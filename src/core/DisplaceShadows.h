@@ -152,7 +152,7 @@ namespace DisplaceShadows {
 		FramePieces = 0;
 		CascadeWalk = DxvkCompute::DisplaceShadowsWanted() && TheShaderManager->GameState.isExterior && LoadShaders();
 		Reach = DxvkCompute::DisplaceReach();
-		BlendFromCopy = CopyCascadeFrame + 1 == CascadeFrames && TheTextureManager->TerrainBlendDepthTexture;
+		BlendFromCopy = CopyCascadeFrame + 1 == CascadeFrames && TheTextureManager->TerrainBlendDepthTexture && DxvkCompute::DisplaceBlendInShadows();
 	}
 
 	inline void EndCascades() {

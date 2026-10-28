@@ -1,6 +1,7 @@
 #include "SnowAccumulation.h"
 #include "../core/DxvkCompute.h"
 #include "CoverMap.h"
+#include "../core/CapturedNormals.h"
 
 void SnowAccumulationEffect::UpdateConstants() {
 
@@ -33,11 +34,21 @@ void SnowAccumulationEffect::UpdateSettings(){
 	Constants.Color.y = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorG");
 	Constants.Color.z = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorB");
 	Constants.Color.w = std::clamp(TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "NormalSmoothing"), 0.0f, 256.0f);
+	CapturedNormals = TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "CapturedNormals") != 0;
+	Extra.x = CapturedNormals && CapturedNormals::CompiledIn() ? 1.0f : 0.0f;
+	Extra.y = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "CapturedNormalsDebugView"), 0, 2);
+	Look = std::clamp(TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "Look"), 0, 1);
+	FollowJitter = TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "FollowJitter") != 0;
+}
+
+UINT SnowAccumulationEffect::Technique(UINT persistent) {
+	return Look == 1 && Effect && Effect->GetTechnique(2 + persistent) ? 2 + persistent : persistent;
 }
 
 void SnowAccumulationEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SnowAccumulationParams", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_SnowAccumulationColor", &Constants.Color);
+	TheShaderManager->RegisterConstant("TESR_SnowAccumulationExtra", &Extra);
 }
 
 bool SnowAccumulationEffect::ShouldRender() {
@@ -65,6 +76,8 @@ struct SnowAccumulationUniforms {
 	D3DXVECTOR4		shadowLightPosition[12];
 	D3DXVECTOR4		lightPosition[12];
 	D3DXVECTOR4		lightColor[24];
+	D3DXVECTOR4		capturedData;
+	D3DXVECTOR4		snowExtra;
 };
 
 struct SnowAccumulationPush {
@@ -102,6 +115,7 @@ bool SnowAccumulationEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 	IDirect3DBaseTexture9* snowNormal = ExtFileTexture("TESR_SnowNormSampler");
 	IDirect3DBaseTexture9* blueNoise = ExtFileTexture("TESR_BlueNoiseSampler");
 	if (!depth || !ortho || !normals || !pointShadow || !snowNormal || !blueNoise) return false;
+	IDirect3DBaseTexture9* captured = CapturedNormals::Texture ? (IDirect3DBaseTexture9*)CapturedNormals::Texture : normals;
 
 	ID3D9NvrExtSampler* clamp = DxvkCompute::LinearClamp();
 	ID3D9NvrExtSampler* wrap = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
@@ -109,9 +123,9 @@ bool SnowAccumulationEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 
 	if (!extPass.Tried) {
 		extPass.Tried = true;
-		NVR_EXT_BINDING_DESC bindings[11] = {};
+		NVR_EXT_BINDING_DESC bindings[12] = {};
 		UINT n = 0;
-		for (UINT i = 0; i < 8; i++) { bindings[n].Set = 1; bindings[n].Binding = i; bindings[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[n].Slot = i; bindings[n].ViewType = NVR_EXT_VIEW_2D; n++; }
+		for (UINT i = 0; i < 9; i++) { bindings[n].Set = 1; bindings[n].Binding = i; bindings[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[n].Slot = i; bindings[n].ViewType = NVR_EXT_VIEW_2D; n++; }
 		bindings[n].Set = 2; bindings[n].Binding = 0; bindings[n].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[n].Slot = 0; n++;
 		bindings[n].Type = NVR_EXT_BIND_SAMPLER; bindings[n].Slot = 0; bindings[n].PushOffset = 8; n++;
 		bindings[n].Type = NVR_EXT_BIND_SAMPLER; bindings[n].Slot = 1; bindings[n].PushOffset = 12; n++;
@@ -141,16 +155,19 @@ bool SnowAccumulationEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 	if (!copied) return false;
 	uniforms.snowParams = Constants.Data;
 	uniforms.snowAccColor = Constants.Color;
+	uniforms.capturedData = CapturedNormals::Data;
+	uniforms.snowExtra = Extra;
+	if (!CapturedNormals::Texture) uniforms.snowExtra.x = 0.0f;
 	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!constants) return false;
 
-	IDirect3DBaseTexture9* textures[8] = { TheTextureManager->RenderedTexture, TheTextureManager->SourceTexture, depth, ortho, normals,
-		pointShadow, snowNormal, blueNoise };
+	IDirect3DBaseTexture9* textures[9] = { TheTextureManager->RenderedTexture, TheTextureManager->SourceTexture, depth, ortho, normals,
+		pointShadow, snowNormal, blueNoise, captured };
 	auto drawPass = [&](UINT mode, D3DXVECTOR2 offsetMask, IDirect3DSurface9* source, bool last) {
 		textures[0] = TheTextureManager->RenderedTexture;
-		NVR_EXT_RESOURCE_BINDING resources[11] = {};
+		NVR_EXT_RESOURCE_BINDING resources[12] = {};
 		UINT n = 0;
-		for (UINT i = 0; i < 8; i++) { resources[n].Slot = i; resources[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[n].pResource = textures[i]; n++; }
+		for (UINT i = 0; i < 9; i++) { resources[n].Slot = i; resources[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[n].pResource = textures[i]; n++; }
 		resources[n].Slot = 0; resources[n].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[n].pResource = constants; n++;
 		resources[n].Slot = 0; resources[n].Type = NVR_EXT_BIND_SAMPLER; resources[n].pResource = clamp; n++;
 		resources[n].Slot = 1; resources[n].Type = NVR_EXT_BIND_SAMPLER; resources[n].pResource = wrap; n++;

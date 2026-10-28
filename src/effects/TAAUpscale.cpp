@@ -125,6 +125,11 @@ bool TAAEffect::IsWorldViewport(const D3DVIEWPORT9& port) {
 	return taa && (taa->Up.Active || taa->Up.Deferred) && port.Width == taa->Up.RenderWidth && port.Height == taa->Up.RenderHeight;
 }
 
+bool TAAEffect::UpscaledBeforeEffects() {
+	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
+	return taa && taa->Up.Upscaled;
+}
+
 bool TAAEffect::UpscaledThisFrame() {
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
 	return taa && (taa->Up.Upscaled || taa->Up.Deferred);
@@ -447,7 +452,13 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
 	in.Hdr = Up.Hdr;
 	in.Reset = reset || lastPathFSR;
 	Upscaler::IUpscaler* upscaler = Upscaler::Choose(FSRSettings.Upscaler);
-	if (!upscaler->Evaluate(Device, in)) { fail("the upscaler failed"); return false; }
+	bool evaluated = upscaler->Evaluate(Device, in);
+	if (!evaluated && upscaler == Upscaler::Fsr31() && upscaler->Failed()) {
+		upscaler = Upscaler::Choose(FSRSettings.Upscaler);
+		in.Reset = true;
+		evaluated = upscaler->Evaluate(Device, in);
+	}
+	if (!evaluated) { fail("the upscaler failed"); return false; }
 
 	{
 		static GpuTimer compositeTimer("  RenderScale composite + depth");

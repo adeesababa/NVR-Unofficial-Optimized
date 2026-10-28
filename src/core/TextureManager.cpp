@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <unordered_set>
+#include "CapturedNormals.h"
 
 
 void TextureManager::Initialize() {
@@ -21,6 +22,7 @@ void TextureManager::Initialize() {
 	TheTextureManager->RegisterTexture("TESR_DepthBufferWorld",(IDirect3DBaseTexture9**)&TheTextureManager->DepthTexture);
 	Device->CreateTexture(Width, Height, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z'), D3DPOOL_DEFAULT, &TheTextureManager->DepthTextureViewModel, NULL);
 	TheTextureManager->RegisterTexture("TESR_DepthBufferViewModel",(IDirect3DBaseTexture9**)&TheTextureManager->DepthTextureViewModel);
+	TheTextureManager->RegisterTexture("TESR_CapturedNormalsBuffer", (IDirect3DBaseTexture9**)&CapturedNormals::Texture);
 
 	NvAPI_D3D9_RegisterResource(TheTextureManager->DepthTexture);
 	NvAPI_D3D9_RegisterResource(TheTextureManager->DepthTextureViewModel);

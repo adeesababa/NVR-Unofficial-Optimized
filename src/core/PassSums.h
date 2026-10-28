@@ -2,6 +2,7 @@
 
 #include <d3dx9.h>
 #include "GpuProfiler.h"
+#include "LinearScene.h"
 
 namespace PassSums {
 
@@ -284,6 +285,7 @@ namespace PassSums {
 			Logger::Log("UNOFFICIAL HighlightSums: %s", HighlightSumsCompiled ? "compiled in (the highlight passes FoldHighlights leaves to the game add their light in linear light)" :
 				"off (not compiled into the shaders)");
 		}
+		if (LinearScene::Live) return 0;
 		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
 		int mode = 0;
 		if (LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums")) mode |= kIncrements | Lamps;

@@ -20,6 +20,7 @@ namespace ConstantFilter {
 	inline bool Installed = false;
 	inline bool Enabled = false;
 	inline bool Broken = false;
+	inline bool Hooked = false;
 	inline bool Recording = false;
 	inline DWORD Thread = 0;
 	inline volatile LONG ForeignTick = 0;
@@ -164,9 +165,12 @@ namespace ConstantFilter {
 		PreDecodeResync(self);
 	}
 
+	inline void (*PixelWriteAfter)(UINT start, UINT count) = nullptr;
+
 	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
 		DeferredResync(self);
 		const HRESULT result = SendPixel(self, start, data, count);
+		if (PixelWriteAfter) PixelWriteAfter(start, count);
 		if (data && count && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
 			if (start <= LinearPreDecode::CopyLast && start + count > LinearPreDecode::CopyFirst) LinearPreDecode::CopiesValid = false;
 			if (LinearPreDecode::Active) {
@@ -282,6 +286,7 @@ namespace ConstantFilter {
 			if (!LinearPreDecode::Shaders.empty()) Logger::Log("ERROR: LinearPreDecode needs the constant hooks: lit objects' light colours will be wrong; set [Shaders.PBR.Linear] PreDecode = false.");
 			return;
 		}
+		Hooked = true;
 		Wipe();
 		Logger::Log("UNOFFICIAL SkipRedundantConstants: shader-constant uploads the device already holds are skipped (setting %s).",
 			TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") ? "on" : "off");

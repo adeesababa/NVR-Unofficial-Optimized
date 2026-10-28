@@ -617,7 +617,7 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 #if NVR_TEST_TOOLS
 			if (OrthoProbe::Recording && isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);
 #endif
-			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
+			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.CasterFadeMin) continue;
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
 				containers.push_back(child);
@@ -919,7 +919,7 @@ void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool is
 			}
 			if (!cm) continue;
 
-			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
+			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.CasterFadeMin) continue;
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
 				containers.emplace_back(child, cm);

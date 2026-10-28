@@ -34,6 +34,8 @@ public:
 		float		CookieStrength;
 		bool		softEdges;
 		int			edgeFix;
+		bool		hidePipBoyLight;
+		bool		testForceOn;
 
 		// Forward re-light of nearby static geometry, drawn by MaterialPass
 		struct MaterialLightStruct {
@@ -47,6 +49,9 @@ public:
 		MaterialLightStruct	MaterialLight;
 	};
 	FlashlightSettingsStruct	Settings;
+	NiPointLight*	hiddenPipBoyLight = nullptr;
+	float			hiddenPipBoyDimmer = 0.0f;
+	NiColor			hiddenPipBoySpec = NiColor(0, 0, 0);
 
 	struct FlashlightStruct {
 		D3DXMATRIX	FlashlightViewProj;

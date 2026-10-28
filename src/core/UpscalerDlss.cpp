@@ -451,8 +451,18 @@ namespace Upscaler {
 	void DlssOptions(bool PassThroughTest, int JitterFlip) { TheDlss.SetOptions(PassThroughTest, JitterFlip); }
 
 	IUpscaler* Choose(int setting) {
-		if (setting == 1 && !TheDlss.IsOff()) return &TheDlss;
-		TheDlss.MarkUnused();
-		return Fsr2();
+		static IUpscaler* last = nullptr;
+		IUpscaler* chosen;
+		if (setting == 1 && !TheDlss.IsOff()) chosen = &TheDlss;
+		else {
+			TheDlss.MarkUnused();
+			chosen = (setting == 2 && !Fsr31()->Failed()) ? Fsr31() : Fsr2();
+		}
+		if (last && chosen != last && (chosen == Fsr31() || last == Fsr31())) {
+			chosen->RequestReset();
+			if (last == Fsr2() || last == Fsr31()) last->ReleaseResources();
+		}
+		last = chosen;
+		return chosen;
 	}
 }

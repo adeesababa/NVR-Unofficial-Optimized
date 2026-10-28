@@ -2,5 +2,5 @@
 
 struct ShaderTemplate {
 	const char* Name;
-	D3DXMACRO Defines[48];
+	D3DXMACRO Defines[64];
 };

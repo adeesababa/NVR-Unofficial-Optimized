@@ -39,6 +39,7 @@
 #define SHADOW_ATLAS_SAMPLER_REG s14
 #define SHADOW_OLD_ATLAS_SAMPLER_REG s15
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"
 
 #ifndef TERRAIN_BLEND
     #define TERRAIN_BLEND 0
@@ -140,6 +141,11 @@ struct PS_INPUT
 
 struct PS_OUTPUT {
     float4 color_0 : COLOR0;
+#if CAPTURED_NORMALS_ON
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;
+#endif
 };
 
 #ifdef PS
@@ -322,7 +328,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     // and clip position is affine in object space, so it interpolates exactly.
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float3 shadowWorldPos = GetShadowWorldPos(IN.projectionPosition);
+#if defined(CAPTURED_NORMALS_FORWARD) && CAPTURED_NORMALS_FORWARD
+    float3 shadowNormal = ShadowFacingNormal(IN.normal.xyz, shadowWorldPos);
+#else
     float3 shadowNormal = GetShadowGeometricNormal(shadowWorldPos);
+#endif
 
     bool parallax = shadowWorldPos.z >= TESR_TerrainParallaxExtraData.w;
     float2 offsetUV = IN.uv.xy;
@@ -412,6 +422,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     [branch] if (FogParam.z < -1.0e30f) finalColor += tex2Dlod(TESR_DisplaceDepth, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 #endif
     OUT.color_0.rgb = finalColor;
+    OUT.color_0.rgb = LinearSceneOut(OUT.color_0.rgb);
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    OUT.capturedNormal = CapturedNormalOut(IN.normal.xyz, shadowWorldPos);
+#endif
 
     return OUT;
 };

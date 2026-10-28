@@ -25,6 +25,7 @@ public:
 		int		resolution = 0;
 		float	wetTime = 0.0f, dryTime = 0.0f, puddleFill = 0.0f, puddleDry = 0.0f, wetShade = 1.0f;
 		float	snowIncrease = 0.0f, snowDecrease = 0.0f, snowShade = 1.0f, drifts = 0.0f, footprints = 0.0f, footSize = 0.0f;
+		int		footShape = 0;
 		int		debug = 0;
 	};
 	SettingsStruct	Settings;

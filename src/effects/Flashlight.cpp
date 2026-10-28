@@ -39,6 +39,8 @@ void FlashlightEffect::UpdateSettings() {
 		look.CookieStrength = TheSettingManager->GetSettingF(lookSections[i], "CookieStrength");
 	}
 	Settings.softEdges = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "SoftEdges");
+	Settings.hidePipBoyLight = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "HidePipBoyLight") != 0;
+	Settings.testForceOn = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "TestForceOn") != 0;
 	Settings.edgeFix = (std::max)(0, (std::min)(2, (int)TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "EdgeFix")));
 
 	Settings.MaterialLight.Enabled = TheSettingManager->GetSettingI("Shaders.Flashlight.MaterialLight", "Enabled");
@@ -108,8 +110,20 @@ void FlashlightEffect::UpdateConstants() {
 
 	// based on JIP https://github.com/jazzisparis/JIP-LN-NVSE/blob/5a30ac4356ea0e93b9ff357b5031b1e420240a4d/functions_jip/jip_fn_ui.h#L1469
 	UInt32 lightIsOn = ThisStdCall<bool>(0x822B90, &Player->magicTarget, (void*)&(*(MagicItem**)(ThisStdCall<uint8_t*>(0x93CCD0, NULL) + 0x18)), 1);
+	if (Settings.testForceOn) lightIsOn = 1;
 
 	spotLightActive = Enabled && lightIsOn;
+	if (!spotLightActive && hiddenPipBoyLight) {
+		NiNode* playerNode = Player->GetNode();
+		for (UINT32 i = 0; playerNode && i < playerNode->m_children.capacity; i++) {
+			if (playerNode->m_children.data[i] == hiddenPipBoyLight) {
+				hiddenPipBoyLight->Dimmer = hiddenPipBoyDimmer;
+				hiddenPipBoyLight->Spec = hiddenPipBoySpec;
+				break;
+			}
+		}
+		hiddenPipBoyLight = nullptr;
+	}
 	if (!spotLightActive) {
 		// disable light by setting it to 0 dimmer & radius
 		SpotLight->Dimmer = 0;
@@ -205,6 +219,17 @@ void FlashlightEffect::UpdateConstants() {
 			if (childNode) {
 				if (childNode->GetRTTI() == (void*)0x11F4A98) {
 					childNode->m_flags |= childNode->APP_CULLED;
+					if (Settings.hidePipBoyLight) {
+						NiPointLight* pipLight = (NiPointLight*)childNode;
+						if (hiddenPipBoyLight != pipLight || pipLight->Dimmer != 0.0f || pipLight->Spec.r != 0.0f) {
+							if (pipLight->Dimmer != 0.0f || pipLight->Spec.r != 0.0f) { hiddenPipBoyDimmer = pipLight->Dimmer; hiddenPipBoySpec = pipLight->Spec; }
+							static bool told = false;
+							if (!told) { told = true; Logger::Log("UNOFFICIAL HidePipBoyLight: the Pip-Boy light (dimmer %.2f, reach %.0f) gets no light while the flashlight is on", hiddenPipBoyDimmer, hiddenPipBoySpec.r); }
+							hiddenPipBoyLight = pipLight;
+							pipLight->Dimmer = 0.0f;
+							pipLight->Spec = NiColor(0, 0, 0);
+						}
+					}
 				}
 			}
 		}

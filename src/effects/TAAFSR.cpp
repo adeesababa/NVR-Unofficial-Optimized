@@ -181,7 +181,13 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	in.Hdr = false;
 	in.Reset = reset || !lastPathFSR;
 	Upscaler::IUpscaler* upscaler = Upscaler::Choose(FSRSettings.Upscaler);
-	if (!upscaler->Evaluate(Device, in)) return fail(upscaler->Failed() ? "the upscaler failed" : "the upscaler could not run this frame");
+	bool evaluated = upscaler->Evaluate(Device, in);
+	if (!evaluated && upscaler == Upscaler::Fsr31() && upscaler->Failed()) {
+		upscaler = Upscaler::Choose(FSRSettings.Upscaler);
+		in.Reset = true;
+		evaluated = upscaler->Evaluate(Device, in);
+	}
+	if (!evaluated) return fail(upscaler->Failed() ? "the upscaler failed" : "the upscaler could not run this frame");
 
 	{
 		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, upscaler->Output()), Image(1, source), Image(2, viewModel), Image(3, fsrMotion.Texture),
@@ -192,6 +198,6 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 		if (!ExtDrawTo(fsrComposite.Pipeline, &RenderTarget, 1, b, _countof(b), &compositePush, sizeof(compositePush))) return fail("the composite pass failed");
 	}
 
-	if (++fsrFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: TAA runs FSR 2 (AMD FidelityFX Super Resolution 2.2.1) as its resolve, %ix%i native, sharpness %.2f.", width, height, FSRSettings.Sharpness);
+	if (++fsrFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: TAA runs %s (AMD FidelityFX Super Resolution) as its resolve, %ix%i native, sharpness %.2f.", upscaler->Name(), width, height, FSRSettings.Sharpness);
 	return true;
 }

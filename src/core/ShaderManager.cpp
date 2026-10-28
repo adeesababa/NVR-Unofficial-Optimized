@@ -1,4 +1,5 @@
 #include "OrthoProbe.h"
+#include "CapturedNormals.h"
 #include "FlickerWatch.h"
 #include "GpuProfiler.h"
 #include "HiZ.h"
@@ -161,6 +162,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_SunTiming", &TheShaderManager->ShaderConst.SunTiming);
 	TheShaderManager->RegisterConstant("TESR_SunAmount", &TheShaderManager->ShaderConst.SunAmount);
 	TheShaderManager->RegisterConstant("TESR_GameTime", &TheShaderManager->ShaderConst.GameTime);
+	TheShaderManager->RegisterConstant("TESR_CapturedNormalsData", &CapturedNormals::Data);
 	TheShaderManager->RegisterConstant("TESR_FogData", &TheShaderManager->ShaderConst.fogData);
 	TheShaderManager->RegisterConstant("TESR_FogDistance", &TheShaderManager->ShaderConst.fogDistance);
 	TheShaderManager->RegisterConstant("TESR_FogColor", &TheShaderManager->ShaderConst.fogColor);
@@ -1512,6 +1514,8 @@ void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
 		if (!mergedNormals)
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 		Effects.Normals->RenderSmooth(Device);
+		if (CapturedNormals::MergeWanted() && !TAAEffect::UpscaledBeforeEffects())
+			CapturedNormals::MergeIntoNormals(Device, Effects.Normals->Textures.NormalsSurface, Effects.CombineDepth->Textures.CombinedDepthTexture);
 		Device->SetRenderTarget(0, RenderTarget);
 	}
 	if (RenderRect::Active()) Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
@@ -1830,9 +1834,15 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(snowAccumulationTimer, Device);
+		if (TAAEffect::UpscaledBeforeEffects()) CapturedNormals::Data.x = 0.0f;
+		{
+			const D3DXVECTOR2 jitterUV = Effects.TAA && Effects.SnowAccumulation->FollowJitter ? Effects.TAA->LowResJitterUV() : D3DXVECTOR2(0.0f, 0.0f);
+			Effects.SnowAccumulation->Extra.z = jitterUV.x;
+			Effects.SnowAccumulation->Extra.w = jitterUV.y;
+		}
 		{
 			Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
-				TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0, false, SourceSurface);
+				Effects.SnowAccumulation->Technique(TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0), false, SourceSurface);
 			PixelInspector::AfterFrame(Effects.SnowAccumulation);
 		}
 	}

@@ -48,11 +48,13 @@ public:
 	static bool					DisplaceShadowsWanted();
 	static unsigned				DisplaceShadowLayers();
 	static float				DisplaceReach();
+	static bool					DisplaceBlendInShadows();
 	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
 	static void					DisplaceShadowEnd();
 	static void					DisplaceShadowsDrawn(unsigned Pieces);
 	enum : int { kDisplaceWorld = 0, kDisplaceReflection = 1, kDisplaceOther = 2 };
 	static void					DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, int Context);
+	static bool					DisplaceContactFade(float& Start, float& End);
 
 	static void					Fail(const char* Reason);
 

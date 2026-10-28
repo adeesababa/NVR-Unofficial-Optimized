@@ -14,6 +14,7 @@ public:
 		D3DXVECTOR4 TintHorizonDay = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), TintHorizonNight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 		float TintGradientHeight = 0.3f, SaturationDay = 1.0f, SaturationNight = 1.0f;
 		bool TintKeepsBrightness = true;
+		bool ColorLook = true;
 	};
 	SettingsStruct Settings;
 

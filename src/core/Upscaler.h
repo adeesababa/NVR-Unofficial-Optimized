@@ -31,9 +31,12 @@ namespace Upscaler {
 		virtual IDirect3DTexture9*	Output() const = 0;
 		virtual bool				Failed() const = 0;
 		virtual void				ReleaseResources() = 0;
+		virtual void				RequestReset() {}
 	};
 
 	IUpscaler*	Fsr2();
+
+	IUpscaler*	Fsr31();
 
 	IUpscaler*	Dlss();
 

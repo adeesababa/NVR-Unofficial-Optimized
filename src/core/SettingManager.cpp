@@ -171,6 +171,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 			Node->BoolValue = (Node->IntValue != 0);
 		}
 		else if (defaultSetting.is_floating()) {
+			if (setting.is_integer()) setting = toml::value((double)setting.as_integer());
 			if (!setting.is_floating()) {
 				Logger::Log("Setting %s.%s has wrong type in user config: Should be a float.", Section, Key);
 				setting = defaultSetting;
@@ -350,7 +351,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-static const int UnofficialSettingsVersion = 70;
+static const int UnofficialSettingsVersion = 71;
 extern bool ParallaxLiteDistanceMigrationPending;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -489,6 +490,13 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		}
 	}
 	if (version < 70) replace("Shaders.ShadowsExteriors.ShadowMaps", "Mode", 2, 3, true);
+	if (version < 71) {
+		tomlValue* saved = UserSection("Shaders.PBR.Linear");
+		if (saved && saved->contains("LinearScene") && saved->at("LinearScene").is_boolean() && !saved->at("LinearScene").as_boolean()) {
+			(*saved)["LinearScene"] = true;
+			changed += changed.empty() ? "Shaders.PBR.Linear.LinearScene false -> true" : ", Shaders.PBR.Linear.LinearScene false -> true";
+		}
+	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
 			"Change them in the menu and press Save if you want the old values back.", changed.c_str());

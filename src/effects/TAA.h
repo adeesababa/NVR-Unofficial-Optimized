@@ -29,6 +29,7 @@ public:
 	FSRSettingsStruct	FSRSettings;
 
 	static bool			IsWorldViewport(const D3DVIEWPORT9& port);
+	static bool			UpscaledBeforeEffects();
 	static bool			UpscaledThisFrame();
 	static void			NoteWorldDraw(bool firstPerson = false);
 	static D3DXVECTOR4	RenderScaleConstant;
@@ -65,6 +66,7 @@ public:
 
 	void	UpscaleWorld();
 	bool	UpscalePending() const { return Up.Deferred; }
+	float	WorldMipBias() const { return worldMipBias; }
 	void	UpscaleBeginEffects();
 	void	UpscaleAfterEffects(IDirect3DSurface9* GameSurface);
 
@@ -80,6 +82,7 @@ private:
 	float		frustumShiftX = 0.0f;
 	float		frustumShiftY = 0.0f;
 	bool		mipBiasActive = false;
+	float		worldMipBias = 0.0f;
 	bool		texturesFailed = false;
 
 	bool	EnsureTextures();

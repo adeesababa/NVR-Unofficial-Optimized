@@ -183,6 +183,7 @@ public:
 		float OcclusionNow = 1.0f;
 		int DebugView = 0;
 		bool LogMatches = false;
+		bool MetalFromMap = false;
 	};
 	RmaosSettingsStruct	RmaosSettings;
 	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);

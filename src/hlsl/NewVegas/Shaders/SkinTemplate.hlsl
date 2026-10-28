@@ -36,6 +36,8 @@
     #endif
 #endif
 #include "includes/Shadow.hlsl"
+#define CAPTURED_ACTOR
+#include "includes/CapturedNormals.hlsl"
 
 #define SKIN_SELF_SHADOW_REACH 16.0f
 
@@ -311,6 +313,9 @@ struct PS_OUTPUT {
     float4 color : COLOR0;
     float4 scatter : COLOR1;
     float4 albedo : COLOR2;
+#if CAPTURED_NORMALS_ON
+    float4 capturedNormal : COLOR3;
+#endif
 };
 
 PS_OUTPUT main(PS_INPUT IN) {
@@ -467,6 +472,14 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     PS_OUTPUT OUT;
     OUT.color = color;
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);
+#if CAPTURED_NORMALS_ON
+    #if defined(DIFFUSE)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #else
+        OUT.capturedNormal = CapturedNormalOut(IN.normal.xyz, worldPos);
+    #endif
+#endif
     OUT.scatter = float4(specularShare, length(worldPos));
     #if defined(DIFFUSE)
         OUT.albedo = 1.0f;

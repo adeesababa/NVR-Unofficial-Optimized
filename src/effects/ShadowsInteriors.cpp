@@ -133,6 +133,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		Effect->End();
 	}
 	Device->SetTexture(4, nullptr);
+	TheRenderManager->renderState->NoteDeviceTexture(4, nullptr);
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
 		dedicatedFailed = true;

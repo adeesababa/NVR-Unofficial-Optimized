@@ -307,6 +307,7 @@ public:
         device->SetTexture(4, nullptr);
         device->SetTexture(5, nullptr);
         device->SetTexture(6, nullptr);
+        for (UInt32 stage : { 2u, 4u, 5u, 6u }) TheRenderManager->renderState->NoteDeviceTexture(stage, nullptr);
         UINT passes = 0;
         {
             GpuProfileScope segmentsScope(segmentsTimer, device);
@@ -365,6 +366,9 @@ public:
                     device->SetTexture(2, Texture);
                     device->SetTexture(4, LowSurface ? LowTexture : nullptr);
                     device->SetTexture(7, nullptr);
+                    TheRenderManager->renderState->NoteDeviceTexture(2, Texture);
+                    TheRenderManager->renderState->NoteDeviceTexture(4, LowSurface ? LowTexture : nullptr);
+                    TheRenderManager->renderState->NoteDeviceTexture(7, nullptr);
                     DWORD oldWriteMask1 = 0xF;
                     device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
                     if (CutSurface) {
@@ -378,6 +382,8 @@ public:
                     }
                     device->SetTexture(2, nullptr);
                     device->SetTexture(4, nullptr);
+                    TheRenderManager->renderState->NoteDeviceTexture(2, nullptr);
+                    TheRenderManager->renderState->NoteDeviceTexture(4, nullptr);
                     if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 }
                 Effect->SetVector(fx.SmokeLook, &Look);

@@ -98,11 +98,13 @@ namespace {
 		bool				Failed() const override { return failed; }
 		bool				Evaluate(IDirect3DDevice9* Device, const Upscaler::Inputs& In) override;
 		void				ReleaseResources() override;
+		void				RequestReset() override { resetPending = true; }
 
 	private:
 		struct Tex { IDirect3DTexture9* Texture = nullptr; IDirect3DSurface9* Surface = nullptr; };
 		ID3D9NvrExtPipeline*	pipelines[PipelineCount] = {};
 		ID3D9NvrExtPipeline*	hdrPipelines[PipelineCount] = {};
+		bool		resetPending = false;
 		bool		tried = false;
 		bool		hdrTried = false;
 		bool		failed = false;
@@ -247,7 +249,8 @@ namespace {
 		ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
 		if (!point || !linear) return Fail("its samplers could not be made");
 
-		if (In.Reset) {
+		if (In.Reset || resetPending) {
+			resetPending = false;
 			Device->ColorFill(lockStatus[parity].Surface, nullptr, D3DCOLOR_ARGB(0, 0, 0, 0));
 			Device->ColorFill(upscaled[parity].Surface, nullptr, D3DCOLOR_ARGB(0, 0, 0, 0));
 			DxvkCompute::Extension()->ClearBuffer(reconstructedDepth, 0, 0, 0x3f800000u);

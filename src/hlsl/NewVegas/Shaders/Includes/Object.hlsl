@@ -291,7 +291,7 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
     #ifdef RMAOS
-        [branch] if (RMAOS_ACTIVE) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
+        [branch] if (RMAOS_ACTIVE && NVR_Rmaos.w > 0.5f) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
     #endif
     return getDerivedMetallicGuess(specMask, greyness);
 }

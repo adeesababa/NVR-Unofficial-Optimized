@@ -114,6 +114,7 @@ public:
 		bool				Mipmaps;
 		bool				LimitFrequency;
 		bool				LodSkipLoaded;
+		float				CasterFadeMin = 0.75f;
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;

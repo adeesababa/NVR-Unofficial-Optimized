@@ -735,6 +735,9 @@
     <ClCompile Include="..\src\core\UpscalerDlss.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\core\UpscalerFsr31.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">
       <Filter>Effects</Filter>
     </ClCompile>

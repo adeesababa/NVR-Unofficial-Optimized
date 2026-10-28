@@ -18,6 +18,12 @@ float LinScale(float s) { return s; }
 float LinFalloff(float a) { return a; }
 #endif
 
+#if defined(LINEAR_LIGHTING) && defined(LINEAR_SCENE_ON) && LINEAR_SCENE_ON
+float3 LinearSceneOut(float3 c) { return TESR_LinearLighting.w > 0.5f ? pow(max(c, 0.0f), TESR_LinearLighting.x) : c; }
+#else
+float3 LinearSceneOut(float3 c) { return c; }
+#endif
+
 #if defined(__INTELLISENSE__)
     #include "LampFalloff.hlsl"
 #else

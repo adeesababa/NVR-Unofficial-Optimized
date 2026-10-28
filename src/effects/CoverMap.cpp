@@ -41,6 +41,7 @@ void CoverMapEffect::UpdateSettings() {
 	s.drifts = std::clamp(TheSettingManager->GetSettingF(SnowSection, "PersistentDrifts"), 0.0f, 1.0f);
 	s.footprints = std::clamp(TheSettingManager->GetSettingF(SnowSection, "PersistentFootprints"), 0.0f, 1.0f);
 	s.footSize = std::clamp(TheSettingManager->GetSettingF(SnowSection, "PersistentFootprintSize"), 2.0f, 200.0f);
+	s.footShape = std::clamp(TheSettingManager->GetSettingI(SnowSection, "PersistentFootprintShape"), 0, 1);
 	s.debug = std::clamp(TheSettingManager->GetSettingI(WetSection, "PersistentDebugView"), 0, 2);
 
 	if (s.wet && !Settings.wet) { resyncWet = true; mapValid = false; }
@@ -267,7 +268,7 @@ void CoverMapEffect::SetFeetConstants() {
 		if (!any) { minX = maxX = p.x; minY = maxY = p.y; any = true; }
 		else { minX = (std::min)(minX, p.x); maxX = (std::max)(maxX, p.x); minY = (std::min)(minY, p.y); maxY = (std::max)(maxY, p.y); }
 	}
-	const float half = Settings.footSize;
+	const float half = Settings.footShape == 1 ? -Settings.footSize : Settings.footSize;
 	if (any) {
 		const double cx = 0.5 * (minX + maxX), cy = 0.5 * (minY + maxY);
 		const double r = 0.5 * sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY)) + 2.0 * half;

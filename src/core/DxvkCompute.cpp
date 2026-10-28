@@ -1,5 +1,6 @@
 #include "DxvkCompute.h"
 #include "RenderRect.h"
+#include "CapturedNormals.h"
 
 ID3D9NvrExt*	DxvkCompute::Ext = nullptr;
 NVR_EXT_INFO	DxvkCompute::ExtInfo = {};
@@ -398,6 +399,9 @@ static UINT				DisplaceShadowVs = 0;
 static unsigned			DisplaceShadowPs = 0;
 static bool				DisplaceCastShadows = false;
 static unsigned			DisplaceShadowAge = 1000;
+static bool				DisplaceContactOutside = true;
+static bool				DisplaceIgnoreMipBias = true;
+static bool				DisplaceBlendShadows = false;
 static std::vector<std::pair<IDirect3DPixelShader9*, int>> LandPixelShaders;
 
 static NVR_EXT_TESS_STATE	DisplaceBase = {};
@@ -476,6 +480,7 @@ static const char* DisplaceDefine(const D3DXMACRO* Defines, const char* Name) {
 }
 
 bool DxvkCompute::DisplaceObjectsLayout() {
+	if (CapturedNormals::CompiledIn() && !TheSettingManager->GetSettingI("Shaders.POM.Displacement", "Enabled")) return false;
 	return DisplaceSwitch() && Ext != nullptr;
 }
 
@@ -666,6 +671,10 @@ unsigned DxvkCompute::DisplaceShadowLayers() {
 	return DisplaceShadowVs ? DisplaceShadowPs : 0;
 }
 
+bool DxvkCompute::DisplaceBlendInShadows() {
+	return DisplaceBlendShadows;
+}
+
 float DxvkCompute::DisplaceReach() {
 	return DisplaceBase.ControlParams[4];
 }
@@ -686,6 +695,22 @@ void DxvkCompute::DisplaceShadowEnd() {
 
 void DxvkCompute::DisplaceShadowsDrawn(unsigned Pieces) {
 	if (Pieces) DisplaceShadowAge = 0;
+}
+
+bool DxvkCompute::DisplaceContactFade(float& Start, float& End) {
+	if (!DisplaceContactOutside || !DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1] || !DisplaceBase.Enable
+		|| !(DisplaceBase.EvalParams[0] > 0.0f)) return false;
+	const float fadeStart = DisplaceBase.ControlParams[3], fadeEnd = DisplaceBase.ControlParams[4];
+	const float quarter = 0.25f * (std::max)(fadeEnd - fadeStart, 1.0f);
+	Start = (std::max)(fadeEnd - quarter, 0.0f);
+	End = fadeEnd + quarter;
+	return true;
+}
+
+static float DisplaceMipCompensation() {
+	if (!DisplaceIgnoreMipBias) return 0.0f;
+	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
+	return taa ? std::clamp(-taa->WorldMipBias(), 0.0f, 3.0f) : 0.0f;
 }
 
 bool DxvkCompute::DisplaceDepthWanted() {
@@ -758,7 +783,7 @@ static void DisplaceObjectSettings() {
 	state.EvalParams[0] = strength;
 	state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 2.0f, s), 0.0f, 32.0f) * 16.0f + 0.5f)
 		+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f, s), 0.0f, 1.0f);
-	state.EvalParams[2] = std::clamp(DisplaceFloatOr("LodBias", 0.0f, s), -2.0f, 4.0f) + 4.0f;
+	state.EvalParams[2] = std::clamp(DisplaceFloatOr("LodBias", 0.0f, s), -2.0f, 4.0f) + 4.0f + DisplaceMipCompensation();
 	state.EvalParams[3] = std::clamp(DisplaceFloatOr("EdgeFade", 1.5f, s), 0.0f, 8.0f);
 }
 
@@ -813,10 +838,14 @@ void DxvkCompute::DisplaceTick() {
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
 		DisplaceCastShadows = DisplaceSettingOr("CastShadows", true);
 		DisplaceFarOn = DisplaceSettingOr("FarUntessellated", true);
+		DisplaceContactOutside = DisplaceSettingOr("ContactShadowsOutside", true);
+		DisplaceIgnoreMipBias = DisplaceSettingOr("IgnoreMipBias", true);
+		DisplaceBlendShadows = DisplaceSettingOr("ObjectBlendShadows", false);
+		if (DisplaceObjectBlend > 0.0f && !DisplaceBlendShadows) viewParams += 131072.0f;
 	}
 	if (DisplaceShadowAge < 1000) DisplaceShadowAge++;
 	const bool shadowsHold = DisplaceCastShadows && DisplaceShadowVs && DisplaceShadowAge <= 16;
-	state.EvalParams[2] = viewParams + (shadowsHold ? 256.0f : 0.0f);
+	state.EvalParams[2] = viewParams + DisplaceMipCompensation() + (shadowsHold ? 256.0f : 0.0f);
 	if (DisplaceSentFamily != kDisplaceObjects) DisplaceSend(state);
 
 	if ((frame % 600) == 1) {

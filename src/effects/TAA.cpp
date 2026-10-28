@@ -53,7 +53,8 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.WeaponReactive = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "WeaponReactive"), 0.0f, 1.0f);
 	const float scale = TheSettingManager->GetSettingF(dlss ? "Shaders.TAA.DLSS" : "Shaders.TAA.FSR", "RenderScale");
 	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.33f, 1.0f) : 1.0f;
-	FSRSettings.Upscaler = dlss ? 1 : 0;
+	const bool fsr31 = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Version") == 1;
+	FSRSettings.Upscaler = dlss ? 1 : (fsr31 ? 2 : 0);
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
 	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;
 	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
@@ -209,6 +210,7 @@ bool TAAEffect::WillResolveThisFrame() {
 void TAAEffect::BeginJitter(bool firstWorld) {
 	EndJitter();
 	frameJittered = false;
+	if (firstWorld) worldMipBias = 0.0f;
 
 	if (UpscaleBegin(firstWorld)) {
 		NiCamera* camera = Up.Camera;
@@ -236,6 +238,7 @@ void TAAEffect::BeginJitter(bool firstWorld) {
 		if (bias < 0.0f) {
 			SetMipBias(bias);
 			mipBiasActive = true;
+			if (firstWorld) worldMipBias = bias;
 		}
 		return;
 	}
@@ -266,6 +269,7 @@ void TAAEffect::BeginJitter(bool firstWorld) {
 	if (Settings.MipBias < 0.0f) {
 		SetMipBias(Settings.MipBias);
 		mipBiasActive = true;
+		if (firstWorld) worldMipBias = Settings.MipBias;
 	}
 }
 

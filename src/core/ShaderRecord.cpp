@@ -1,7 +1,10 @@
 #include "ShaderRecord.h"
+#include "LinearSceneShaders.h"
+#include "CapturedNormals.h"
 #include "DxvkCompute.h"
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
+#include "ManyLamps.h"
 #include "ShaderPrecompile.h"
 #include <unordered_set>
 #include "GpuProfiler.h"
@@ -108,13 +111,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 46 && Template.Defines[i].Name != NULL) {
+		while (i < 62 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
-		if (i >= 46) {
+		if (i >= 62) {
 			static bool warned = false;
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 46 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 62 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -160,6 +163,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("HUD_RAIN_ON", TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f ? "1" : "0");
 
 	AppendDefine("LINEAR_LIGHTING_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ? "1" : "0");
+	AppendDefine("LINEAR_SCENE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "LinearScene") ? "1" : "0");
+	if (CapturedNormals::CompiledIn()) AppendDefine("CAPTURED_NORMALS_ON", "1");
+	if (CapturedNormals::MergeWanted()) AppendDefine("CAPTURED_NORMALS_FORWARD", "1");
 
 	AppendDefine("PHYSICAL_SKY_ON", TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0");
 
@@ -167,6 +173,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("LAMP_REACH_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampReachSkip") ? "1" : "0");
 	AppendDefine("NO_SLOT_LIMIT", (TheSettingManager->GetSettingI("Shaders.PBR.Main", "DxvkLampBranches") &&
 		TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) ? "1" : "0");
+	AppendDefine("MANY_LAMPS_ON", ManyLamps::ShadersWant() ? "1" : "0");
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
 	{
 		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
@@ -391,9 +398,20 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "TerrainTemplate"))
 						DxvkCompute::NoteLandPixelShader(((ShaderRecordPixel*)ShaderProg)->ShaderHandle, Template.Defines);
+					if (ShaderProfile[0] == 'p' && Template.Name && (!strcmp(Template.Name, "ObjectTemplate") || !strcmp(Template.Name, "ParallaxTemplate") ||
+						!strcmp(Template.Name, "SkinTemplate") || !strcmp(Template.Name, "TerrainTemplate"))) {
+						bool on = false;
+						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
+							if (!strcmp(Template.Defines[d].Name, "LINEAR_SCENE_ON")) on = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						if (on) LinearScene::NoteCapable(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+						bool writes = false;
+						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
+							if (!strcmp(Template.Defines[d].Name, "CAPTURED_NORMALS_ON")) writes = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						if (writes) CapturedNormals::NoteWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+					}
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
-						for (int d = 0; d < 44 && Template.Defines[d].Name; d++) {
+						for (int d = 0; d < 63 && Template.Defines[d].Name; d++) {
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						}
