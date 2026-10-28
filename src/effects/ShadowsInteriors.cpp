@@ -156,6 +156,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		Effect->End();
 	}
 	Device->SetTexture(4, nullptr);
+	TheRenderManager->renderState->NoteDeviceTexture(4, nullptr);	// UNOFFICIAL 2026-10-27: keep the game's texture cache truthful (ManyLampsGlow's s4)
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
 		// Nothing was committed to the chain, so the generic path can still do this frame.
