@@ -2612,6 +2612,10 @@ namespace GrassFirst {
 	// BSBatchRenderer::RenderPassImmediately: while the early grass call runs, each grass pass is recorded, and drawn now (near
 	// tufts) only if its vertex shader is NVR's.
 	static void __cdecl RenderPassImmediatelyHook(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
+		// UNOFFICIAL 2026-10-28 (native D3D9): the runtime puts its own device-table entries back; the main list's draw hooks are put in
+		// again at every pass (in the order they were first put in: LinearScene, then CapturedNormals).
+		if (LinearScene::InSpan) LinearScene::EnsureHooked(TheRenderManager->device);
+		if (CapturedNormals::InSpan) CapturedNormals::EnsureHooked(TheRenderManager->device);
 		if (OnePassDepth::Recording && OnePassDepth::IsOpt(passId)) { DepthFirstPass(pass, passId, a3, a4, a5); return; }	// UNOFFICIAL LampsDepthFirst
 		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
 		NiDX9RenderState* state = TheRenderManager->renderState;

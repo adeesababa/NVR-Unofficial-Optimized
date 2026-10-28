@@ -332,6 +332,29 @@ namespace CapturedNormals {
 		Hooked = true;	// stays for the session (other hooks chain through it); outside the list it only passes the call on
 	}
 
+	// UNOFFICIAL 2026-10-28 (native D3D9): the native runtime writes its own entries back into the device's table (VolumetricClouds saw
+	// it for StretchRect right after a draw; Render.cpp SandstormGlass), so a hook put in once is gone for the rest of the session: the
+	// first native run saw 0.5 draws a frame here (LinearScene 2.4) against ~370 under NVR DXVK. Called inside the list at every pass
+	// (GrassFirst::RenderPassImmediatelyHook, an engine detour the runtime does not touch) and at BeginSpan: a slot holding exactly
+	// what this hook passes calls on to (the runtime's entry, or the hook below ours) gets ours back; a slot holding anything else (another
+	// program's hook on top) is left alone. LinearScene::EnsureHooked runs first, as it was put in first, so the chain comes back the same.
+	inline UInt32 Reinstalls = 0;
+	inline void EnsureHooked(IDirect3DDevice9* d) {
+		if (!Hooked || !d) return;
+		void** table = *(void***)d;
+		struct Slot { int i; void* ours; void* next; };
+		const Slot slots[5] = { { 43, (void*)&ClearHook, (void*)NextClear }, { 81, (void*)&DPHook, (void*)NextDP }, { 82, (void*)&DIPHook, (void*)NextDIP },
+			{ 83, (void*)&DPUPHook, (void*)NextDPUP }, { 84, (void*)&DIPUPHook, (void*)NextDIPUP } };
+		for (const Slot& s : slots) {
+			if (table[s.i] == s.ours || table[s.i] != s.next) continue;
+			DWORD old = 0;
+			if (!VirtualProtect(&table[s.i], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) continue;
+			table[s.i] = s.ours;
+			VirtualProtect(&table[s.i], sizeof(void*), old, &old);
+			if (++Reinstalls <= 3) Logger::Log("CapturedNormals: device table slot %d had been put back to the runtime's entry: hook put in again (logged 3 times)", s.i);
+		}
+	}
+
 	// Render.cpp, once a frame. wanted: a reader will use this frame's normals (SnowAccumulation with CapturedNormals on).
 	inline void BeginFrame(IDirect3DDevice9* d, bool wanted) {
 		Data.x = 0.0f;	// nothing captured yet this frame
@@ -341,8 +364,8 @@ namespace CapturedNormals {
 			Logger::Log("CapturedNormals: on (%u template pixel shaders write the normal target)", (unsigned)Writers.size());
 		}
 		if (Live && ++Frames >= 600) {
-			Logger::Log("CapturedNormals: per frame %.1f draws wrote normals, %.1f masked, %.2f unbinds (other targets, clears)",
-				Writes / (double)Frames, Masked / (double)Frames, Unbinds / (double)Frames);
+			Logger::Log("CapturedNormals: per frame %.1f draws wrote normals, %.1f masked, %.2f unbinds (other targets, clears); %u hook reinstalls so far",
+				Writes / (double)Frames, Masked / (double)Frames, Unbinds / (double)Frames, Reinstalls);
 			Frames = Writes = Masked = Unbinds = 0;
 		}
 	}
@@ -364,6 +387,7 @@ namespace CapturedNormals {
 			return;
 		}
 		if (!Ensure(d, t)) { rt0->Release(); return; }
+		EnsureHooked(d);	// (native D3D9 puts its own table entries back; see EnsureHooked)
 		SpanTarget = rt0;	// (holds the reference until EndSpan)
 		d->ColorFill(DrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// "nothing here": readers keep the depth-rebuilt normal
 		CheckThisFrame = IsCheckFrame(++LiveFrames);

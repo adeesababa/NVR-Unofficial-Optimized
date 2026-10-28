@@ -178,6 +178,26 @@ namespace LinearScene {
 		Hooked = true;	// stays for the session (other hooks chain through it); off, it only passes the draw on
 	}
 
+	// UNOFFICIAL 2026-10-28 (native D3D9; found by the CapturedNormals session): the native runtime writes its own entries back into the
+	// device's table, so the hook above was gone for nearly the whole session there (2.4 draws a frame seen against ~1,400 under NVR
+	// DXVK: LinearScene silently off on native). Called inside the main list at every pass (GrassFirst::RenderPassImmediatelyHook) and
+	// at BeginSpan: a slot holding exactly what this hook calls on to gets the hook back; anything else (another hook on top) is left.
+	inline UInt32 Reinstalls = 0;
+	inline void EnsureHooked(IDirect3DDevice9* d) {
+		if (!Hooked || !d) return;
+		void** table = *(void***)d;
+		struct Slot { int i; void* ours; void* next; };
+		const Slot slots[2] = { { 81, (void*)&DPHook, (void*)NextDP }, { 82, (void*)&DIPHook, (void*)NextDIP } };
+		for (const Slot& s : slots) {
+			if (table[s.i] == s.ours || table[s.i] != s.next) continue;
+			DWORD old = 0;
+			if (!VirtualProtect(&table[s.i], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) continue;
+			table[s.i] = s.ours;
+			VirtualProtect(&table[s.i], sizeof(void*), old, &old);
+			if (++Reinstalls <= 3) Logger::Log("UNOFFICIAL LinearScene: device table slot %d had been put back to the runtime's entry: hook put in again (logged 3 times)", s.i);
+		}
+	}
+
 	// Render.cpp, once a frame.
 	inline void BeginFrame(IDirect3DDevice9* d) {
 		if (!Checked) {
@@ -202,6 +222,7 @@ namespace LinearScene {
 		InSpan = true;
 		Linear = false;
 		LastPS = nullptr;
+		EnsureHooked(d);	// (native D3D9 puts its own table entries back)
 		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		d->GetRenderTarget(0, &SpanTarget);
 	}
