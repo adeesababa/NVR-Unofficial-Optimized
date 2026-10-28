@@ -5,7 +5,7 @@
 // (without OPT) and the forward point shadows (SHADOWED).
 
 #ifdef MANY_LAMPS
-// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS): every lamp of the object from c37-c63,
+// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS; after Conor (mrfury97)'s fork, see ManyLamps.h): every lamp of the object from c37-c63,
 // its direction taken into tangent space per pixel through the frame's rows (light2/3/4 .xyz) and its falloff from the distance, all in
 // the object's own space as the game makes its lamp constants (2026-10-27 first version: camera-relative world space; reached nothing).
 // The sun (without OPT) as before.

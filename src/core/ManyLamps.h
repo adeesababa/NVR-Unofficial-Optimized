@@ -3,7 +3,11 @@
 #include "GpuProfiler.h"
 #include "PointShadowForward.h"
 
-// UNOFFICIAL 2026-10-27 ManyLampsOnePass ([Main.Main.Misc] ManyLampsOnePass, DXVK only; with MoreLampsPerObject and LampsInOnePass):
+// Ported 2026-10-28 from Conor (mrfury97)'s fork onto P84 v3 (github.com/mrfury97/NVR-Unofficial-Optimized pull request 1, branch
+// manylamps-one-pass, commits 82ef371b 7127ac3d 3e73bf06, GPL-3.0-or-later; user: "seems like a good fit"); notes docs/next/MANYLAMPS-PORT.md.
+//
+// UNOFFICIAL 2026-10-27 ManyLampsOnePass ([Main.Main.Misc] ManyLampsOnePass, DXVK only; with MoreLampsPerObject; it switches LampsInOnePass's
+// one-pass limit on by itself since the port):
 // shiny objects lit by 6 to 13 lamps are drawn in ONE pass with all their lamps, instead of the game's 5-7 passes (light-only pass,
 // extra lamp passes, texture pass, highlight passes, fog pass). It needs a restart to come on (its shaders); after that its lamp limit
 // is live: off goes back to LampsInOnePass's 5 + f with the same shaders, for an F10 comparison at one spot.

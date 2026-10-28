@@ -1,6 +1,8 @@
 #pragma once
 
-// UNOFFICIAL 2026-10-27 FoldFog ([Main.Main.Misc] FoldFog, live, default on).
+// UNOFFICIAL 2026-10-27 FoldFog ([Main.Main.Misc] FoldFog, live, default on). Ported 2026-10-28 from Conor (mrfury97)'s fork onto P84 v3 (github.com/mrfury97/NVR-Unofficial-Optimized pull request 1, branch
+// manylamps-one-pass, commits 82ef371b 7127ac3d 3e73bf06, GPL-3.0-or-later; user: "seems like a good fit"); notes docs/next/MANYLAMPS-PORT.md.
+// With LinearScene the lit pass fogs in the stored curve before LinearSceneOut decodes its colour: the same lerp as the fog pass.
 //
 // F10 census (Vault 21, a casino) after ManyLampsOnePass: the separate fog passes were the largest group of extra draws left
 // (Vault 21 ~212 of 2,283 world draws a frame, the casino up to 285 of 1,538). BSShaderPPLightingProperty::GetRenderPasses_2x

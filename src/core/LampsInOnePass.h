@@ -51,7 +51,7 @@ namespace LampsInOnePass {
 	// kEmitSite while ManyLampsGlow is on (BT with a bit offset: the enum, below 0x300).
 	inline UInt32 AmbientEmitEnums[0x300 / 32] = {};
 
-	// UNOFFICIAL 2026-10-27 ManyLampsGlow ([Main.Main.Misc] ManyLampsGlow, live while ManyLampsOnePass is on). F10 census in the Vault 21
+	// UNOFFICIAL 2026-10-27 ManyLampsGlow ([Main.Main.Misc] ManyLampsGlow, live while ManyLampsOnePass is on; after Conor (mrfury97)'s fork, see ManyLamps.h). F10 census in the Vault 21
 	// lobby with ManyLampsOnePass (log 14-58-42): of the highlight passes still drawn, 739 of ~790 a frame were glow-mapped shiny objects
 	// (177 a frame, 8.5 lamps each, plus their 446 lamp passes): GetRenderPasses_2x never gives a glow-mapped object the one pass
 	// (&& !bGlowMap). The game has everything else for it: AddPass_Opt picks BSSM_ADT10_G / ADT4_G / ADTS10_G (+ _SG skinned) for them,
@@ -157,7 +157,6 @@ namespace LampsInOnePass {
 				GlowLost / (double)GlowFrames);
 			GlowDraws = GlowRebound = GlowCacheStale = GlowLost = 0; GlowFrames = 0;
 		}
-		const bool want = TheSettingManager->GetSettingI("Main.Main.Misc", "LampsInOnePass") != 0;
 		const UInt8* code = (const UInt8*)kCompareSite;
 		// UNOFFICIAL 2026-10-27 ManyLampsOnePass (ManyLamps.h): up to 12 + f lamps (NVR gives the shaders the lamps past the game's cap).
 		// Its limit is live (the setting read here each frame) while its shaders stay as loaded: off, the limit goes back to 5 + f, so
@@ -165,8 +164,12 @@ namespace LampsInOnePass {
 		// UNOFFICIAL 2026-10-27: and only while NVR's object shaders draw (ShaderRecord: with Effects off or the PBR shaders off the game's
 		// own draw, with 6 lamp slots and no glow in their many-lamp shaders): otherwise LampsInOnePass's limit, and ManyLampsGlow off.
 		const bool nvrObjectShaders = TheSettingManager->SettingsMain.Main.RenderEffects && TheShaderManager->Shaders.PBR && TheShaderManager->Shaders.PBR->Enabled;
-		const UInt8 onImm = ManyLamps::Active() && nvrObjectShaders && TheSettingManager->GetSettingI("Main.Main.Misc", "ManyLampsOnePass") ?
-			(UInt8)ManyLamps::CompareImm : (UInt8)0x05;
+		const bool manyLamps = ManyLamps::Active() && nvrObjectShaders && TheSettingManager->GetSettingI("Main.Main.Misc", "ManyLampsOnePass") != 0;
+		const UInt8 onImm = manyLamps ? (UInt8)ManyLamps::CompareImm : (UInt8)0x05;
+		// UNOFFICIAL 2026-10-28 (port onto P84 v3 / LinearScene): LampsInOnePass is developer-only and off by default now (LinearScene makes the
+		// game's several passes add up exactly, so its picture reason is gone), so ManyLampsOnePass switches the one-pass limit on by itself:
+		// ManyLampsOnePass off (live) = LampsInOnePass's own setting (off: the game's 2 + f).
+		const bool want = manyLamps || TheSettingManager->GetSettingI("Main.Main.Misc", "LampsInOnePass") != 0;
 		if ((want ? onImm : (UInt8)0x02) == AppliedImm) return;
 		if (code[0] != 0x83 || code[1] != 0xC0 || (code[2] != 0x02 && code[2] != 0x05 && code[2] != (UInt8)ManyLamps::CompareImm)) {
 			if (!RefusedLogged) Logger::Log("UNOFFICIAL LampsInOnePass: the game's code at %08X is not as expected (another plugin?); not changed", kCompareSite);
