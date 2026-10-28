@@ -25,7 +25,13 @@ namespace PassSums {
 	enum Kind { None = 0, Lamps = 1, Highlights = 2 };
 	inline int Mode = 0;							// the setting, read once a frame
 	inline Kind Active = None;						// the run being redirected now
-	inline int Runs[3] = { 0, 0, 0 };				// runs started this frame per kind (at most 2 each: a third keeps the game's passes)
+	inline int Runs[3] = { 0, 0, 0 };				// runs started this frame per kind (at most RunCap each: past it the game's passes are kept)
+	// UNOFFICIAL 2026-10-28 (tester, Freeside at night with POM: one road piece lighter than its neighbours, the 2026-10-25 daytime
+	// patch back): the cap of 2 runs a frame was set for the fold-in (a full-screen step per run). Outside at night more objects are lamp
+	// lit and the world's lamp and highlight passes can come in more runs, and every pass past the second run was summed in the stored
+	// curve again. The increments cost one copy of the frame per run, so they take up to kIncrementRunCap; the fold-in keeps 2.
+	constexpr int kFoldRunCap = 2;
+	constexpr int kIncrementRunCap = 8;
 	inline IDirect3DSurface9* Scene = nullptr;		// the render target the run replaced (the game's scene buffer)
 	inline D3DVIEWPORT9 SceneViewport = {};			// UNOFFICIAL 2026-10-27 (RenderScale): the scene's viewport as the run began
 	inline bool SceneViewportSaved = false;
@@ -292,12 +298,12 @@ namespace PassSums {
 		const bool foldIn = ((Mode & Highlights) && !(Mode & kHighlightIncrements)) || ((Mode & Lamps) && !(Mode & kIncrements));
 		if (foldIn && ++Frames >= 600) { Logger::Log("ExactPassSums (mode %d): %.2f fold-ins per frame", Mode, Composes / (float)Frames); Frames = Composes = 0; }
 		if ((Mode & kIncrements) && (Mode & Lamps) && ++IncFrames >= 600) {
-			Logger::Log("UNOFFICIAL LampSums: per frame %.2f lamp runs copied (%.1f extra lamp passes each), %.2f extra lamp passes left as before (a third run), "
+			Logger::Log("UNOFFICIAL LampSums: per frame %.2f lamp runs copied (%.1f extra lamp passes each), %.2f extra lamp passes left as before (past the run cap), "
 				"%.2f copies failed", IncCopies / (float)IncFrames, IncCopies ? IncPasses / (float)IncCopies : 0.0f, IncLeft / (float)IncFrames, IncFailed / (float)IncFrames);
 			IncFrames = IncCopies = IncPasses = IncLeft = IncFailed = 0;
 		}
 		if ((Mode & kHighlightIncrements) && (Mode & Highlights) && ++IncHlFrames >= 600) {
-			Logger::Log("UNOFFICIAL HighlightSums: per frame %.2f highlight runs copied (%.1f highlight passes each), %.2f highlight passes left as before (a third run)",
+			Logger::Log("UNOFFICIAL HighlightSums: per frame %.2f highlight runs copied (%.1f highlight passes each), %.2f highlight passes left as before (past the run cap)",
 				IncHlCopies / (float)IncHlFrames, IncHlCopies ? IncHlPasses / (float)IncHlCopies : 0.0f, IncHlLeft / (float)IncHlFrames);
 			IncHlFrames = IncHlCopies = IncHlPasses = IncHlLeft = 0;
 		}
@@ -349,13 +355,14 @@ namespace PassSums {
 				RunIsIncrements ? (Active == Highlights ? "HighlightSums" : "LampSums") : "fold-in", RunPasses, RunFirst, RunLast, e);
 			End(device);
 		}
-		if (k != None && (Mode & k) && Runs[k] >= 2) {
-			if (LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (third run this frame)", e, (int)k);
+		const bool increments = (k == Lamps && (Mode & kIncrements)) || (k == Highlights && (Mode & kHighlightIncrements));
+		const int cap = increments ? kIncrementRunCap : kFoldRunCap;
+		if (k != None && (Mode & k) && Runs[k] >= cap) {
+			if (LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (run %d this frame, past the cap of %d)", e, (int)k, Runs[k] + 1, cap);
 			if (k == Lamps && (Mode & kIncrements)) IncLeft++;
 			else if (k == Highlights && (Mode & kHighlightIncrements)) IncHlLeft++;
 		}
-		if (k != None && (Mode & k) && Runs[k] < 2) {
-			const bool increments = (k == Lamps && (Mode & kIncrements)) || (k == Highlights && (Mode & kHighlightIncrements));
+		if (k != None && (Mode & k) && Runs[k] < cap) {
 			if (increments) BeginIncrements(device, k); else Begin(device, k);
 			RunPasses = 1; RunFirst = RunLast = e;
 		}
