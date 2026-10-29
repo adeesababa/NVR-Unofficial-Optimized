@@ -27,8 +27,13 @@
   the cube maps' single-sided-caster problem (the main session's "rings under cups"), which RT removes.
 - Also: mask scheme agreed with rt-sun-core (ba320c39): lamp glass 0x04, lamp models 0x08, alpha-tested casters 0x10 (the core's,
   non-opaque); the lamp rays use 0xEF (0xE7 near the lamp) until they test alpha.
-### Step 4: SkipTracedCubes (f100ad80, DLL D6ECAD36, on): a traced lamp keeps its cube map (fallback) instead of redrawing it;
-  drawn when it has none of its own, and while people move near it with ActorsFromCubeMaps on. Cost run rtlamp-7 queued.
+### Step 4: SkipTracedCubes (f100ad80, DLL D6ECAD36, on): DONE (run rtlamp-7 17:16, 20261029-171614-slotA, PASS)
+- A traced lamp keeps its cube map (the fallback) instead of redrawing it; drawn when it has none of its own, and while people move
+  near it with ActorsFromCubeMaps on. ~2600-3000 redraws skipped per 600 traces.
+- Picture identical: rt-skip vs rt-redraw 0.0 % of pixels > 2/255 in Lucky 38 and Vault 21 (pairs repeat to 0.0-0.1 %).
+- Lucky 38 (iGPU): "Point shadow cubemaps" GPU 3.9 -> 1.86 ms a frame, "Shadow maps (CPU)" 1.5 -> 1.07 ms. Vault 21: little (8.5 ->
+  7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
+  win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
 ## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
 Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
