@@ -108,6 +108,24 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   > 2/255); the raw view (DebugView 1) and the hit-distance view (3) equal it: the traced values read "open, nothing hit" everywhere,
   RayCount 1/2/4 alike. Suspect: the input (view distance / normal) or the ray origin. Run 2 checks the input directly.
 
+### Run 2 (2026-10-29 04:05-04:35, lucky22 slot B; lists rt-ao-2 + rt-ao-1 v2; DLL C9A2F528 = rt-sun-core 4ba2abfd's Eye() fix + this branch)
+- **Rays hit.** With the core's origin fix (rays from RtCore::Eye(), not CameraLocation - CameraPosition) the RT occlusion view shows
+  real contact darkening: the foot of the vases, the wall-floor seam, under the slot machine rows and the counter, the inner corners of
+  the pillars; open floor stays white. No visible leaks through walls, no missing objects among the static geometry (the player, an
+  actor, is not in the core's scene: no darkening under him, as expected).
+- Input checks: DebugView 4 (view distance) is a clean depth ramp (the input arrives); DebugView 3 (inside / hit distance) has no
+  black: almost no ray starts inside geometry with the 0.75 + 0.003 x distance start lift.
+- Same-spot A/B against AmbientLight's GTAO is NOT possible in lucky22: the third-person camera moves between shots (the player walks),
+  so each shot shows another view. Needs a scene with a still first-person camera (next run).
+- Cost on the iGPU (2 CUs, 1280x720, AO at 640x360, Lucky 38: 2677 instances / 265 geometries / 279k triangles):
+  - NVR's side: RtAOInput 0.63 ms + AmbientLightEstimateRT 0.32 ms, in place of AmbientLight's GTAO estimate 2.33 ms.
+  - The helper's trace pass: 9.3 ms a frame averaged over frames 1-600 (RayCount 1-4 shots), 14.0 ms over 600-1200 (RayCount 8, 16,
+    Distance 250 and the sky shots); the core's "Ray tracing (copies + helper + waits)" timer in steady state: about 4 ms (1 ray),
+    6 ms (2), 9.5 ms (4), 18 ms (8-16), 22 ms (Distance 250). Per-shot attribution of these profile lines is approximate (they print
+    at the shot changes); a clean per-ray-count table needs one long still shot per count.
+  - Read: the cost follows ray count x ray length; on this iGPU the RT AO is ~4x the GTAO it replaces. Expected ratio on a real RT
+    GPU unknown (the iGPU only gives relative cost).
+
 ## Resumed 2026-10-29 (main session, on the user's word)
 - The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
   100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.
