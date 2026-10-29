@@ -17,6 +17,22 @@ So the scene and every ray live in **NvrRtHelper.exe**, a 64-bit process on the 
 and the game only hands it triangles, inputs and instance lists, all through GPU memory and timeline semaphores. Nobody waits on the
 CPU per frame.
 
+## Changes since the first version (all on this branch; announced to the RT sessions)
+- d71ecf96 **protocol v2**: per-instance records (binding 10) and the geometry data (binding 11), see the shader section.
+- d71ecf96 **shared images are rounded up to multiples of 256 texels** (both sides). Measured: AMD's 32-bit (game) and 64-bit
+  (helper) drivers lay out an optimal-tiling image identically only then (1280x720 R32F: 3686400 bytes in the game, 3957104 in the
+  helper; the first in-game run's helper refused it and the core switched itself off, as designed). The content is the top-left
+  Width x Height; `CopyOut` copies only that; give the pass the logical size in its constants, never `imageSize()`.
+  `rt_helper_test.cpp` (RT_TEST_SCREEN / RT_TEST_GAME) checks a pattern texel for texel at 720p, 1080p, 1440p, 4K, 1366x768,
+  1680x1050 through the padded images.
+- d71ecf96 the helper allocates its first structure block and build scratch before it says ready (first frame 10 ms, was 2-4 s on the
+  iGPU with the game running); NVR's watchdog allows 10 s.
+- b53a3e1d `RtCore::Frame` runs before the shadow branch (indoors too); `RtCore::SetMaskHook`.
+- d7fa5427 (rt-reflections) `RtCore::Exchange(Device, user)`: a second exchange of the frame for one `Point = 1` user, called by that
+  user between its own passes (reflections: ray generation -> exchange -> resolve). One ring record per exchange (its own semaphore
+  values); the scene is gathered once per game frame, a later exchange resends the instances + records with no geometry ops and no
+  arena. A second GPU bubble only while such a user is on.
+
 ## Pieces
 | where | what |
 |---|---|
@@ -98,7 +114,20 @@ void main() {
   `toWorld()` (view z = depth x farZ; forward + right x (2u - 1) / P00 - up x (2v - 1) / P11; view normal from the normals buffer
   as right / up / forward components) and the camera-to-scene origin offset.
 - `rayQueryGetIntersectionInstanceCustomIndexEXT`: 1 land, 0 objects. Cull mask: 0x01 land, 0x02 objects.
-- Geometry is opaque only; no texture coordinates, no materials yet (reflections will need them: see "Next").
+- Geometry is opaque only; no texture coordinates yet.
+- Protocol v2 extras (always bound):
+  ```glsl
+  struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
+  layout(set = 0, binding = 10, std430) readonly buffer Records { Record records[]; };     // by rayQueryGetIntersectionInstanceIdEXT
+  layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; };        // positions (float3) + triangle lists (uint)
+  Record r = records[rayQueryGetIntersectionInstanceIdEXT(q, true)];
+  uint p = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+  uvec3 i = uvec3(words[r.indexOffset + 3 * p], words[r.indexOffset + 3 * p + 1], words[r.indexOffset + 3 * p + 2]);
+  vec3 v0 = vec3(uintBitsToFloat(words[r.vertexOffset + 3 * i.x]), uintBitsToFloat(words[r.vertexOffset + 3 * i.x + 1]),
+                 uintBitsToFloat(words[r.vertexOffset + 3 * i.x + 2]));   // object space; rayQueryGetIntersectionObjectToWorldEXT
+  ```
+  `albedo` = linear rgb of the draw's diffuse texture (its smallest mip; managed textures; DXT1/3/5 and ARGB8), `flags` 0x01 land,
+  0x10 albedo known (else grey 0.5); `vertexOffset` = 0xFFFFFFFF when the helper had no room (128 MB of geometry data).
 
 ### Deploy (by hand, like every NVR file)
 - `NvrRtHelper.exe` -> `<game>\Data\NVSE\Plugins\NvrRt\` (its own folder: xNVSE loads every DLL right in Plugins). It writes
@@ -124,7 +153,10 @@ own sections (`[Shaders.ShadowsExteriors.RT]` ...).
   would wait for it): the helper now compiles every registered shader before it says ready.
 - `NvrRtHelper.exe --probe`: GTX 1070 "no VK_KHR_ray_query", AMD iGPU "ray tracing OK".
 - Build: fork with 0001-0027 + 0028 (WSL MinGW, the same series as CI), NVR DLL (VS2019, no new warnings), helper (VS2019 x64).
-- In game: see FORK-RT-SUN.md (bench runs on the iGPU).
+- v2 (records + geometry data) and the padded images: the same end-to-end test also checks every hit's record (geometry id) and
+  the hit triangle's first vertex fetched from binding 11 (object-space z exact), and the screen-size pattern (above): PASS.
+- In game: see FORK-RT-SUN.md (bench runs on the iGPU): the helper starts, gets ready in ~1 s and runs every frame; the exchange
+  costs ~1.4 ms of the game's GPU time at 720p on the iGPU with the sun pass.
 
 ## Rules kept / known limits
 - GTX 1070 / any GPU without RT for 64-bit programs: the helper says "no ray tracing on the game's GPU", the core logs it once and

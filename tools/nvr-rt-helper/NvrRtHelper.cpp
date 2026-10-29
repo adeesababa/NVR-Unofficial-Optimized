@@ -584,6 +584,12 @@ namespace {
 		uint64_t		gpuUs[64] = {}, buildUs[64] = {}, sceneUs[64] = {}, traceUs[64] = {}, responseUs[64] = {};
 		uint32_t		gpuCount = 0, buildCount = 0, sceneCount = 0, traceCount = 0, responseCount = 0;
 		bool			loggedFirst = false;
+		// Probe: the first build frame's first geometries read back from the staging (what the bottom levels were built from), logged once
+		Buffer			probe;
+		uint32_t		probeIds[3] = {}, probeVertices[3] = {}, probeTriangles[3] = {}, probeCount = 0;
+		float			probeTransform[3][12] = {};
+		int				probeSlot = -1;
+		bool			probeDone = false;
 		NvrRtFrame		frame;				// this frame's record, copied out of the ring (2 MB: on the heap via Helper)
 	};
 
@@ -765,6 +771,27 @@ namespace {
 				if (s.measured[2]) { h.traceUs[h.traceCount++ % 64] = us(2, 3); g_shared->traceUsAvg = Average(h.traceUs, h.traceCount); }
 			}
 		}
+		if (h.probeSlot == (int)(&s - h.slots) && h.probe.mapped) {
+			for (uint32_t k = 0; k < h.probeCount; k++) {
+				const float* v = (const float*)((const uint8_t*)h.probe.mapped + k * 4096);
+				const uint32_t* t = (const uint32_t*)((const uint8_t*)h.probe.mapped + k * 4096 + 3072);
+				const uint32_t n = std::min<uint32_t>(h.probeVertices[k], 256);
+				float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+				uint32_t bad = 0, maxIndex = 0;
+				for (uint32_t i = 0; i < n; i++) for (int a = 0; a < 3; a++) {
+					const float x = v[3 * i + a];
+					if (!(x == x) || fabsf(x) > 1e7f) bad++;
+					lo[a] = std::min(lo[a], x); hi[a] = std::max(hi[a], x);
+				}
+				for (uint32_t i = 0; i < std::min<uint32_t>(3 * h.probeTriangles[k], 256); i++) maxIndex = std::max(maxIndex, t[i]);
+				const float* m = h.probeTransform[k];
+				Log("probe geometry %u: %u vertices, %u triangles; first %.1f %.1f %.1f / %.1f %.1f %.1f; bounds (first %u) %.1f %.1f %.1f .. %.1f %.1f %.1f, %u bad; "
+					"indices %u %u %u %u %u %u (max %u); transform [%.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f]",
+					h.probeIds[k], h.probeVertices[k], h.probeTriangles[k], v[0], v[1], v[2], v[3], v[4], v[5], n, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], bad,
+					t[0], t[1], t[2], t[3], t[4], t[5], maxIndex, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+			}
+			h.probeSlot = -1;
+		}
 		return true;
 	}
 
@@ -874,6 +901,20 @@ namespace {
 				}
 				h.vk.cmdBuildAs(cmd, (uint32_t)infos.size(), infos.data(), rangePointers.data());
 				if (!dataCopies.empty()) vkCmdCopyBuffer(cmd, h.staging.buffer, h.geometryData.buffer, (uint32_t)dataCopies.size(), dataCopies.data());
+				if (!h.probeDone && h.probe.buffer) {
+					for (uint32_t i = 0; i < f.opCount && h.probeCount < 3; i++) {
+						const NvrRtGeometryOp& op = f.ops[i];
+						if (op.op != NVR_RT_OP_BUILD || h.geometries.find(op.id) == h.geometries.end()) continue;
+						const uint32_t k = h.probeCount++;
+						h.probeIds[k] = op.id; h.probeVertices[k] = op.vertexCount; h.probeTriangles[k] = op.triangleCount;
+						VkBufferCopy c[2] = {
+							{ (VkDeviceSize)op.arenaTexel * 4, (VkDeviceSize)k * 4096, std::min<VkDeviceSize>(3ull * op.vertexCount, 768) * 4 },
+							{ ((VkDeviceSize)op.arenaTexel + 3ull * op.vertexCount) * 4, (VkDeviceSize)k * 4096 + 3072, std::min<VkDeviceSize>(3ull * op.triangleCount, 256) * 4 } };
+						vkCmdCopyBuffer(cmd, h.staging.buffer, h.probe.buffer, 2, c);
+					}
+					h.probeSlot = (int)slot;
+					h.probeDone = true;
+				}
 				FullBarrier(cmd);
 				s.measured[0] = true;
 			}
@@ -904,6 +945,10 @@ namespace {
 			o.accelerationStructureReference = it->second.address;
 		}
 		g_shared->lastInstances = count;
+		if (h.probeSlot == (int)slot)
+			for (uint32_t k = 0; k < h.probeCount; k++)
+				for (uint32_t i = 0; i < std::min<uint32_t>(f.instanceCount, NVR_RT_MAX_INSTANCES); i++)
+					if (f.instances[i].geometryId == h.probeIds[k]) { memcpy(h.probeTransform[k], f.instances[i].transform, 48); break; }
 		if (!EnsureScratch(h, h.tlasScratch)) return false;
 		{
 			VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
@@ -1128,6 +1173,7 @@ namespace {
 			!CreateBuffer(h.vk, (VkDeviceSize)kDataWords * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, h.geometryData) ||
 			!CreateTlas(h) || !EnsureScratch(h, h.tlasScratch) || !CreatePipelineLayout(h))
 			return fail(nullptr);
+		if (!CreateBuffer(h.vk, 3 * 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, h.probe)) h.probe = Buffer();	// the probe is optional
 
 		// The shaders NVR registered at setup are compiled now (a first use mid-game would hold the game's GPU ~2 s on the iGPU)
 		for (uint32_t i = 0; i < std::min<uint32_t>((uint32_t)shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);
