@@ -967,3 +967,200 @@ __CRT_UUID_DECL(ID3D9NvrExtShare,       0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,
 __CRT_UUID_DECL(ID3D9NvrExtSharedImage, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x27);
 __CRT_UUID_DECL(ID3D9NvrExtSharedFence, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x28);
 #endif
+
+/*
+ * Ray tracing core ("1.8-rt", fork patch 0028; docs/next/FORK-RT-CORE.md in the NVR repository).
+ *
+ * Acceleration structures built from the game's own D3D9 vertex/index buffers, and ray queries (GLSL
+ * GL_EXT_ray_query) in NVR's passes. A separate interface, queried from ID3D9NvrExt with its GUID, so a
+ * d3d9.dll without it answers E_NOINTERFACE and the rest of the extension is untouched.
+ *
+ * Feature detection: the fork enables VK_KHR_acceleration_structure + VK_KHR_ray_query (with
+ * VK_KHR_deferred_host_operations; buffer device addresses DXVK already requires) only when dxvk.conf says
+ * `nvr.rayTracing = True` AND the GPU's driver offers them to this (32-bit) process. Default False: measured
+ * 2026-10-28, AMD's and NVIDIA's 32-bit Windows drivers offer no ray tracing at all, so on Windows NVR traces
+ * in a 64-bit helper (MeasureGeometry / StageGeometry / FlushStagedGeometry at the end, which work everywhere).
+ * Without in-process support (the default; any Pascal GPU such as the GTX 1070) GetRtInfo says Supported = FALSE
+ * and CreateGeometry / CreateScene / BuildScene fail with D3DERR_NOTAVAILABLE: nothing created, nothing recorded,
+ * the Vulkan device is created exactly as without this patch.
+ *
+ * Model:
+ * - A geometry (ID3D9NvrExtRtGeometry) is one bottom-level structure: the triangles of one or more D3D9 draws
+ *   of one vertex buffer (+ index buffer), in object space. CreateGeometry records, in order with the D3D9
+ *   work, a copy of the positions (any stride / offset; float3, float4 or half4) and indices (16 or 32 bit;
+ *   lists and strips, strips turned into lists) into the fork's own memory, then the build. The D3D9 buffers
+ *   may change or go away afterwards: the structure keeps its own copy. Static geometry: a vertex buffer the
+ *   game rewrites (skinning on the CPU, morphs) needs a new geometry.
+ * - A scene (ID3D9NvrExtRtScene) is one top-level structure: up to MaxInstances instances of geometries,
+ *   each with a 3x4 transform. BuildScene records the instance upload and a full rebuild (fast-build
+ *   flavour); passes recorded after it see the new scene, passes recorded before it the old one.
+ * - A pass (Draw / Dispatch / DrawGeometry ...) reads the scene through its GPU address in the push block:
+ *     #extension GL_EXT_ray_query : require
+ *     layout(push_constant) uniform Push { uvec2 scene; ... };       // ID3D9NvrExtRtScene::GetAddress, lo/hi
+ *     rayQueryEXT q;
+ *     rayQueryInitializeEXT(q, accelerationStructureEXT(scene), gl_RayFlagsTerminateOnFirstHitEXT,
+ *                           0xFF, origin, tMin, direction, tMax);
+ *     while (rayQueryProceedEXT(q)) { }
+ *     bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+ *   Compile with glslangValidator -V --target-env vulkan1.2 (ray queries need SPIR-V 1.4). No descriptor is
+ *   involved (no new binding type): the address alone names the structure, and the fork keeps every structure
+ *   a scene refers to alive and complete before any pass recorded after BuildScene runs.
+ * - Spaces: whatever the caller uses consistently. NVR uses camera-relative world space (Gamebryo units,
+ *   z up, origin at the camera), as its D3D9 passes do, so floats stay precise far from the world origin.
+ *
+ * Threading: like every extension method, the device's thread. All work is recorded into DXVK's command
+ * stream (CS thread); nothing waits for the GPU.
+ */
+enum NVR_EXT_RT_POSITION_FORMAT {
+  NVR_EXT_RT_POSITION_FLOAT3 = 0,   // D3DDECLTYPE_FLOAT3
+  NVR_EXT_RT_POSITION_FLOAT4 = 1,   // D3DDECLTYPE_FLOAT4 (w ignored)
+  NVR_EXT_RT_POSITION_HALF4  = 2,   // D3DDECLTYPE_FLOAT16_4 (w ignored)
+};
+
+enum NVR_EXT_RT_TOPOLOGY {
+  NVR_EXT_RT_TRIANGLE_LIST  = 0,
+  NVR_EXT_RT_TRIANGLE_STRIP = 1,    // degenerate triangles (strip joins) are kept: zero area, never hit
+};
+
+/** One D3D9 draw's triangles (DrawIndexedPrimitive's or DrawPrimitive's arguments). */
+struct NVR_EXT_RT_RANGE {
+  NVR_EXT_RT_TOPOLOGY Topology;
+  UINT                StartIndex;      // first index (indexed) or first vertex (no index buffer)
+  UINT                PrimitiveCount;  // triangles, as D3D9 counts them
+  INT                 BaseVertex;      // added to every index (BaseVertexIndex); indexed only
+};
+
+#define NVR_EXT_RT_MAX_RANGES 1024
+
+struct NVR_EXT_RT_GEOMETRY_DESC {
+  IDirect3DVertexBuffer9*     pVertexBuffer;
+  UINT                        PositionOffset;   // bytes from the buffer's start to vertex 0's position (stream offset + element offset)
+  UINT                        VertexStride;     // bytes
+  UINT                        VertexCount;      // vertices from vertex 0 that indices may address (index + BaseVertex < VertexCount)
+  NVR_EXT_RT_POSITION_FORMAT  PositionFormat;
+  IDirect3DIndexBuffer9*      pIndexBuffer;     // null: non-indexed ranges; 16 or 32 bit from the buffer's format
+  UINT                        RangeCount;       // 1..NVR_EXT_RT_MAX_RANGES
+  const NVR_EXT_RT_RANGE*     pRanges;
+  UINT                        Flags;            // reserved, 0 (1.8: every geometry is opaque, no any-hit; alpha testing is later work)
+  const char*                 pDebugName;
+};
+
+/** Instance flags (VkGeometryInstanceFlagBitsKHR's values). */
+enum NVR_EXT_RT_INSTANCE_FLAGS {
+  NVR_EXT_RT_INSTANCE_CULL_DISABLE = 0x1,   // both faces count whatever the ray flags say
+  NVR_EXT_RT_INSTANCE_FLIP_FACING  = 0x2,
+  NVR_EXT_RT_INSTANCE_FORCE_OPAQUE = 0x4,
+};
+
+struct NVR_EXT_RT_INSTANCE {
+  struct ID3D9NvrExtRtGeometry* pGeometry;       // null: the entry is skipped
+  FLOAT                         Transform[3][4]; // object -> scene: p' = (row0 . p1, row1 . p1, row2 . p1), p1 = (x, y, z, 1)
+  UINT                          InstanceId;      // low 24 bits: rayQueryGetIntersectionInstanceCustomIndexEXT
+  UINT                          Mask;            // low 8 bits, ANDed with the ray's cull mask (0: never hit)
+  UINT                          Flags;           // NVR_EXT_RT_INSTANCE_FLAGS
+};
+
+struct NVR_EXT_RT_INFO {
+  BOOL    Supported;          // acceleration structures and ray queries are on for this device
+  UINT    VersionMinor;       // 0 for 1.8-rt as first written; bumped (never broken) by additions
+  char    Reason[96];         // why not (Supported FALSE): "no VK_KHR_ray_query", "nvr.rayTracing = False", ...
+  UINT    MaxInstances;       // per scene (the device's limit, capped at 1 << 20)
+  UINT64  MaxPrimitiveCount;  // per geometry
+};
+
+/** Sizes of one geometry (MeasureGeometry / StageGeometry). */
+struct NVR_EXT_RT_GEOMETRY_INFO {
+  UINT    VertexCount;
+  UINT    TriangleCount;
+  UINT    Texels;             // 3 x VertexCount + 3 x TriangleCount: the 32-bit words StageGeometry writes
+};
+
+/** Counters since the device was made (and of the last BuildScene). */
+struct NVR_EXT_RT_STATS {
+  UINT    Geometries;         // alive
+  UINT64  Triangles;          // in the alive geometries
+  UINT64  GeometryBytes;      // their structures' memory (not the scratch)
+  UINT64  GeometriesBuilt;    // ever
+  UINT    Scenes;             // alive
+  UINT    LastInstances;      // instances in the last BuildScene (after skipping null geometries)
+  UINT64  SceneBuilds;        // ever
+  UINT64  SceneBytes;         // the alive scenes' structures + instance buffers
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d331")
+ID3D9NvrExtRtGeometry : public IUnknown {
+  virtual UINT STDMETHODCALLTYPE GetTriangleCount() = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d332")
+ID3D9NvrExtRtScene : public IUnknown {
+  /** The top-level structure's GPU address for accelerationStructureEXT(uvec2(lo, hi)); fixed for the scene's life. */
+  virtual UINT64 STDMETHODCALLTYPE GetAddress() = 0;
+
+  virtual UINT STDMETHODCALLTYPE GetMaxInstances() = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d330")
+ID3D9NvrExtRt : public IUnknown {
+  virtual void STDMETHODCALLTYPE GetRtInfo(
+          NVR_EXT_RT_INFO*                pInfo) = 0;
+
+  /**
+   * Records the copy of the triangles and the build of one bottom-level structure (see the model above).
+   * D3DERR_INVALIDCALL for a bad description (the DXVK log says why), D3DERR_NOTAVAILABLE without ray tracing,
+   * E_OUTOFMEMORY when the memory could not be had. A range that reads past either buffer is refused.
+   */
+  virtual HRESULT STDMETHODCALLTYPE CreateGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          ID3D9NvrExtRtGeometry**         ppGeometry) = 0;
+
+  /** A scene of up to MaxInstances instances (memory is reserved for that many); empty until BuildScene. */
+  virtual HRESULT STDMETHODCALLTYPE CreateScene(
+          UINT                            MaxInstances,
+    const char*                           pDebugName,
+          ID3D9NvrExtRtScene**            ppScene) = 0;
+
+  /**
+   * Records the instance upload and the rebuild of the scene. Count 0 makes it an empty scene (every ray
+   * misses). Count above the scene's MaxInstances fails (D3DERR_INVALIDCALL).
+   */
+  virtual HRESULT STDMETHODCALLTYPE BuildScene(
+          ID3D9NvrExtRtScene*             pScene,
+          UINT                            Count,
+    const NVR_EXT_RT_INSTANCE*            pInstances) = 0;
+
+  virtual void STDMETHODCALLTYPE GetRtStats(
+          NVR_EXT_RT_STATS*               pStats) = 0;
+
+  /*
+   * Geometry for a ray tracing HELPER process (NvrRtHelper.exe; docs/next/FORK-RT-CORE.md). These three work on
+   * every GPU that has the fork (no ray tracing in this process needed): Windows' 32-bit Vulkan drivers offer no
+   * ray tracing, so NVR's scene lives in a 64-bit helper and the game only hands it triangles.
+   *
+   * The arena is an ID3D9NvrExtSharedImage of format NVR_EXT_SHARED_R32F used as raw 32-bit words, row-major
+   * (texel t = (t % Width, t / Width)). StageGeometry queues the conversion of one geometry to texels DstTexel ..
+   * DstTexel + Texels - 1: first 3 x VertexCount floats (x, y, z of each vertex, object space), then 3 x TriangleCount
+   * uints (the triangle list, indices from the geometry's vertex 0; strips turned into lists, out-of-range triangles
+   * made degenerate). FlushStagedGeometry records every queued conversion (one block, between full barriers) and
+   * copies the touched rows into the arena; call it once a frame, before SignalShared, and only after the previous
+   * frame's WaitShared was recorded (the helper reads the arena between the two).
+   */
+  virtual HRESULT STDMETHODCALLTYPE MeasureGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          NVR_EXT_RT_GEOMETRY_INFO*       pInfo) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE StageGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          ID3D9NvrExtSharedImage*         pArena,
+          UINT                            DstTexel,
+          NVR_EXT_RT_GEOMETRY_INFO*       pInfo) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE FlushStagedGeometry(
+          ID3D9NvrExtSharedImage*         pArena) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtRt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x30);
+__CRT_UUID_DECL(ID3D9NvrExtRtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x31);
+__CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x32);
+#endif

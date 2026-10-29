@@ -1,0 +1,16 @@
+#pragma once
+
+// UNOFFICIAL 2026-10-28 (NVR DXVK) RT sun shadows ([Shaders.ShadowsExteriors.RT]; docs\next\FORK-RT-SUN.md): one ray per pixel
+// toward the sun against the ray tracing core's scene (RtCore.h: the 64-bit helper), from the depth and normal buffers, its
+// visibility multiplied into the sun shadow buffer after the contact shadows (Mode 0, combine: the cascades stay, the rays add what
+// the maps miss), or replacing the cascades inside the RT range (Mode 1: the forward cascade lookups off, the deferred apply fades
+// the cascades in only where the rays fade out). Off, or the core not running: exactly the old path.
+
+namespace RtSunShadows {
+	void	Register();						// once: the core user
+	void	Apply(IDirect3DDevice9* Device);	// after the sun contact shadows: the traced visibility into ShadowPassSurface's red
+	bool	Replacing();					// Mode 1 is in force (the forward lookups off, the deferred technique, TESR_RtSunReplace)
+	float	ReplaceRange();					// the RT range while Replacing, else 0 (TESR_RtSunReplace.x, SunShadows' flags.w)
+	D3DXVECTOR4* ReplaceConstant();			// TESR_RtSunReplace
+	void	RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget);	// DebugView 4: the traced visibility as grey, last
+}

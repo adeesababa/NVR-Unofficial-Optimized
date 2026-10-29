@@ -3,6 +3,7 @@
 #include "../core/LampFixtures.h"	// UNOFFICIAL 2026-10-20: LampModelOwnDistance
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
+#include "../core/RtSunShadows.h"	// UNOFFICIAL 2026-10-28 RT sun shadows
 
 // UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
 // pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
@@ -101,6 +102,10 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// read first there, returns that 1 without the cascade lookups. No shader changes.
 		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
 		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+		// UNOFFICIAL 2026-10-28 RT sun shadows Mode 1 (replace): the object shaders' cascade lookups off; the deferred apply does the
+		// cascades (faded out inside the RT range) and the traced visibility is multiplied in after it (core/RtSunShadows.cpp).
+		if (RtSunShadows::Replacing()) Constants.ForwardData.x = 1.0f;
+		RtSunShadows::ReplaceRange();
 #if NVR_TEST_TOOLS
 		// DIAGNOSTIC SkipWhenFadedCheck 3: the lookups off at any hour (what they cost; by day the sun shadows leave the lit
 		// shaders, so the picture changes).
@@ -856,6 +861,7 @@ void ShadowsExteriorEffect::clearShadowsBuffer() {
 
 void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SmoothedSunDir", &Constants.SmoothedSunDir);
+	TheShaderManager->RegisterConstant("TESR_RtSunReplace", RtSunShadows::ReplaceConstant());	// UNOFFICIAL 2026-10-28 RT sun shadows Mode 1
 	TheShaderManager->RegisterConstant("TESR_ShadowData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_ShadowFormatData", &Constants.FormatData);
 	TheShaderManager->RegisterConstant("TESR_ShadowForwardData", &Constants.ForwardData);

@@ -12,6 +12,8 @@
 #include "../effects/GpuParticles.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK 1.5-particles)
 #include "SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
+#include "RtCore.h"	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core
+#include "RtSunShadows.h"	// UNOFFICIAL 2026-10-28 RT sun shadows
 #include <unordered_map>	// UNOFFICIAL 2026-10-27 RenderScale v2 (RenderRect::RescaleRegistered)
 #include <vector>
 
@@ -1748,6 +1750,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// UNOFFICIAL (2026-10-07 review): the "no shadow" clear of the buffer is done once, not on every frame that draws no
 	// shadow pass (a full-screen clear and two target switches for a buffer that already held the clear value).
 	static bool shadowBufferClear = false;
+	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core's point of the frame (RtCore.h): the depth and normals exist, the sun
+	// shadows come next; indoors and outdoors, with or without the shadow passes. Nothing happens unless an RT effect is on (and the
+	// fork, a GPU with ray tracing and the helper are there).
+	{
+		static bool rtRegistered = false;
+		if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
+		RtCore::Frame(Device);
+	}
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
@@ -1867,7 +1877,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			static EffectRecord::CachedHandle fusedCache;	// UNOFFICIAL: looked up once per loaded effect
 			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
-				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
+				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique &&
+				!RtSunShadows::Replacing();	// UNOFFICIAL 2026-10-28 RT sun shadows Mode 1: the deferred technique (its apply fades the cascades out near)
 			// UNOFFICIAL Sharp ([Shaders.ShadowsExteriors.ScreenSpace]): the one-march technique (third in SunShadows.fx.hlsl).
 			static EffectRecord::CachedHandle sharpCache;
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
@@ -1890,6 +1901,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
 				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 				sunShadows->Constants.ForwardData.x = forwardWas;
+				RtSunShadows::Apply(Device);	// UNOFFICIAL 2026-10-28: the traced sun visibility into the red channel (nothing when not traced)
 			}
 #if NVR_TEST_TOOLS
 			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {
@@ -2654,6 +2666,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// UNOFFICIAL 2026-10-27 FitToDepthDebug ([Shaders.ShadowsExteriors.Main], core\SunDepthFit.h): the sun cascades coloured, or the
 	// measured blocks, over the finished picture. 0 (the default): nothing runs.
 	if (SunDepthFit::DebugView > 0) SunDepthFit::RenderView(Device, RenderTarget);
+	RtSunShadows::RenderDebug(Device, RenderTarget);	// UNOFFICIAL 2026-10-28 [Shaders.ShadowsExteriors.RT] DebugView 4 (nothing otherwise)
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		{ Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Debug); }
