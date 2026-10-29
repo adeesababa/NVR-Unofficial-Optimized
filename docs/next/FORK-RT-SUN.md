@@ -152,6 +152,29 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   720p on the iGPU (2.5 ms without alpha; candidate hits run the alpha test). Heavy for the iGPU; on a real RT GPU it is the
   any-hit cost every modern game pays for foliage. Off by default.
 
+### rtsun-13 / 14 / 15 (fork-0033, AlphaTested + Actors; og-goodsprings 16:00): actors, soft shadows, the shared denoiser
+- **Actors** (`[Main.Main.RayTracing] Actors`, off; fork patch 0033 1.8-rt-skin, ID3D9NvrExtRtSkin): every skinned partition of
+  the actors near the camera is posed every frame by the fork (palette = bone world x SkinToBone, scene-relative) and rebuilt fast
+  in the helper (op flag DYNAMIC), instance mask 0x20. rtsun-13: only the player's head and hands were in the scene: bodies are
+  alpha-tested (hair / fringe edges) and were left out -> 9a4898fb takes alpha-tested skinned meshes as opaque. rtsun-14: hips,
+  head, hands in place, torso and legs posed wrong: the game's skin shaders read the indices as `blendIndices.zyxw * 765.01`
+  (EnvTemplate.hlsl), i.e. bone k = byte k in memory; NVR had un-swizzled the D3DCOLOR again -> c9e185d8 (plain bytes). rtsun-14
+  also posed 135 partitions a frame (the town's NPCs within 8192): RT 15.5 ms p50 at 720p on the iGPU -> `ActorRadius` 3000
+  (live). rtsun-15 checks both (results below).
+- **Soft sun shadows** (`SunAngle` degrees, 0 = hard by default; `Denoise` on): each pixel traces toward a different point of the
+  sun's disc each frame (interleaved gradient noise + a golden-ratio step), then the shared denoiser. rtsun-13: SunAngle 2 gives
+  soft, plausible penumbrae on the ground shadows and smooth foliage shadows from one ray a pixel; with Denoise 0 the same edges
+  are dithered noise. 0.53 (the real sun) is nearly as sharp as the hard ray at this distance.
+- **The shared denoiser** (`src/core/RtDenoise.h`; Compute/RtDenoiseTemporal + RtDenoiseAtrous): SVGF / ReBLUR-style on the game's
+  GPU: temporal blend with history reprojected through depth + last frame's camera-relative view-projection (a camera jump > 512
+  units resets), first and second moments; 3 edge-stopping a-trous passes (steps 1, 2, 4; depth slope, view normal, variance-guided
+  value). API: `RtDenoise::Create(name)`, `RtDenoise::Run(d, device, noisy .r, output, settings)` -> false = use the noisy signal.
+  One channel; camera-only reprojection (ObjectMotion from claude/rootplan-combo is the next input); no hit-distance mode yet
+  (rt-reflections keeps its own filter until there is one; rt-lamp-shadows filters its 3 lamps a pixel itself).
+- Cost (720p, iGPU, everything on): "Ray tracing" p50 8.9 ms in rtsun-13 (player only), 15.5 ms in rtsun-14 (135 partitions a
+  frame); helper builds 7-13 ms avg with actors (every partition rebuilt every frame). Next for actors: refit (ALLOW_UPDATE +
+  update builds) instead of a full rebuild, and skip partitions off screen / too small to cast.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
