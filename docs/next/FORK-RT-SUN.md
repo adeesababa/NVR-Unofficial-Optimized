@@ -98,6 +98,18 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
 - rt-reflections confirms on their side (Ultra-Luxe, 20261029-043724-slotA): camera rays hit every reflecting surface except
   actors and leaves.
 
+### rtsun-6 (run 20261029-050116-slotC; the sun moves: GameHour 9 / 12 / 16)
+- **Matches the cascades for what is in the scene:** at 9:00 the house porch, the car and the crate cast traced shadows where the
+  cascades put them, with no acne on the ground (NormalBias 2 + 0.0005/unit, StartBias 1 hold). The car's side shows thin
+  self-shadow bands from its trim (real geometry, also hard-edged: one ray, no softening).
+- **Missing casters:** land (hills cast nothing; see below) and everything alpha-tested (foliage, fences, power-line wires:
+  56100 of 99960 object geometries met in 60 exchanges were left out for alpha; 2400 not a lighting shader, 2040 decal /
+  refraction, 780 no data). Mode 0 keeps those through the cascades.
+- **Land:** "land geometry met 0". The walk's reach test rejected every land node (their world bounds are not usable; NVR's
+  cascade walk does not test land either). Fix 28ea9e77: land skips it; the loaded grid limits it. Verification: rtsun-7.
+- Cost: "Ray tracing" p50 2.66-2.85 ms at 720p (one 6.0 ms window while GameHour jumped and the cascades rebuilt); helper GPU
+  1.76 ms avg after the builds (passes 1.63 ms, scene 0.13 ms), response 0.42 ms.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
