@@ -19,7 +19,7 @@
 #endif
 #if MANY_LAMPS_ON == 2
 // UNOFFICIAL 2026-10-29 LightCommonLamps (Includes/LightCommon.hlsl, core/ManyLamps.h): the same lamps from the frame's lamp table. c37 x the
-// count, y the reach scale; c38 the lighting offset; c39-c41 world -> object rows; c42-c43 the table indices (LightCommonIndex). The first six
+// count, y the reach scale; c38 the lighting offset; c39-c41 world -> object rows; c42-c44 the table indices (LightCommonIndex). The first six
 // keep their compile-time cube-map shadow slot (SHADOWED needs it), so they are written out; every lamp after them is ONE real loop.
 {
     const float3 mlWorldPos = IN.lPosition.xyz;	// the object's space, as the lamps once moved there
@@ -34,7 +34,7 @@
                 lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
         }
     #define ML_TABLE_LAMP(j, COLOR) [branch] if ((j) < mlCount) { \
-            const float mlI = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], (float)(j)); \
+            const float mlI = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], (float)(j)); \
             float4 mlTP; float3 mlTC; \
             [branch] if (mlI < LIGHT_COMMON_NONE) { \
                 LightCommonLamp(mlI, NVR_ManyLamps[1], NVR_ManyLamps[2], NVR_ManyLamps[3], NVR_ManyLamps[4], NVR_ManyLamps[0].y, mlTP, mlTC); \
