@@ -135,6 +135,15 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   standing on it get no ground contact and cliffs / hills occlude nothing. Outdoor RT AO is incomplete until the core adds land.
 - Same-spot A/B still missing: the third-person camera moves between shots here too.
 
+### Run 4 (2026-10-29 05:22-05:28, og-desert slot C, rt-ao-3; still without land in the scene)
+- Completed (60 frames a shot fits the limit). Cost lines in steady state: RT AO 1 ray, no sky rays: "Ray tracing (copies + helper +
+  waits)" 1.47 ms, AO RT input 0.39 ms, AmbientLight RT estimate 0.25 ms; 4 AO rays + 16 sky rays: 10.5 ms; Skylighting's ortho
+  sky pass for comparison 1.46 ms. Helper at exchange 60: passes 12.7 ms (4 AO + 16 sky rays, 640x360).
+- The sky comparison is NOT readable from these shots: Skylighting's DebugView 1 does not draw a grey view while AmbientLight hosts the
+  sky test (the factor goes into AL's apply), the time was dusk and the camera moves between shots. Needs a sky view through
+  AmbientLight (open item).
+- Next: rt-ao-4 (og-desert, land now in the scene via rt-sun-core 28ea9e77, build 1852AA82): the occlusion view at 1 / 4 / 16 rays.
+
 ## Resumed 2026-10-29 (main session, on the user's word)
 - The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
   100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.
