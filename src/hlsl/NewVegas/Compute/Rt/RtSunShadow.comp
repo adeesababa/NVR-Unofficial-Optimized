@@ -5,6 +5,7 @@
 // beyond the RT range (fading to 1 over the last FadeLength units).
 // Compile: glslangValidator -V --target-env vulkan1.2 -o RtSunShadow.spv RtSunShadow.comp
 #extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : enable
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -19,10 +20,14 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 bias;          // x normal offset (units), y normal offset per unit of view distance, z start offset along the ray, w ray length
 	vec4 range;         // x RT range (view distance), y fade length, z cull mask, w debug (1: hit distance / 4096 instead of visibility,
 	                    // 2: state codes, 3: a primary camera ray's hit distance / 8192: FORK-RT-SUN.md "Debug views")
+	vec4 alpha;         // x 1: test alpha-tested casters (the core's AlphaTested; binding 5 is the alpha atlas), 0: binding 5 is a stand-in
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
 layout(set = 0, binding = 4, r16f) uniform writeonly image2D visibilityImage;
+layout(set = 0, binding = 5, r16f) uniform readonly image2D alphaAtlas;          // RtCore::AlphaAtlasImage() (or a stand-in, alpha.x 0)
+#define RT_ALPHA_ATLAS alphaAtlas
+#include "RtAlpha.glsl"
 
 void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -39,8 +44,13 @@ void main() {
 		// The scene alone: a ray from the camera through the pixel, every instance (white = nothing hit within 8192 units)
 		vec3 direction = normalize(p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0));
 		rayQueryEXT q;
-		rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, p.origin.xyz, 1.0, direction, 8192.0);
-		while (rayQueryProceedEXT(q)) { }
+		const bool testAlpha = p.alpha.x > 0.5;
+		rayQueryInitializeEXT(q, scene, testAlpha ? 0u : gl_RayFlagsOpaqueEXT, testAlpha ? 0xFFu : 0xFBu, p.origin.xyz, 1.0, direction, 8192.0);
+		while (rayQueryProceedEXT(q))
+			if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
+				rtAlphaPass(rayQueryGetIntersectionInstanceIdEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false),
+					rayQueryGetIntersectionBarycentricsEXT(q, false)))
+				rayQueryConfirmIntersectionEXT(q);
 		bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 		imageStore(visibilityImage, pixel, vec4(hit ? rayQueryGetIntersectionTEXT(q, true) / 8192.0 : 1.0, 0.0, 0.0, 0.0));
 		return;
@@ -63,9 +73,15 @@ void main() {
 			// Bias: along the normal (grows with distance: depth and normal precision), then a little toward the sun
 			vec3 start = position + normal * (p.bias.x + p.bias.y * viewZ) + p.sun.xyz * p.bias.z;
 			rayQueryEXT q;
-			rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, uint(p.range.z),
-				start, 0.0, p.sun.xyz, p.bias.w);
-			while (rayQueryProceedEXT(q)) { }
+			// Alpha-tested casters (non-opaque, mask 0x04) come as candidates: their diffuse alpha decides (RtAlpha.glsl)
+			const bool testAlpha = p.alpha.x > 0.5;
+			rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | (testAlpha ? 0u : gl_RayFlagsOpaqueEXT),
+				uint(p.range.z) & (testAlpha ? 0xFFu : 0xFBu), start, 0.0, p.sun.xyz, p.bias.w);
+			while (rayQueryProceedEXT(q))
+				if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
+					rtAlphaPass(rayQueryGetIntersectionInstanceIdEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false),
+						rayQueryGetIntersectionBarycentricsEXT(q, false)))
+					rayQueryConfirmIntersectionEXT(q);
 			bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 			state = hit ? 0.6 : 0.8;
 			if (debug == 1)

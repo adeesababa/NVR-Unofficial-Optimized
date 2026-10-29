@@ -400,6 +400,7 @@ namespace {
 		uint32_t					triangles = 0;
 		uint32_t					vertexOffset = NVR_RT_NO_DATA;	// words in the geometry data (binding 11)
 		uint32_t					indexOffset = NVR_RT_NO_DATA;
+		uint32_t					uvOffset = NVR_RT_NO_DATA;		// the texcoords (float2), alpha-tested geometry only
 		uint32_t					dataWords = 0;
 	};
 
@@ -833,7 +834,8 @@ namespace {
 			for (uint32_t i = 0; i < f.opCount; i++) {
 				const NvrRtGeometryOp& op = f.ops[i];
 				if (op.op != NVR_RT_OP_BUILD) continue;
-				const uint64_t texels = 3ull * ((uint64_t)op.vertexCount + op.triangleCount);
+				const bool uv = (op.flags & NVR_RT_OP_FLAG_TEXCOORDS) != 0;
+				const uint64_t texels = 3ull * ((uint64_t)op.vertexCount + op.triangleCount) + (uv ? 2ull * op.vertexCount : 0ull);
 				if (!op.id || !op.vertexCount || !op.triangleCount || (uint64_t)op.arenaTexel + texels > std::min<uint64_t>(capacity, f.arenaTexels) ||
 					op.triangleCount > h.vk.asProperties.maxPrimitiveCount) {
 					g_shared->failedOps++;
@@ -843,7 +845,7 @@ namespace {
 				ReleaseGeometry(h, op.id, frameNumber);	// rebuilt under the same id: the old one goes
 				VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
 				g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-				g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+				g.flags = (op.flags & NVR_RT_OP_FLAG_ALPHA) ? 0u : VK_GEOMETRY_OPAQUE_BIT_KHR;	// alpha-tested: the rays see the candidates
 				g.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 				g.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 				g.geometry.triangles.vertexData.deviceAddress = h.staging.address + (VkDeviceSize)op.arenaTexel * 4;
@@ -881,6 +883,7 @@ namespace {
 				geo.vertexOffset = h.dataWords.Allocate(geo.dataWords);
 				if (geo.vertexOffset != NVR_RT_NO_DATA) {
 					geo.indexOffset = geo.vertexOffset + 3u * op.vertexCount;
+					if (uv) geo.uvOffset = geo.indexOffset + 3u * op.triangleCount;
 					dataCopies.push_back({ (VkDeviceSize)op.arenaTexel * 4, (VkDeviceSize)geo.vertexOffset * 4, (VkDeviceSize)texels * 4 });
 				}
 				else geo.dataWords = 0;
@@ -939,6 +942,10 @@ namespace {
 			r.geometryId = in.geometryId;
 			r.vertexOffset = it->second.vertexOffset;
 			r.indexOffset = it->second.indexOffset;
+			if (r.flags & NVR_RT_RECORD_ALPHA_TESTED) {
+				if (it->second.uvOffset == NVR_RT_NO_DATA) continue;	// no texcoords (no room in the data): it would block as a solid quad
+				memcpy(&r.albedo[3], &it->second.uvOffset, 4);
+			}
 			VkAccelerationStructureInstanceKHR& o = out[count++];
 			memcpy(&o.transform, in.transform, sizeof(o.transform));
 			o.instanceCustomIndex = in.customIndex & 0xFFFFFF;
