@@ -169,6 +169,38 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 04:34 FIRST REAL RT REFLECTIONS, iGPU (AMD Radeon(TM) Graphics, 1280x720, FSR off), scene luxe, slot A
+
+The run is `bench/autotest/20261029-043724-slotA` (list `rtrefl-2`, toml `evidence/rtrefl/rtrefl-igpu.toml`), with the shots in
+`H:\_NVR-autotest-shots\20261029-043724-slotA`. It used DLL e2c3d06c: this branch on rt-sun-core `4ba2abfd` (the every-ray-misses
+fix: the eye is `RtCore::Eye()`), fork-0028 and the helper v2. The plugin's time ran out after shot 09 of 13, so the iGPU is too slow
+for the whole list.
+
+- **The scene lines up with the screen.** On the alignment check (DebugView 5, shot 02), camera rays toward every reflecting
+  surface hit that surface: it is green nearly everywhere. Yellow / red shows only on the actors and parts of the near plant.
+  Actors are not in the scene (the core keeps statics only), and alpha-tested leaves are opaque or missing. So this is the expected
+  limit, not a bug.
+- **Rays hit.** Hit distance (DebugView 2, shot 07): near objects white, far ones grey, no "nothing within Distance" (red) inside
+  the dome. Sources (DebugView 1, shot 06): the screen march (green) plus RT where it missed, mostly the estimate (magenta) on the
+  walls and floor edges. That is hits hidden from the camera or never seen, now shaded with the draw's albedo and the hit
+  normal (v2 records).
+- **The picture.** RT on vs off (shots 04 pad vs 05 rt): 1.37 % of pixels differ by > 2/255, mean +0.009 (slightly brighter).
+  The noise floor (off vs off 03/04, on vs on 01/05) is 0.25-0.33 %. The amplified difference image sits where it should: the
+  polished checkerboard floor round the fountain now picks up more of the fountain's blue neon (rays the march stepped over or ran
+  off screen with), plus a few wall patches. No wrong colours or leaks are visible.
+- **Cost on the iGPU** (F10 p50, settled shots; correctness and relative cost only, this GPU is a tenth of a 1070):
+
+  | | SSR only | RT on |
+  |---|---|---|
+  | `Reflections trace (half)` (RayGen + exchange + Resolve with RT) | 5.2-6.4 ms | 12.3 ms |
+  | `Reflections RT (exchange)` (the game's GPU wait for the helper) | - | 5.57 ms |
+  | helper GPU per frame (RT CORE line) | - | 4.9 ms: passes 4.63, scene rebuild 0.26 (structure builds 70 ms once at load) |
+  | helper response (NVR's signal -> its submit) | - | 1.0 ms avg, 1.7 max |
+
+  So RT costs about +6-7 ms at 720p on 2 RDNA2 compute units: one ray per missing half-res pixel plus one sun shadow ray per hit
+  (indoors the sun ray is skipped). The rough rule (rays scale with compute units) gives about 0.5-1 ms on a mid-range RT card at
+  1080p. That is an estimate, not measured.
+
 ### 2026-10-28 12:47 SplitTest, GTX 1070, scene luxe (Ultra-Luxe floor), fork d3d9 nvr-dxvk-zresolve, slot A
 
 Run `bench/autotest/20261028-124747-slotA`, shots `H:\_NVR-autotest-shots\20261028-124747-slotA`; list `rtrefl-split`, toml
