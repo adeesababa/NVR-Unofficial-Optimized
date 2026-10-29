@@ -177,6 +177,9 @@ namespace {
 		UInt32		nextId = 1;
 		UInt32		sceneFrame = 0;
 		UInt32		arenaUsed = 0, arenaCapacity = 0;
+		// Why geometry was left out ([0] objects, [1] land), counted from exchange 1 to 60 and logged with the scene at 60
+		enum Skip { kSeen, kNoShader, kSkinned, kNotLighting, kFlags, kLeaf, kAlpha, kDescribe, kMeasure, kTaken, kSkipCount };
+		UInt32		skips[2][kSkipCount] = {};
 		UInt32		instances = 0, waiting = 0, released = 0;
 		float		radius = 8192.0f;
 		std::vector<NiAVObject*> stack;
@@ -517,20 +520,33 @@ namespace {
 	}
 
 	void Core::AddGeometry(NiGeometry* geo, bool land) {
-		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData || geo->skinInstance) return;
+		UInt32* skip = skips[land ? 1 : 0];
+		skip[kSeen]++;
+		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData) { skip[kNoShader]++; return; }
+		if (geo->skinInstance) { skip[kSkinned]++; return; }
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
-		if (!shaderProperty || !shaderProperty->IsLightingProperty()) return;
+		if (!shaderProperty || !shaderProperty->IsLightingProperty()) { skip[kNotLighting]++; return; }
 		if (shaderProperty->GetFlag(BSSP_REFRACTION) || shaderProperty->GetFlag(BSSP_FIRE_REFRACTION) || shaderProperty->GetFlag(BSSP_DECAL) ||
-			shaderProperty->GetFlag(BSSP_DYNAMIC_DECAL)) return;
-		if (static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf) return;
+			shaderProperty->GetFlag(BSSP_DYNAMIC_DECAL)) { skip[kFlags]++; return; }
+		if (static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf) { skip[kLeaf]++; return; }
 		// Alpha-tested and blended geometry (foliage cards, fences, glass) is not traced yet: the cascades keep it (FORK-RT-SUN.md).
 		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
-		if (alpha && (alpha->flags & (NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK | NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))) return;
+		if (alpha && (alpha->flags & (NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK | NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))) { skip[kAlpha]++; return; }
 
 		NVR_EXT_RT_GEOMETRY_DESC desc;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		GeometryKey key;
-		if (!Describe(geo, desc, ranges, key)) return;
+		if (!Describe(geo, desc, ranges, key)) {
+			skip[kDescribe]++;
+			static int told = 0;
+			NiGeometryBufferData* bd = geo->geomData->m_pkBuffData;
+			if (land && told < 2) {
+				told++;
+				Logger::Log("RT CORE: land geometry '%s' not described: VertCount %u, IB %p, streams %u, FVF %X, declaration %p, primitive %d, arrays %u, tris %u",
+					geo->m_pcName ? geo->m_pcName : "", bd->VertCount, bd->IB, bd->StreamCount, bd->FVF, bd->VertexDeclaration, (int)bd->PrimitiveType, bd->NumArrays, bd->TriCount);
+			}
+			return;
+		}
 
 		GeometryEntry& entry = geometries[key];
 		if (entry.refused) return;
@@ -538,7 +554,7 @@ namespace {
 		if (!entry.sent) {
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
-			if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; return; }
+			if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; return; }
 			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; return; }	// next frame
 			if (FAILED(rt->StageGeometry(&desc, images[0], arenaUsed, &info))) { entry.refused = true; return; }
 			NvrRtGeometryOp& op = record->ops[record->opCount++];
@@ -569,6 +585,7 @@ namespace {
 			}
 		}
 		if (record->instanceCount >= NVR_RT_MAX_INSTANCES) return;
+		skip[kTaken]++;
 		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
 		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
@@ -811,6 +828,13 @@ namespace {
 				(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
+			if (n == 60)
+				for (int k = 0; k < 2; k++) {
+					const UInt32* m = c.skips[k];
+					Logger::Log("RT CORE: %s geometry met (exchanges 1-60): %u, taken %u; left out: no shader/data %u, skinned %u, not a lighting shader %u, "
+						"decal/refraction %u, tree leaves %u, alpha %u, not described %u, refused by the fork %u", k ? "land" : "object", m[kSeen], m[kTaken],
+						m[kNoShader], m[kSkinned], m[kNotLighting], m[kFlags], m[kLeaf], m[kAlpha], m[kDescribe], m[kMeasure]);
+				}
 		}
 		return recorded;
 	}
