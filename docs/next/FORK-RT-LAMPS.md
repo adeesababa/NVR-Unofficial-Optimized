@@ -17,6 +17,21 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### First run with hitting rays (2026-10-29 04:23, saloon16, run 20261029-042346-slotA, 7 of 16 shots)
+- Merged rt-sun-core's ray fix (4ba2abfd: the ray origin is RtCore::Eye = 0; CameraLocation reads ~0 in game, so every ray had
+  started ~71000 units outside the camera-relative scene); my pass used the same CameraLocation for its origin and for the
+  traced frame's eye in the reprojection: both now RtCore::Eye / CameraPosition (05f34409). Then the startup-hang fix
+  (f6480bfd: NewEffectCompiler, d3dcompiler_47); the first batch after the ray fix died in the snow effect's 8-minute D3DX compile.
+- **Cost on the iGPU (9800X3D, RDNA2 2 CUs, 720p), helper GPU per frame, rays now hitting:** 1 ray x up to 9 lamps, two
+  segments each: passes 11-20 ms (RT CORE lines at frames 600 / 1200; the scene build 0.15 ms, first BLAS builds 100 ms once);
+  the window with the 4-ray soft shots: 57 ms. With every ray missing it had been 1.1 ms: the cost is the hits (BVH traversal
+  to the first hit, no early out on these short interior rays). Relative only: an RX 6700 XT has 40 CUs, an RTX 3060 dedicated RT
+  cores; expect roughly 1/15-1/30 of this there, i.e. ~0.5-1.5 ms for 9 lamps x 1 ray at 1080p. Still to measure per MaxLamps step.
+- rt1 vs cube 11.0 % of pixels > 2/255 vs the cube-vs-cube noise 7.9 % (a real difference now; +0.16 mean: a little brighter),
+  but the third-person camera drifted between shots in this run, so the pair is not a clean A/B; the full batch repeats it.
+- NVR's self-test stopped the run after 7 shots: ~1 min a shot at 300 frames and ~5 fps with the trace on. Lists now 120 frames
+  a shot (one GPU PROFILE window each: "Ray tracing (copies + helper + waits)" per shot = the cost per MaxLamps / Rays step).
+
 ### Coverage run 2026-10-29 03:35 (rtlamp-2-saloon16, run 20261029-033543-slotA, 7 shots, PASS)
 - **The lookup works for the world:** the coverage view showed the traced value used (green) on walls, floor, tables and stools,
   no red (depth matches at both tolerances 0.02 and 0.2: identical), a little blue (0.3 %, off the traced frame's screen). So the
