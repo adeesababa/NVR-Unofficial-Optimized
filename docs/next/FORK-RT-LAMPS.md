@@ -1,5 +1,22 @@
 # Fork RT: interior lamp shadows traced (2026-10-28)
 
+## Resumed 2026-10-29 (main session: "tell the rt sessions to resume work")
+- Every ray misses in the shared core (rt-sun-core's bug, open). Until rays hit, the lamp side tests what needs no hits: whether a
+  point's lookup finds its traced pixel at all (DebugView 2 coverage, run `rtlamp-2-saloon16`). Lead sent to rt-sun-core: the depth
+  CopyIn may arrive as 0 (their trace pass is 0.33 ms for 921k pixels; my lamp lookups fell back on 100 % of pixels; a depth of 0
+  writes depth code 0 = "sky", which never matches). Coverage all bright red = that.
+- **How many lamps, and which (asked by the main session; Vault 21's lobby: 447 lights, 222 invisible fills, 64 cube slots):**
+  the trace takes up to **9 lamps a frame** (MaxLamps, default 8): the lamps holding cube shadow slots 0-8. The slots are NVR's
+  existing pick (LightPoints, LampRanking 1 = brightness x reach / distance, LampSwitchMargin hysteresis, ShadowCluster, camera
+  independent), so invisible fill lights take traced slots like any lamp when they rank high (they get InvisibleLightRadius, a
+  broad soft disc). Slots 9+ keep their cube maps. The 9 is the result format's limit (RG32F, 4 bits a lamp, exact floats); more
+  needs a second result image (and a second s-register, which the Interior shaders do not have free) or per-pixel lamp
+  selection (store the top-N lamp indices per pixel instead of fixed slots: the way past 9, to do once rays hit).
+- **Why RT fixes the main session's two interior-shadow problems by construction:** the rays use every triangle both ways (the
+  core's instances are two-sided), so one-sided casters (the rings under cups, cut-off shade backs) shadow correctly with no
+  TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
+  not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
+
 ## PAUSED HERE (2026-10-28 ~15:15, on the user's word via the main session: "pause rt research and dev for now")
 Branch `claude/rt-lamp-shadows-d97675` @ this commit (merged with `claude/rt-sun-core-aa6d6d` d71ecf96). Nothing installed, nothing
 pushed, no bench tickets left. Test tree link: `work\NVR-rtlamp` (2026-10-03 work root) -> this worktree; DLL in `build\optimized`.
