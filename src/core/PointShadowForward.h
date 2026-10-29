@@ -589,6 +589,7 @@ namespace PointShadowForward {
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
 					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
+					if (!force) RtLampShadows::NoteUse(Slots[s].slot);	// which lamps the screen uses: the next frame traces those
 					matched++;
 					break;
 				}

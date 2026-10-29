@@ -14,6 +14,7 @@
 // Per draw (PointShadowForward::SetForPass): c206-c209 the reprojection, c215 mode / tolerance / depth unit / people-from-cube, c216-c217
 // the draw's lights' traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
 
+#include <algorithm>
 #include "LampFixtures.h"
 #include "DxvkCompute.h"
 #include "RtCore.h"
@@ -44,6 +45,16 @@ namespace RtLampShadows {
 	inline SlotLamp Lamps[TracedSlots] = {};
 	inline int LampCount = 0;
 	inline bool LampsThisFrame = false;
+
+	// Which lamps get traced (2026-10-29): the ones the screen uses most. Vault 21's lobby (447 lights, 64 cube slots): the lamps that
+	// light the view held slots above 8, so tracing cube slots 0-8 traced lamps nothing on screen used (coverage 0 %). Now every draw
+	// counts its lamps (NoteUse, by cube slot) and the next frame traces the MaxLamps most used; the result carries its own slot ->
+	// traced-index map (TracedMap), so a frame's draws decode with the map of the frame they read.
+	inline constexpr int MapSlots = 64;
+	inline UInt32 DrawUse[MapSlots] = {};
+	inline int PendingMap[MapSlots];		// this frame's trace: cube slot -> traced index (-1 none)
+	inline int TracedMap[MapSlots];		// the newest result's
+	inline void NoteUse(int cubeSlot) { if (cubeSlot >= 0 && cubeSlot < MapSlots) DrawUse[cubeSlot]++; }
 
 	// The camera of the frame the newest result was traced for (Record) and whether it exists
 	struct TracedCamera { D3DXMATRIX view; D3DXVECTOR3 location;	// location: the traced frame's eye in world space
@@ -77,6 +88,7 @@ namespace RtLampShadows {
 	// RenderManager, right after DxvkCompute::Initialize and before any shader is loaded: decides POINT_SHADOW_RT for the session.
 	inline void Initialize() {
 		CompiledIn = false;
+		for (int i = 0; i < MapSlots; i++) PendingMap[i] = TracedMap[i] = -1;
 		ID3D9NvrExtRt* rt = nullptr;
 		ID3D9NvrExt* ext = DxvkCompute::Extension();
 		if (!TheSettingManager->GetSettingI(kSection, "Enabled"))
@@ -110,8 +122,20 @@ namespace RtLampShadows {
 		LampsThisFrame = false;
 		if (!CompiledIn) return;
 		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "MaxLamps"), 0), TracedSlots);
-		for (int i = 0; i < count; i++)
-			if (lamps[i].slot >= 0 && lamps[i].slot < MaxLamps) Lamps[LampCount++] = lamps[i];
+		// The MaxLamps lamps the last frame's draws used most (ties: the lower cube slot, i.e. NVR's own order); unused lamps never
+		for (int i = 0; i < MapSlots; i++) PendingMap[i] = -1;
+		int order[MapSlots]; int candidates = 0;
+		for (int i = 0; i < count && candidates < MapSlots; i++)
+			if (lamps[i].slot >= 0 && lamps[i].slot < MapSlots && DrawUse[lamps[i].slot] > 0) order[candidates++] = i;
+		std::sort(order, order + candidates, [&](int a, int b) {
+			const UInt32 ua = DrawUse[lamps[a].slot], ub = DrawUse[lamps[b].slot];
+			return ua != ub ? ua > ub : lamps[a].slot < lamps[b].slot;
+		});
+		for (int k = 0; k < candidates && LampCount < MaxLamps; k++) {
+			PendingMap[lamps[order[k]].slot] = LampCount;
+			Lamps[LampCount++] = lamps[order[k]];
+		}
+		if (count) memset(DrawUse, 0, sizeof(DrawUse));
 		LampsThisFrame = TheSettingManager->GetSettingI(kSection, "Live") != 0;
 
 		// The newest result: traced last frame (Record moves Pending to Traced once its copy-out is recorded)
@@ -142,7 +166,9 @@ namespace RtLampShadows {
 	}
 
 	// The slot a draw's light reads in the traced result, -1 for its cube map.
-	inline float TracedSlot(int cubeSlot) { return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MaxLamps ? (float)cubeSlot : -1.0f; }
+	inline float TracedSlot(int cubeSlot) {
+		return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MapSlots && TracedMap[cubeSlot] >= 0 ? (float)TracedMap[cubeSlot] : -1.0f;
+	}
 
 	// PointShadowForward::SetForPass: slots = the draw's lights' TracedSlot (-1 none).
 	inline void SetForPass(const float slots[6], bool force) {
@@ -195,6 +221,7 @@ namespace RtLampShadows {
 			if (ResultSurface) { ResultSurface->Release(); ResultSurface = nullptr; }
 			if (ResultTexture) { ResultTexture->Release(); ResultTexture = nullptr; }
 			Traced.valid = false;
+			for (int i = 0; i < MapSlots; i++) TracedMap[i] = -1;
 			TheTextureManager->InitTexture("TESR_RtLampShadow", &ResultTexture, &ResultSurface, w, h, D3DFMT_G32R32F);
 			TextureWidth = w;
 			TextureHeight = h;
@@ -232,13 +259,13 @@ namespace RtLampShadows {
 		c.params2[3] = (float)TracedSlots;
 		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
 		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
-		for (int i = 0; i < LampCount; i++) {
+		for (int i = 0; i < LampCount; i++) {	// traced index i (PendingMap)
 			const SlotLamp& l = Lamps[i];
-			float* lamp = c.lamps[l.slot];
+			float* lamp = c.lamps[i];
 			lamp[0] = l.position.x - camera.x; lamp[1] = l.position.y - camera.y; lamp[2] = l.position.z - camera.z;
 			lamp[3] = l.reach;
-			c.radius[l.slot / 4][l.slot % 4] = l.fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
-			c.stops[l.slot / 4][l.slot % 4] = l.stop;
+			c.radius[i / 4][i % 4] = l.fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
+			c.stops[i / 4][i % 4] = l.stop;
 		}
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
@@ -247,6 +274,7 @@ namespace RtLampShadows {
 		if (!RtCore::CopyOut(imageResult, ResultSurface)) return;
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
+		memcpy(TracedMap, PendingMap, sizeof(TracedMap));
 		if (FramesTraced++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
 	}
