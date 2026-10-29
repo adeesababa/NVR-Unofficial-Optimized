@@ -169,7 +169,18 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
-### 2026-10-29 16:58 noon again, rtrefl-4 (DLL 42db45eb: lamps, VNDF, RoughReach, the land self-hit skip, mask 0xEF)
+### 2026-10-29 17:23 luxe, rtrefl-4 (DLL 42db45eb), all 11 shots
+
+The run is `bench/autotest/20261029-172327-slotA`. Noise floor (pad-a vs pad-b): 0.20 %.
+- **HitLamps** (rt vs rt-nolamps): 1.0 % of pixels, lamps add light (+0.04). They brighten a wall patch behind the fountain and
+  floor areas reflecting what the camera cannot see.
+- **VisibleNormals + RoughReach** (rt vs rt-old): 0.77 %, -0.02.
+- **RT vs SSR**: 2.14 % (1.37 % with the earlier rays, run 20261029-043724).
+- **MaxRoughness 0.8** (reflection alone): 3.2 %, +0.27 (brighter: more of the rough floor reflects the room).
+- **Cost:** helper passes 6.0-9.8 ms (4.6 ms before this round), `Reflections trace (half)` 15-20 ms with RT (12.3 before), exchange
+  7.8-11 ms. **Most of the increase is the key-lamp shadow ray**, one more ray per indoor hit. Next: trace it only on smooth
+  surfaces (a sharp reflection shows the shadow; a rough one blurs it away), with the ray budget.
+ (DLL 42db45eb: lamps, VNDF, RoughReach, the land self-hit skip, mask 0xEF)
 
 The run is `bench/autotest/20261029-165859-slotA`, all 11 shots. Noise floor (pad-a vs pad-b): 10.5 % (wet ground), top half 0.4 %.
 - **The self-hit skip works**: the amber blotches are gone (reflection alone, shot 08).
