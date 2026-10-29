@@ -50,6 +50,8 @@ namespace HdrOutput {
 		unsigned				RefusedRetries = 0;	// asked again every 600 frames, 6 times (UNOFFICIAL 2026-10-29)
 		bool					RetryNow = false;	// the display read HDR (e.g. alt-tabbed): ask a refused mode again now
 		bool					SwapSdr = false;	// on, but the fork says its swap chain is SDR (asked again: 3 timed attempts + alt-tab)
+		UINT					ForkMode = NVR_EXT_HDR_OFF;	// the mode the fork holds (it can hold one while Active is false: SetOff sends OFF then too)
+		int						LastCurrent = -1;	// the display's current mode at the last check (RetryNow on SDR -> HDR only)
 		unsigned				SwapSdrRetries = 0;
 		unsigned				LastAttempt = 0;	// frame of the last SetHdrOutput (a refused mode is asked at most every 30 frames)
 		NVR_EXT_HDR_INFO		Info = {};			// the fork's view (GetHdrInfo)
@@ -304,13 +306,19 @@ namespace HdrOutput {
 		if (windows.Setting >= 0) S.LastSetting = windows.Setting;
 		else if (S.LastSetting >= 0) { windows.Setting = S.LastSetting; windows.From = "last reading"; }	// a failed read keeps the last answer
 		if (windows.Supported > 0) S.SupportedSeen = true;
+		// The game not in front: the desktop's own mode is what DXGI reads, so an SDR reading then releases the latch
+		const bool background = cp.hFocusWindow && GetForegroundWindow() != cp.hFocusWindow;
+		if (background && !current && monitor && SeenHdr(monitor)) S.SeenHdr.erase(std::find(S.SeenHdr.begin(), S.SeenHdr.end(), monitor));
 		const bool seen = monitor && SeenHdr(monitor);
 		const bool now = current || windows.Mode > 0;
 		int hdr;
-		if (windows.Disabled > 0 || (windows.Supported == 0 && !S.SupportedSeen)) hdr = 0;	// Windows cannot run HDR on it now (policy, link, mode)
+		if (windows.Disabled > 0) hdr = 0;	// Windows has HDR force-disabled (policy, e.g. battery saver)
 		else if (windows.Setting >= 0) hdr = windows.Setting > 0 || now ? 1 : 0;	// the setting decides (an HDR reading of the current mode also counts)
+		else if (windows.Supported == 0 && !S.SupportedSeen) hdr = 0;	// no setting found and Windows says the display cannot do HDR now
 		else hdr = now || seen ? 1 : 0;
-		if (current && (S.Refused || S.SwapSdr)) S.RetryNow = true;	// e.g. alt-tabbed: the desktop is in HDR, the surface may offer it now
+		if (hdr && S.DisplayHdr == 0) { S.Refused = false; S.RefusedRetries = 0; }	// Windows HDR just came on: ask the fork afresh
+		if (current && S.LastCurrent == 0 && (S.Refused || S.SwapSdr)) S.RetryNow = true;	// e.g. alt-tabbed: the desktop went HDR, the surface may offer it now
+		S.LastCurrent = current;
 		if (maxNits <= 0.0f) maxNits = S.DisplayMaxNits;
 		char text[256];
 		sprintf_s(text, "Windows HDR %s for the game's display %s (setting %s from %s%s%s, now in %s mode, advanced colour %s, supported %s%s, HDR seen earlier %s), peak %.0f nits",
@@ -325,10 +333,11 @@ namespace HdrOutput {
 	inline float SettingF(const char* key) { return TheSettingManager->GetSettingF("Shaders.HDR.Main", key); }
 
 	inline void SetOff() {
-		if (S.Active && S.Hdr) {
+		if (S.Hdr && (S.Active || S.ForkMode != NVR_EXT_HDR_OFF)) {
 			NVR_EXT_HDR_OUTPUT off = {};
 			S.Hdr->SetHdrOutput(&off);
 		}
+		S.ForkMode = NVR_EXT_HDR_OFF;
 		S.Active = false;
 		S.Applied = {};
 		S.SwapSdr = false;
@@ -341,7 +350,11 @@ namespace HdrOutput {
 		S.GainReady = false;
 		S.Frame++;
 		const bool enabled = Setting("Enabled");
-		if (!enabled) { if (S.Active) { SetOff(); Reason("off"); } return; }
+		if (!enabled) {
+			if (S.Active || S.ForkMode != NVR_EXT_HDR_OFF) { SetOff(); Reason("off"); }
+			S.Refused = false; S.RefusedRetries = 0; S.RetryNow = false; S.Applied = {}; S.DisplayHdr = -1;	// UNOFFICIAL 2026-10-29
+			return;
+		}
 		if (!S.Queried) {
 			S.Queried = true;
 			if (DxvkCompute::Extension())
@@ -357,7 +370,7 @@ namespace HdrOutput {
 		const bool check = S.DisplayHdr < 0 || S.Frame % 600 == 0;
 		if (check) CheckDisplay(Device);
 		if (!S.DisplayHdr && !Setting("IgnoreDisplayCheck")) {
-			if (S.Active) SetOff();
+			if (S.Active || S.ForkMode != NVR_EXT_HDR_OFF) SetOff();
 			Reason("Enabled, but Windows HDR is off for this display: SDR as before (turn HDR on in Windows' display settings)");
 			return;
 		}
@@ -407,12 +420,23 @@ namespace HdrOutput {
 				else if (S.Frame - S.LastAttempt < 30) return;
 				else S.RefusedRetries = 0;
 			}
+			else if (S.Active && !same && S.Frame - S.LastAttempt < 10) return;	// a slider being dragged: at most every 10 frames
 			S.RetryNow = false;
 			S.LastAttempt = S.Frame;
 			S.Applied = out;
+			const bool wasForkOn = S.ForkMode != NVR_EXT_HDR_OFF;
 			const HRESULT hr = S.Hdr->SetHdrOutput(&out);
 			S.Refused = FAILED(hr);
 			S.Active = SUCCEEDED(hr);
+			if (S.Active) S.ForkMode = out.Mode;
+			else if (wasForkOn) {
+				// A refused change while on leaves the fork in its old mode: off, so NVR and the fork agree (the fork never refuses OFF)
+				NVR_EXT_HDR_OUTPUT off = {};
+				S.Hdr->SetHdrOutput(&off);
+				S.ForkMode = NVR_EXT_HDR_OFF;
+				S.SwapSdr = false;
+				S.SwapSdrRetries = 0;
+			}
 			if (S.Refused) S.Hdr->GetHdrInfo(&S.Info);	// the fork logs the surface formats again if they changed
 			char text[160];
 			if (S.Active) sprintf_s(text, "on: %s, paper white %.0f nits, peak %.0f nits%s", out.Mode == NVR_EXT_HDR_SCRGB ? "scRGB" : "HDR10", out.PaperWhiteNits, out.PeakNits, S.DisplayHdr ? "" : " (display check ignored: Windows HDR is off)");
