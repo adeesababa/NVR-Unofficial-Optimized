@@ -634,3 +634,129 @@ __CRT_UUID_DECL(ID3D9NvrExtShare,       0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,
 __CRT_UUID_DECL(ID3D9NvrExtSharedImage, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x27);
 __CRT_UUID_DECL(ID3D9NvrExtSharedFence, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x28);
 #endif
+
+enum NVR_EXT_RT_POSITION_FORMAT {
+  NVR_EXT_RT_POSITION_FLOAT3 = 0,
+  NVR_EXT_RT_POSITION_FLOAT4 = 1,
+  NVR_EXT_RT_POSITION_HALF4  = 2,
+};
+
+enum NVR_EXT_RT_TOPOLOGY {
+  NVR_EXT_RT_TRIANGLE_LIST  = 0,
+  NVR_EXT_RT_TRIANGLE_STRIP = 1,
+};
+
+struct NVR_EXT_RT_RANGE {
+  NVR_EXT_RT_TOPOLOGY Topology;
+  UINT                StartIndex;
+  UINT                PrimitiveCount;
+  INT                 BaseVertex;
+};
+
+#define NVR_EXT_RT_MAX_RANGES 1024
+
+struct NVR_EXT_RT_GEOMETRY_DESC {
+  IDirect3DVertexBuffer9*     pVertexBuffer;
+  UINT                        PositionOffset;
+  UINT                        VertexStride;
+  UINT                        VertexCount;
+  NVR_EXT_RT_POSITION_FORMAT  PositionFormat;
+  IDirect3DIndexBuffer9*      pIndexBuffer;
+  UINT                        RangeCount;
+  const NVR_EXT_RT_RANGE*     pRanges;
+  UINT                        Flags;
+  const char*                 pDebugName;
+};
+
+enum NVR_EXT_RT_INSTANCE_FLAGS {
+  NVR_EXT_RT_INSTANCE_CULL_DISABLE = 0x1,
+  NVR_EXT_RT_INSTANCE_FLIP_FACING  = 0x2,
+  NVR_EXT_RT_INSTANCE_FORCE_OPAQUE = 0x4,
+};
+
+struct NVR_EXT_RT_INSTANCE {
+  struct ID3D9NvrExtRtGeometry* pGeometry;
+  FLOAT                         Transform[3][4];
+  UINT                          InstanceId;
+  UINT                          Mask;
+  UINT                          Flags;
+};
+
+struct NVR_EXT_RT_INFO {
+  BOOL    Supported;
+  UINT    VersionMinor;
+  char    Reason[96];
+  UINT    MaxInstances;
+  UINT64  MaxPrimitiveCount;
+};
+
+struct NVR_EXT_RT_GEOMETRY_INFO {
+  UINT    VertexCount;
+  UINT    TriangleCount;
+  UINT    Texels;
+};
+
+struct NVR_EXT_RT_STATS {
+  UINT    Geometries;
+  UINT64  Triangles;
+  UINT64  GeometryBytes;
+  UINT64  GeometriesBuilt;
+  UINT    Scenes;
+  UINT    LastInstances;
+  UINT64  SceneBuilds;
+  UINT64  SceneBytes;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d331")
+ID3D9NvrExtRtGeometry : public IUnknown {
+  virtual UINT STDMETHODCALLTYPE GetTriangleCount() = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d332")
+ID3D9NvrExtRtScene : public IUnknown {
+  virtual UINT64 STDMETHODCALLTYPE GetAddress() = 0;
+
+  virtual UINT STDMETHODCALLTYPE GetMaxInstances() = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d330")
+ID3D9NvrExtRt : public IUnknown {
+  virtual void STDMETHODCALLTYPE GetRtInfo(
+          NVR_EXT_RT_INFO*                pInfo) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE CreateGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          ID3D9NvrExtRtGeometry**         ppGeometry) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE CreateScene(
+          UINT                            MaxInstances,
+    const char*                           pDebugName,
+          ID3D9NvrExtRtScene**            ppScene) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE BuildScene(
+          ID3D9NvrExtRtScene*             pScene,
+          UINT                            Count,
+    const NVR_EXT_RT_INSTANCE*            pInstances) = 0;
+
+  virtual void STDMETHODCALLTYPE GetRtStats(
+          NVR_EXT_RT_STATS*               pStats) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE MeasureGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          NVR_EXT_RT_GEOMETRY_INFO*       pInfo) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE StageGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+          ID3D9NvrExtSharedImage*         pArena,
+          UINT                            DstTexel,
+          NVR_EXT_RT_GEOMETRY_INFO*       pInfo) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE FlushStagedGeometry(
+          ID3D9NvrExtSharedImage*         pArena) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtRt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x30);
+__CRT_UUID_DECL(ID3D9NvrExtRtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x31);
+__CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x32);
+#endif

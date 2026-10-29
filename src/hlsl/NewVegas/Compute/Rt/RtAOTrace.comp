@@ -1,0 +1,108 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std140) uniform Constants {
+    mat4 viewToWorld;
+    vec4 projection;
+    vec4 origin;
+    vec4 ao;
+    vec4 sky;
+} cb;
+layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
+
+vec2 Unpack2(float p) { float high = floor(p / 4096.0); return vec2(high, p - high * 4096.0) / 4095.0; }
+vec3 OctDecode(vec2 e) {
+    e = e * 2.0 - 1.0;
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = clamp(-n.z, 0.0, 1.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+float Ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+vec3 CosineDirection(vec3 n, vec2 u) {
+    vec3 t = normalize(abs(n.z) < 0.999 ? cross(n, vec3(0.0, 0.0, 1.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+    vec3 b = cross(n, t);
+    float r = sqrt(u.x);
+    float phi = 6.2831853 * u.y;
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(1.0 - u.x, 0.0)));
+}
+
+vec2 R2(float i) { return fract(i * vec2(0.7548777, 0.5698403)); }
+
+vec2 Trace(vec3 p, vec3 d, float tMin, float tMax, bool anyHit) {
+    rayQueryEXT q;
+    uint flags = gl_RayFlagsOpaqueEXT | (anyHit ? gl_RayFlagsTerminateOnFirstHitEXT : 0u);
+    rayQueryInitializeEXT(q, scene, flags, 0xFFu, p + cb.origin.xyz, tMin, d, tMax);
+    while (rayQueryProceedEXT(q)) {}
+    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) return vec2(-1.0, 0.0);
+    return vec2(rayQueryGetIntersectionTEXT(q, true), rayQueryGetIntersectionFrontFaceEXT(q, true) ? 0.0 : 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
+    vec4 input_ = imageLoad(inputImage, texel);
+    float viewZ = input_.x;
+    if (!(viewZ > 0.0)) { imageStore(outputImage, texel, vec4(cb.ao.w > 3.5 ? 0.0 : 1.0, 1.0, 0.0, 1.0)); return; }
+    vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
+    vec3 view = vec3((uv.x * 2.0 - 1.0) * cb.projection.x, (1.0 - uv.y * 2.0) * cb.projection.y, 1.0) * viewZ;
+    vec3 p = (cb.viewToWorld * vec4(view, 0.0)).xyz;
+    vec3 n = OctDecode(Unpack2(input_.y));
+    float bias = 0.75 + viewZ * 0.003;
+
+    float aoVisibility = 1.0, debugValue = 1.0;
+    int rays = int(cb.ao.y + 0.5);
+    if (rays > 0) {
+        float frame = cb.ao.z > 0.5 ? cb.origin.w : 0.0;
+        vec2 noise = fract(vec2(Ign(vec2(texel)), Ign(vec2(texel) + 17.0)) + frame * vec2(0.618034, 0.754878));
+        vec3 start = p + n * bias;
+        float reach = cb.ao.x, occlusion = 0.0, inside = 0.0, meanHit = 0.0;
+        for (int i = 0; i < rays; i++) {
+            vec3 d = CosineDirection(n, fract(noise + R2(float(i))));
+            vec2 hit = Trace(start, d, 0.05 * bias, reach, false);
+            if (hit.x < 0.0) { meanHit += 1.0; continue; }
+            if (hit.y > 0.5 && hit.x < 4.0 * bias) { inside += 1.0; meanHit += 1.0; continue; }
+            occlusion += 1.0 - smoothstep(0.5 * reach, reach, hit.x);
+            meanHit += hit.x / reach;
+        }
+        aoVisibility = 1.0 - occlusion / float(rays);
+        debugValue = inside > 0.0 ? 0.0 : 0.25 + 0.75 * meanHit / float(rays);
+    }
+
+    float skyVisibility = 1.0, covered = 0.0;
+    int skyRays = int(cb.sky.y + 0.5);
+    if (skyRays > 0) {
+        vec3 start = p + n * (bias + 8.0);
+        float reach = cb.sky.x;
+        vec2 cell = vec2(texel & 3);
+        float turn = (cell.x * 4.0 + cell.y) * (3.14159265 / 4.0 / 16.0);
+        covered = Trace(start, vec3(0.0, 0.0, 1.0), 0.0, reach, true).x >= 0.0 ? 1.0 : 0.0;
+        float total = 0.034 * clamp(n.z, 0.0, 1.0);
+        float open = total * (1.0 - covered);
+        int rings = skyRays > 8 ? 2 : 1;
+        for (int k = 0; k < rings; k++) {
+            float c = k == 0 ? 0.5 : 0.8660254;
+            float s = k == 0 ? 0.8660254 : 0.5;
+            float ringWeight = k == 0 ? 0.0324 : 0.0884;
+            for (int i = 0; i < 8; i++) {
+                float a = turn + (float(i) + 0.5 * float(k)) * (3.14159265 / 4.0);
+                vec3 d = vec3(cos(a) * c, sin(a) * c, s);
+                float w = ringWeight * clamp(dot(d, n), 0.0, 1.0);
+                if (w <= 0.0) continue;
+                total += w;
+                if (Trace(start, d, 0.0, reach, true).x < 0.0) open += w;
+            }
+        }
+        skyVisibility = total > 1.0e-5 ? open / total : 1.0;
+    }
+    if (cb.ao.w > 3.5 && cb.ao.w < 4.5) aoVisibility = clamp(viewZ / 2000.0, 0.0, 1.0);
+    if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
+    imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
+}

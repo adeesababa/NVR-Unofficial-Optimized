@@ -191,6 +191,8 @@ public:
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;
 			bool ShadowClusterEnabled = false;
 			float ShadowClusterDistance = 128.0f;
+			bool ShadowClusterInvisibleOnly = false;
+			int ShadowClusterMinLights = 0;
 			float FillLightRadius;
 			float FillLightShadowStrength;
 			int Quality;

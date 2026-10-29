@@ -226,7 +226,9 @@ void main() {
     float viewDepth;
     vec4 worldPos = reconstructWorldPositionLod(uv, viewDepth);
     vec3 normal = GetWorldNormalLod(uv);
-    Shadow.r = min(Shadow.r, GetLightAmount(worldPos, normal));
+    float cascades = GetLightAmount(worldPos, normal);
+    if (cb.flags.w > 0.0) cascades = mix(1.0, cascades, saturate((viewDepth - 0.85 * cb.flags.w) / (0.15 * cb.flags.w)));
+    Shadow.r = min(Shadow.r, cascades);
 
     o_color = Shadow;
 }

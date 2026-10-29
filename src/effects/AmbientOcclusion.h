@@ -30,6 +30,9 @@ public:
 	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections ? SkyTexture() : nullptr; }
 	void RenderSkyVisibility(IDirect3DDevice9* Device, IDirect3DTexture9* smoothedNormals = nullptr);
 	void UpdateSkyConstants();
+	static void RtRegister();
+	void RtRecord(IDirect3DDevice9* Device);
+	IDirect3DTexture9* RtRaw();
 	static bool SkyHostedByAmbientLight();
 	static D3DXVECTOR2 SkyTakeComposite();
 
@@ -61,4 +64,17 @@ private:
 	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* const* Textures,
 				IDirect3DSurface9* const* Surfaces, const D3DXVECTOR4& Layout, bool GTAOEstimate, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SkyVis);
 	bool	ExtSkyVisibility(IDirect3DSurface9* Target, const D3DSURFACE_DESC& Desc, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
+	ExtPass				extEstimateRT, extTemporalRT, extSkyRT, extInputRT;
+	ExtUniformBuffer	extRtUniforms;
+	IDirect3DTexture9*	rtInputTexture = nullptr;
+	IDirect3DSurface9*	rtInputSurface = nullptr;
+	IDirect3DTexture9*	rtRawTexture = nullptr;
+	IDirect3DSurface9*	rtRawSurface = nullptr;
+	UINT				rtWidth = 0, rtHeight = 0;
+	IDirect3DTexture9*	rtHistoryTexture[2] = {};
+	IDirect3DSurface9*	rtHistorySurface[2] = {};
+	UINT				rtHistoryWidth = 0, rtHistoryHeight = 0;
+	int					rtHistoryIndex = 0;
+	bool	ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTexture9* const* Textures, IDirect3DSurface9* const* Surfaces, const D3DSURFACE_DESC& Target);
+	bool	ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
 };

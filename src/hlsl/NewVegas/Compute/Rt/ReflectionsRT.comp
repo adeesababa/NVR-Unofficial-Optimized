@@ -1,0 +1,103 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std140) uniform Pass {
+	vec4 size;
+	vec4 forward;
+	vec4 right;
+	vec4 up;
+	vec4 origin;
+	vec4 sun;
+	vec4 layout_;
+} p;
+layout(set = 0, binding = 2, rg32f) uniform readonly image2D dirImage;
+layout(set = 0, binding = 3, rg32f) uniform readonly image2D rayImage;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D hitImage;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D shadeImage;
+
+struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
+layout(set = 0, binding = 10, std430) readonly buffer Records { Record records[]; };
+layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; };
+const uint NoData = 0xFFFFFFFFu;
+const uint RecordLand = 0x01u, RecordGlow = 0x04u, RecordAlbedoKnown = 0x10u;
+
+vec3 OctDecode(vec2 e) {
+	vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+	if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+	return normalize(v);
+}
+vec2 OctEncode(vec3 v) {
+	v /= abs(v.x) + abs(v.y) + abs(v.z);
+	vec2 e = v.xy;
+	if (v.z < 0.0) e = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+	return e;
+}
+vec3 Position(uint offset, uint index) {
+	uint w = offset + 3u * index;
+	return vec3(uintBitsToFloat(words[w]), uintBitsToFloat(words[w + 1u]), uintBitsToFloat(words[w + 2u]));
+}
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y)) return;
+	vec2 ray = imageLoad(rayImage, pixel).xy;
+	if (ray.x <= 0.0 || ray.y < 1.5) {
+		imageStore(hitImage, pixel, vec4(-1.0, 0.0, 0.0, 0.0));
+		imageStore(shadeImage, pixel, vec4(0.4, 0.4, 0.4, 1.0));
+		return;
+	}
+
+	vec2 uv = (vec2(pixel) + 0.5) * p.layout_.xy - 0.5 * (p.layout_.xy - p.layout_.zw);
+	vec3 surface = p.origin.xyz + (p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0)) * ray.x;
+	vec3 dir = OctDecode(imageLoad(dirImage, pixel).xy);
+	float tMin = 1.0 + ray.x * 0.0015;
+	vec3 start = surface;
+	float tMax = p.size.z;
+	if (p.origin.w > 0.5) {
+		start = p.origin.xyz;
+		dir = normalize(surface - p.origin.xyz);
+		tMin = 1.0;
+		tMax = length(surface - p.origin.xyz) * 2.0 + 500.0;
+	}
+
+	rayQueryEXT q;
+	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, start, tMin, dir, tMax);
+	while (rayQueryProceedEXT(q)) { }
+	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+		imageStore(hitImage, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+		imageStore(shadeImage, pixel, vec4(0.4, 0.4, 0.4, 1.0));
+		return;
+	}
+	float t = rayQueryGetIntersectionTEXT(q, true);
+	Record r = records[rayQueryGetIntersectionInstanceIdEXT(q, true)];
+	uint flags = ((r.flags & RecordLand) != 0u ? 1u : 0u) | ((r.flags & RecordAlbedoKnown) != 0u ? 2u : 0u) | ((r.flags & RecordGlow) != 0u ? 8u : 0u);
+
+	vec3 normal = -dir;
+	if (r.vertexOffset != NoData && r.indexOffset != NoData) {
+		uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+		uint w = r.indexOffset + 3u * prim;
+		vec3 v0 = Position(r.vertexOffset, words[w]), v1 = Position(r.vertexOffset, words[w + 1u]), v2 = Position(r.vertexOffset, words[w + 2u]);
+		vec3 n = cross(v1 - v0, v2 - v0);
+		if (dot(n, n) > 1.0e-12) {
+			mat4x3 toScene = rayQueryGetIntersectionObjectToWorldEXT(q, true);
+			n = normalize(mat3(toScene) * n);
+			normal = dot(n, dir) > 0.0 ? -n : n;
+			flags |= 4u;
+		}
+	}
+
+	float sun = 1.0;
+	if (p.size.w > 0.5 && p.sun.w > 0.5 && p.origin.w < 0.5 && dot(normal, p.sun.xyz) > 0.0) {
+		vec3 h = start + dir * t + normal * max(1.0, t * 0.001);
+		rayQueryEXT s;
+		rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, h, 0.5, p.sun.xyz, 30000.0);
+		while (rayQueryProceedEXT(s)) { }
+		sun = rayQueryGetIntersectionTypeEXT(s, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+	}
+	vec3 albedo = (flags & 2u) != 0u ? r.albedo.rgb : vec3(0.4);
+	imageStore(hitImage, pixel, vec4(t, float(flags), OctEncode(normal)));
+	imageStore(shadeImage, pixel, vec4(albedo, sun));
+}

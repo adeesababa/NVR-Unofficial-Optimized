@@ -19,7 +19,11 @@ namespace EffectCompiler47 {
 	}
 
 	inline bool Use = false;
-	inline void ReadSetting() { Use = TheSettingManager->GetSettingI("Main.Main.Performance", "NewEffectCompiler") != 0 && Function(); }
+	inline void ReadSetting() {
+		SettingManager::Configuration::ConfigNode node;
+		const bool wanted = TheSettingManager->Config.FillNode(&node, "Main.Main.Performance", "NewEffectCompiler") ? node.BoolValue : true;
+		Use = wanted && Function();
+	}
 
 	inline std::string CacheText(ID3DXBuffer* source) {
 		std::string text = ShaderProgram::PortableSource(source);

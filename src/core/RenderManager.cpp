@@ -1,6 +1,7 @@
 #define RESZ_CODE 0x7FA05000
 #include "ShaderWarmUp2.h"
 #include "DxvkCompute.h"
+#include "RtLampShadows.h"
 
 void RenderManager::CreateD3DMatrix(D3DMATRIX* Matrix, NiTransform* Transform) {
 
@@ -350,6 +351,7 @@ void RenderManager::Initialize() {
 	if (TheSettingManager->SettingsMain.Main.AnisotropicFilter >= 2) device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, TheSettingManager->SettingsMain.Main.AnisotropicFilter);
 	BackBuffer = CreateHDRRenderTarget();
 	DxvkCompute::Initialize(device);
+	RtLampShadows::Initialize();
 	ShaderWarmUp2::Install(device);
 }
 

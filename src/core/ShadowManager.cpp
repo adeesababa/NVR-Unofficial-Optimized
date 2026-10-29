@@ -123,6 +123,8 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	if (!forwardSettings.LampModelShadows)
 		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TwoSidedCasters") != 0)
+		hash = (hash ^ 0x2D5A6B1C3E4F7081ULL) * 1099511628211ULL;
 	if (!LampFixtures::NoShadowWords.empty())
 		hash = (hash ^ (UInt64)std::hash<std::string>{}(LampFixtures::NoShadowFrom) ^ ((UInt64)LampFixtures::Generation << 40) ^
 			(UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
@@ -1206,6 +1208,10 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);
+	struct TwoSidedScope {
+		explicit TwoSidedScope(bool on) { RenderPass::TwoSided = on; }
+		~TwoSidedScope() { RenderPass::TwoSided = false; }
+	} twoSidedScope(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TwoSidedCasters") != 0);
 	
 	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);

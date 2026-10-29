@@ -2,6 +2,7 @@
 
 #include "PointShadowSchedule.h"
 #include "LampFixtures.h"
+#include "RtLampShadows.h"
 
 namespace PointShadowForward {
 
@@ -234,6 +235,7 @@ namespace PointShadowForward {
 		Active = false;
 		SlotCount = 0;
 		Focus = -1;
+		RtLampShadows::Submit(nullptr, 0);
 		if (!CompiledIn) { lastCount = 0; return; }
 		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
 		LogObjectLamps = forward.LogLamps;
@@ -348,6 +350,21 @@ namespace PointShadowForward {
 		}
 		lastCount = SlotCount;
 		Active = SlotCount > 0;
+		if (RtLampShadows::CompiledIn) {
+			RtLampShadows::SlotLamp traced[ShadowCubeMapsMax];
+			const float fixture = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.FixtureDistance;
+			for (int s = 0; s < SlotCount; s++) {
+				float stop = 0.0f;
+				const NiPointLight* source = Slots[s].light ? Slots[s].light->sourceLight : nullptr;
+				if (const LampFixtures::Glow* g = source ? LampFixtures::NearestLampPart(source, fixture) : nullptr) {
+					const NiPoint3& p = source->m_worldTransform.pos;
+					const float dx = g->x - p.x, dy = g->y - p.y, dz = g->z - p.z;
+					stop = sqrtf(dx * dx + dy * dy + dz * dz) + g->radius + 2.0f;
+				}
+				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop };
+			}
+			RtLampShadows::Submit(traced, SlotCount);
+		}
 		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
 		static double lastTrace = 0.0;
 		if (forward.DebugView >= 3 && now - lastTrace >= 2.0) {
@@ -380,11 +397,12 @@ namespace PointShadowForward {
 		return Neutral;
 	}
 
-	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false) {
+	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false, bool point = false) {
 		TheRenderManager->renderState->SetTexture(stage, texture);
 		if (device) TheRenderManager->device->SetTexture(stage, texture);
-		static const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
-			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, D3DTEXF_LINEAR }, { D3DSAMP_MINFILTER, D3DTEXF_LINEAR },
+		const DWORD filter = point ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+		const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
+			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, filter }, { D3DSAMP_MINFILTER, filter },
 			{ D3DSAMP_MIPFILTER, D3DTEXF_NONE }, { D3DSAMP_SRGBTEXTURE, FALSE } };
 		for (const auto& s : states)
 			if (TheRenderManager->renderState->GetSamplerState(stage, (D3DSAMPLERSTATETYPE)s[0]) != s[1])
@@ -401,6 +419,7 @@ namespace PointShadowForward {
 		IDirect3DCubeTexture9* neutral = NeutralCube();
 		for (int k = 0; k < 6; k++) bound[k] = neutral;
 		int matched = 0;
+		float tracedSlots[6] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
 		const bool trace = DebugView > 2.5f;
 		int focusIndex = -1;
 		bool wanted = false;
@@ -425,6 +444,8 @@ namespace PointShadowForward {
 						{ 0.6f, 1, 0.3f }, { 1, 0.45f, 0.6f }, { 0.4f, 0.8f, 1 } };
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;
+					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
+					if (!force) RtLampShadows::NoteUse(Slots[s].slot);
 					matched++;
 					break;
 				}
@@ -451,12 +472,15 @@ namespace PointShadowForward {
 				if (!force) { TraceDraws++; if (focusIndex >= 0) TraceDrawsWithLamp++; }
 			}
 		}
+		const bool rtStage = RtLampShadows::CompiledIn;
+		if (rtStage) bound[5] = RtLampShadows::Stage15Texture();
 		for (int k = 0; k < 6; k++)
-			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
+			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force, rtStage && k == 5);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
+		RtLampShadows::SetForPass(tracedSlots, force);
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }
 	}
 

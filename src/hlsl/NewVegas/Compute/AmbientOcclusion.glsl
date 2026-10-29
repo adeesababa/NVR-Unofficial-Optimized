@@ -23,6 +23,8 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraData;
     vec4 aoLayout;
     vec4 skyLayout;
+    mat4 rtReproject;
+    vec4 rtTemporal;
 } cb;
 
 layout(push_constant) uniform Push {

@@ -4,6 +4,7 @@
 #include "../core/DxvkCompute.h"
 #include "../core/HiZ.h"
 #include "../core/RenderRect.h"
+#include "../core/RtAmbient.h"
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -43,6 +44,8 @@ void AmbientLightEffect::UpdateSettings() {
 	giQuality = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIQuality"), 0, 2);
 	giThinOcclusion = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIThinOcclusion") != 0;
 	giTest = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGITest"), 0, 2);
+	RtAmbient::UpdateSettings();
+	if (RtAmbient::Current.Enabled && RtAmbient::Current.DebugView != 0 && RtAmbient::Current.DebugView != 2) Constants.Data2.w = 1.0f;
 }
 
 void AmbientLightEffect::EnsureBuffers() {
@@ -678,6 +681,7 @@ namespace {
 		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
 		{ "AmbientLightGIAccumulate", 4,  0, 0 },
 		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
+		{ "AmbientLightEstimateRT",   2,  0, 0 },
 	};
 	struct ALExtPush {
 		D3DXVECTOR4	frame;
@@ -1039,7 +1043,17 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					}
 					else {
 						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), giLightTexture };
-						if (giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);
+						static bool rtChecked = false, rtFile = false;
+						if (!rtChecked) { rtChecked = true; rtFile = DxvkCompute::HasSpirv("AmbientLightEstimateRT"); }
+						AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+						IDirect3DTexture9* rtRaw = !giLightReady && rtFile && ao && RtAmbient::Ready() ? ao->RtRaw() : nullptr;
+						if (rtRaw) {
+							static GpuTimer rtTimer("  Ambient light RT estimate (half)");
+							GpuProfileScope rtGpu(rtTimer, Device);
+							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtRaw };
+							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView, reduced);
+						}
+						if (!drawn && giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);
 						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
 					}
 				}

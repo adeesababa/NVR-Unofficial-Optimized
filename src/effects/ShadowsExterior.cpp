@@ -3,6 +3,7 @@
 #include "../core/LampFixtures.h"
 #include "../core/DxvkCompute.h"
 #include "../core/SunDepthFit.h"
+#include "../core/RtSunShadows.h"
 
 static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
 	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
@@ -82,6 +83,8 @@ void ShadowsExteriorEffect::UpdateConstants() {
 
 		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
 		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+		if (RtSunShadows::Replacing()) Constants.ForwardData.x = 1.0f;
+		RtSunShadows::ReplaceRange();
 #if NVR_TEST_TOOLS
 		if (Settings.Exteriors.SkipWhenFadedCheck == 3) Constants.ForwardData.x = 1.0f;
 #endif
@@ -556,6 +559,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.FadeIn = TheSettingManager->GetSettingF(section, "FadeIn");
 		forward.ShadowClusterEnabled = TheSettingManager->GetSettingI(section, "ShadowClusterEnabled") != 0;
 		forward.ShadowClusterDistance = (std::max)(0.0f, (std::min)(512.0f, TheSettingManager->GetSettingF(section, "ShadowClusterDistance")));
+		forward.ShadowClusterInvisibleOnly = TheSettingManager->GetSettingI(section, "ShadowClusterInvisibleOnly") != 0;
+		forward.ShadowClusterMinLights = (std::max)(0, (std::min)(64, TheSettingManager->GetSettingI(section, "ShadowClusterMinLights")));
 		forward.CameraIndependent = TheSettingManager->GetSettingI(section, "CameraIndependent") != 0;
 		forward.KeepLampsInView = TheSettingManager->GetSettingI(section, "KeepLampsInView") != 0;
 		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));
@@ -736,6 +741,7 @@ void ShadowsExteriorEffect::clearShadowsBuffer() {
 
 void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SmoothedSunDir", &Constants.SmoothedSunDir);
+	TheShaderManager->RegisterConstant("TESR_RtSunReplace", RtSunShadows::ReplaceConstant());
 	TheShaderManager->RegisterConstant("TESR_ShadowData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_ShadowFormatData", &Constants.FormatData);
 	TheShaderManager->RegisterConstant("TESR_ShadowForwardData", &Constants.ForwardData);

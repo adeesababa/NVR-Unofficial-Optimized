@@ -36,6 +36,14 @@ public:
 		bool	HiZInteriorsTest;
 		float	ReflectivityExterior;
 		float	ReflectivityInterior;
+		bool	RtEnabled;
+		float	RtMaxRoughness;
+		float	RtDistance;
+		int		RtDebugView;
+		float	RtScreenTolerance;
+		float	RtEstimate;
+		bool	RtSunShadows;
+		bool	RtSplitTest;
 	};
 	SettingsStruct	Settings;
 
@@ -105,6 +113,26 @@ private:
 	bool				hizTraceFailed = false;
 	UINT				hizTraceFrames = 0;
 	ExtPass				extTraceHiZCount;
+	ExtPass				extRtPasses[2];
+	bool				rtTraceFailed = false;
+	UINT				rtTraceFrames = 0, rtFallbackFrames = 0;
+	ExtUniformBuffer	extRtUniforms;
+public:
+	struct RtImagesStruct {
+		IDirect3DTexture9* March = nullptr;	IDirect3DSurface9* MarchSurface = nullptr;
+		IDirect3DTexture9* Dir = nullptr;	IDirect3DSurface9* DirSurface = nullptr;
+		IDirect3DTexture9* Ray = nullptr;	IDirect3DSurface9* RaySurface = nullptr;
+		IDirect3DTexture9* Hit = nullptr;	IDirect3DSurface9* HitSurface = nullptr;
+		IDirect3DTexture9* Shade = nullptr;	IDirect3DSurface9* ShadeSurface = nullptr;
+	};
+	RtImagesStruct		Rt;
+	void				RtRegister();
+private:
+	bool				rtRays = false;
+	bool				RtWanted() const;
+	bool				RtImages();
+	float				RtSunAmount() const;
+	bool				RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* target);
 	ExtUniformBuffer	extUniforms;
 	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	IDirect3DTexture9*	extSkyTexture = nullptr;

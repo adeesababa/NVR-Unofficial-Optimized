@@ -1,0 +1,93 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std140) uniform Pass {
+	vec4 size;
+	vec4 forward;
+	vec4 right;
+	vec4 up;
+	vec4 origin;
+	vec4 params;
+	vec4 params2;
+	vec4 lamps[9];
+	vec4 radius[3];
+	vec4 stops[3];
+} p;
+layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;
+layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;
+layout(set = 0, binding = 4, rg32f) uniform writeonly image2D resultImage;
+
+float hash12(vec2 q) {
+	vec3 h = fract(vec3(q.xyx) * 0.1031);
+	h += dot(h, h.yzx + 33.33);
+	return fract((h.x + h.y) * h.z);
+}
+
+bool blocked(vec3 origin, vec3 segment, float tMin, float tMax, uint mask) {
+	if (!(tMax > tMin)) return false;
+	rayQueryEXT q;
+	rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, origin, tMin, segment, tMax);
+	while (rayQueryProceedEXT(q)) { }
+	return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y))
+		return;
+
+	const float allLit = 16777215.0;
+	float linear01 = imageLoad(depthImage, pixel).r;
+	float viewZ = linear01 * p.forward.w;
+	if (!(linear01 > 0.0) || linear01 >= 0.9999 || viewZ < 1.0) {
+		imageStore(resultImage, pixel, vec4(allLit, 4095.0, 0.0, 0.0));
+		return;
+	}
+
+	vec2 uv = (vec2(pixel) + 0.5) * p.size.zw;
+	vec3 position = p.origin.xyz + (p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0)) * viewZ;
+	vec3 n = imageLoad(normalImage, pixel).xyz * 2.0 - 1.0;
+	vec3 normal = normalize(normalize(p.right.xyz) * n.x + normalize(p.up.xyz) * n.y + normalize(p.forward.xyz) * n.z);
+
+	uint rays = uint(clamp(p.params.x, 1.0, 8.0));
+	float offset = p.params.y;
+	float spin = 6.2831853 * fract(hash12(vec2(pixel)) + p.params.w);
+	uint farMask = uint(p.params2.y), nearMask = uint(p.params2.z);
+	vec3 origin = position + normal * offset;
+	int count = min(int(p.params2.w), 9);
+
+	float r = 0.0, g = 0.0;
+	for (int s = 0; s < 9; s++) {
+		float steps = 15.0;
+		vec4 lamp = p.lamps[s];
+		float stop = max(p.params.z, p.stops[s / 4][s % 4]);
+		vec3 toLamp = lamp.xyz - origin;
+		float dist = length(toLamp);
+		if (s < count && lamp.w > 0.0 && dist < lamp.w && dist > stop + offset && dot(toLamp, normal) > 0.0) {
+			vec3 dir = toLamp / dist;
+			vec3 t = normalize(cross(dir, abs(dir.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+			vec3 b = cross(dir, t);
+			float radius = p.radius[s / 4][s % 4];
+			uint lit = 0u;
+			for (uint i = 0u; i < rays; i++) {
+				float rr = radius * sqrt((float(i) + 0.5) / float(rays));
+				float a = float(i) * 2.3999632 + spin;
+				vec3 segment = toLamp + (t * cos(a) + b * sin(a)) * rr;
+				float invLen = inversesqrt(dot(segment, segment));
+				float tEnd = clamp(1.0 - stop * invLen, 0.0, 1.0);
+				float tMin = min(offset * invLen, tEnd);
+				float tSplit = clamp(1.0 - p.params2.x * invLen, tMin, tEnd);
+				if (!blocked(origin, segment, tMin, tSplit, farMask) && !blocked(origin, segment, tSplit, tEnd, nearMask))
+					lit++;
+			}
+			steps = floor(15.0 * float(lit) / float(rays) + 0.5);
+		}
+		if (s < 6) r += steps * exp2(4.0 * float(s));
+		else       g += steps * exp2(4.0 * float(s - 6));
+	}
+	float depthCode = clamp(floor(log2(viewZ) * p.origin.w + 0.5), 1.0, 4095.0);
+	imageStore(resultImage, pixel, vec4(r, g + 4096.0 * depthCode, 0.0, 0.0));
+}

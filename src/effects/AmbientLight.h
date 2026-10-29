@@ -144,7 +144,8 @@ public:
 	UINT				blurComputeFrames = 0;
 
 	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtEstimateHiZ,
-		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply, ExtShaderCount };
+		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply,
+		ExtEstimateRT, ExtShaderCount };
 	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];
 	ExtUniformBuffer	extUniforms;
 	CachedHandle		extHandles[38];

@@ -12,6 +12,7 @@ float4 TESR_ShadowData; // x: quality, y: darkness, z: texel size
 float4 TESR_ShadowFormatData; // x: mode, y: format bits per pixels
 float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistance, w: intensity
 float4 TESR_ShadowScreenSpaceFade;
+float4 TESR_RtSunReplace;
 float ContactNearFade(float z) { return TESR_ShadowScreenSpaceFade.y > 0.0f ? smoothstep(TESR_ShadowScreenSpaceFade.x, TESR_ShadowScreenSpaceFade.y, z) : 1.0f; }
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
@@ -402,7 +403,9 @@ float4 Shadow(VSOUT IN) : COLOR0
 	float viewDepth;
 	float4 worldPos = reconstructWorldPositionLod(uv, viewDepth);
 	float3 normal = GetWorldNormalLod(uv);
-	Shadow.r = min(Shadow.r, GetLightAmount(worldPos, normal)); // darkest of screenspace & sun
+	float cascades = GetLightAmount(worldPos, normal);
+	if (TESR_RtSunReplace.x > 0.0f) cascades = lerp(1.0f, cascades, saturate((viewDepth - 0.85f * TESR_RtSunReplace.x) / (0.15f * TESR_RtSunReplace.x)));
+	Shadow.r = min(Shadow.r, cascades); // darkest of screenspace & sun
 
 	return Shadow;
 }

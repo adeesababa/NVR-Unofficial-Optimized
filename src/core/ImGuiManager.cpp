@@ -2001,6 +2001,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.ShadowsInteriors.Forward",     "EvenTaps",           RestartRule::Changed },
 	{ "Shaders.ShadowsInteriors.Forward",     "MagnifiedSoftness",  RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "TexelFilter",        RestartRule::Changed },
+	{ "Shaders.ShadowsInteriors.RT",          "Enabled",            RestartRule::Changed },
 	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },

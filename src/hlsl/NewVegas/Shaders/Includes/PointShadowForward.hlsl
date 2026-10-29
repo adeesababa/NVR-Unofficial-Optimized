@@ -33,12 +33,25 @@ float4 NVR_PointShadowTint[6]   : register(c182);
 float4 NVR_PointShadowFocus     : register(c188);
 float4 NVR_PointShadowSoft      : register(c189);
 
+#ifndef POINT_SHADOW_RT
+    #define POINT_SHADOW_RT 0
+#endif
+
+#if POINT_SHADOW_RT
+row_major float4x4 NVR_RtLampReproject : register(c206);
+float4 NVR_PointShadowRT      : register(c215);
+float4 NVR_PointShadowRTSlot[2] : register(c216);
+sampler2D NVR_RtLampVis : register(s15);
+#endif
+
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
 samplerCUBE NVR_PointShadowCube2 : register(s12);
 samplerCUBE NVR_PointShadowCube3 : register(s13);
 samplerCUBE NVR_PointShadowCube4 : register(s14);
+#if !POINT_SHADOW_RT
 samplerCUBE NVR_PointShadowCube5 : register(s15);
+#endif
 
 float4 PointShadowNear(float4 stored, float lightW) {
     return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
@@ -151,11 +164,62 @@ float PointShadowTexel(samplerCUBE cube, float3 dir, float major, float s, float
 }
 #endif
 
-float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPos, float3 normal, float att) {
+#if POINT_SHADOW_RT
+float PointShadowTraced(float slot, float3 worldPos) {
+    float4 clip = mul(float4(worldPos, 1.0f), NVR_RtLampReproject);
+    [branch] if (!(clip.w > 1.0f)) return -1.0f;
+    float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
+    [branch] if (any(abs(uv - 0.5f) > 0.5f)) return -1.0f;
+    float2 traced = tex2Dlod(NVR_RtLampVis, float4(uv, 0.0f, 0.0f)).xy;
+    float depthCode = floor(traced.y / 4096.0f);
+    float depthError = abs(exp2(depthCode * NVR_PointShadowRT.z) - clip.w) / clip.w;
+    [branch] if (!(depthError <= NVR_PointShadowRT.y)) return -2.0f - saturate(depthError);
+    float high = slot > 5.5f;
+    float value = high ? traced.y - 4096.0f * depthCode : traced.x;
+    float shifted = floor(value / exp2(4.0f * (slot - 6.0f * high)));
+    return (shifted - 16.0f * floor(shifted / 16.0f)) / 15.0f;
+}
+
+float3 PointShadowRtCoverage(float3 worldPos) {
+    float slot = NVR_PointShadowRTSlot[0].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].y;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].z;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].w;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].y;
+    [branch] if (slot < 0.0f) return 0.25f;
+    float traced = PointShadowTraced(slot, worldPos);
+    return traced >= 0.0f ? float3(0.0f, 0.2f + 0.8f * traced, 0.0f) : traced > -1.5f ? float3(0.0f, 0.0f, 1.0f) : float3(0.3f + 0.7f * (-2.0f - traced), 0.0f, 0.0f);
+}
+
+float PointShadowDone(float cubeLit, float rayLit, float fade) {
+    [branch] if (NVR_PointShadowRT.x > 1.5f)
+        return 2.0f + round(saturate(rayLit < 0.0f ? cubeLit : rayLit) * 15.0f) + 16.0f * round(saturate(cubeLit) * 15.0f);
+    return lerp(1.0f, rayLit >= 0.0f ? min(cubeLit, rayLit) : cubeLit, NVR_PointShadowParams.x * abs(fade));
+}
+#define POINT_SHADOW_EARLY_LIT PointShadowDone(1.0f, rayLit, fade)
+#define POINT_SHADOW_RT_PARAM , float rtSlot
+#define POINT_SHADOW_RT_ARG(bit) , bit
+#define POINT_SHADOW_DONE(lit) PointShadowDone(lit, rayLit, fade)
+#else
+#define POINT_SHADOW_EARLY_LIT 1.0f
+#define POINT_SHADOW_RT_PARAM
+#define POINT_SHADOW_RT_ARG(bit)
+#define POINT_SHADOW_DONE(lit) lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade))
+#endif
+
+float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPos, float3 normal, float att POINT_SHADOW_RT_PARAM) {
     [branch] if (!(light.w > 0.0f)) return 1.0f;
     float3 toPixel = worldPos - light.xyz;
     float len = length(toPixel);
     [branch] if (!(att > 0.0f) || !(len * light.w < 1.0f)) return 1.0f;
+#if POINT_SHADOW_RT
+    float rayLit = -1.0f;
+    [branch] if (NVR_PointShadowRT.x > 0.0f && rtSlot >= 0.0f) {
+        rayLit = PointShadowTraced(rtSlot, worldPos);
+        [branch] if (NVR_PointShadowRT.x < 1.5f && rayLit >= 0.0f && NVR_PointShadowRT.w < 0.5f) return lerp(1.0f, rayLit, NVR_PointShadowParams.x * abs(fade));
+    }
+#endif
 
     float3 p = toPixel + normal * (NVR_PointShadowParams.z * len);
     float d = length(p) * light.w;
@@ -187,7 +251,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             float4 isBlocker = (float4)(search <= threshold) * (float4)(search > 0.0f);
             float centreBlocker = (float)(centre <= threshold) * (float)(centre > 0.0f);
             float blockers = dot(isBlocker, 1.0f) + centreBlocker;
-            [branch] if (!(blockers > 0.0f)) return 1.0f;
+            [branch] if (!(blockers > 0.0f)) return POINT_SHADOW_EARLY_LIT;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
             float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
             float size = fade < 0.0f ? NVR_PointShadowDebug.z : NVR_PointShadowSoft.z;
@@ -291,10 +355,20 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
 #endif
     }
-    return lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade));
+    return POINT_SHADOW_DONE(lit);
 }
 
 float3 PointShadowFactor(float shadow, float4 tint) {
+#if POINT_SHADOW_RT
+    [branch] if (shadow > 1.5f) {
+        float e = shadow - 2.0f;
+        float cubeSteps = floor(e / 16.0f);
+        float ray = (e - 16.0f * cubeSteps) / 15.0f;
+        float cubeLit = cubeSteps / 15.0f;
+        float both = min(ray, cubeLit);
+        return float3(both + max(cubeLit - ray, 0.0f), both + max(ray - cubeLit, 0.0f), both);
+    }
+#endif
     float3 factor = shadow;
     [branch] if (NVR_PointShadowDebug.x > 0.0f) {
         factor = NVR_PointShadowDebug.x < 1.5f ? shadow + (1.0f - shadow) * tint.rgb
@@ -304,6 +378,9 @@ float3 PointShadowFactor(float shadow, float4 tint) {
 }
 
 float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
+#if POINT_SHADOW_RT
+    return 0.5f;
+#else
     float4 light = NVR_PointShadowFocus;
     [branch] if (!(valid > 0.0f)) return 0.5f;
     [branch] if (!(light.w > 0.0f)) return float3(1.0f, 0.45f, 0.0f);
@@ -319,14 +396,25 @@ float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
         color = float3(blocked, saturate(stored * 2.5f), saturate(d * 2.5f)) * checker;
     }
     return NVR_PointShadowDebug.z < 0.0f ? color * 0.4f : color;
+#endif
 }
 
-float PointShadow0(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube0, NVR_PointShadowLight[0], NVR_PointShadowTint[0].w, worldPos, normal, att); }
-float PointShadow1(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube1, NVR_PointShadowLight[1], NVR_PointShadowTint[1].w, worldPos, normal, att); }
-float PointShadow2(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube2, NVR_PointShadowLight[2], NVR_PointShadowTint[2].w, worldPos, normal, att); }
-float PointShadow3(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube3, NVR_PointShadowLight[3], NVR_PointShadowTint[3].w, worldPos, normal, att); }
-float PointShadow4(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube4, NVR_PointShadowLight[4], NVR_PointShadowTint[4].w, worldPos, normal, att); }
-float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube5, NVR_PointShadowLight[5], NVR_PointShadowTint[5].w, worldPos, normal, att); }
+float PointShadow0(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube0, NVR_PointShadowLight[0], NVR_PointShadowTint[0].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].x)); }
+float PointShadow1(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube1, NVR_PointShadowLight[1], NVR_PointShadowTint[1].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].y)); }
+float PointShadow2(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube2, NVR_PointShadowLight[2], NVR_PointShadowTint[2].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].z)); }
+float PointShadow3(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube3, NVR_PointShadowLight[3], NVR_PointShadowTint[3].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].w)); }
+float PointShadow4(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube4, NVR_PointShadowLight[4], NVR_PointShadowTint[4].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[1].x)); }
+#if POINT_SHADOW_RT
+float PointShadow5(float3 worldPos, float3 normal, float att) {
+    float4 light = NVR_PointShadowLight[5];
+    [branch] if (!(light.w > 0.0f) || !(att > 0.0f) || !(NVR_PointShadowRT.x > 0.0f) || NVR_PointShadowRTSlot[1].y < 0.0f) return 1.0f;
+    [branch] if (!(length(worldPos - light.xyz) * light.w < 1.0f)) return 1.0f;
+    float traced = PointShadowTraced(NVR_PointShadowRTSlot[1].y, worldPos);
+    return traced < 0.0f ? 1.0f : lerp(1.0f, traced, NVR_PointShadowParams.x * abs(NVR_PointShadowTint[5].w));
+}
+#else
+float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube5, NVR_PointShadowLight[5], NVR_PointShadowTint[5].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[1].y)); }
+#endif
 
 #ifdef POINT_SHADOW_SCALAR
 #define POINT_SHADOW_LOOKUP(k, att) PointShadow##k(ptWorldPos, ptNormal, (att) * ptValid)

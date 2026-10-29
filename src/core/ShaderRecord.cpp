@@ -150,6 +150,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		AppendDefine("POINT_SHADOW_TEXEL", "1");
 	else if (TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness") > 0.0f)
 		AppendDefine("POINT_SHADOW_MAG", "1");
+	if (RtLampShadows::CompiledIn)
+		AppendDefine("POINT_SHADOW_RT", "1");
 
 	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
 		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");

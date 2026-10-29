@@ -472,6 +472,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     PS_OUTPUT OUT;
     OUT.color = color;
+    #if INTERIOR_SHADOWS && POINTS > 0 && POINT_SHADOW_RT
+        [branch] if (NVR_PointShadowRT.x > 2.5f) OUT.color.rgb = PointShadowRtCoverage(ptWorldPos);
+    #endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);
 #if CAPTURED_NORMALS_ON
     #if defined(DIFFUSE)

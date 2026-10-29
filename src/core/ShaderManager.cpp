@@ -12,6 +12,8 @@
 #include "../effects/GpuParticles.h"
 #include "SunDepthFit.h"
 #include "../effects/CoverMap.h"
+#include "RtCore.h"
+#include "RtSunShadows.h"
 #include <unordered_map>
 #include <vector>
 
@@ -899,7 +901,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
 	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
-		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps);
+		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps ||
+		(Settings->Forward.ShadowClusterEnabled && Settings->Forward.ShadowClusterInvisibleOnly));
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 	LampFixtures::LogModels = logLamps;
 
@@ -1007,12 +1010,28 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		}
 		std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.brightness > b.brightness; });
 		const float d2max = Settings->Forward.ShadowClusterDistance * Settings->Forward.ShadowClusterDistance;
+		const bool invisibleOnly = Settings->Forward.ShadowClusterInvisibleOnly;
+		const int minLights = Settings->Forward.ShadowClusterMinLights;
+		std::vector<bool> mayJoin(cands.size(), true);
+		for (size_t m = 0; m < cands.size(); m++) {
+			if (invisibleOnly && !LampFixtures::Invisible(cands[m].light, Settings->Forward.FixtureDistance)) { mayJoin[m] = false; continue; }
+			if (minLights > 1) {
+				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
+				int neighbours = 0;
+				for (size_t o = 0; o < cands.size() && neighbours < minLights; o++) {
+					const NiPoint3& op = cands[o].light->m_worldTransform.pos;
+					const float dx = op.x - mp.x, dy = op.y - mp.y, dz = op.z - mp.z;
+					if (dx * dx + dy * dy + dz * dz < d2max) neighbours++;
+				}
+				if (neighbours < minLights) mayJoin[m] = false;
+			}
+		}
 		std::vector<bool> taken(cands.size(), false);
 		for (size_t r = 0; r < cands.size(); r++) {
 			if (taken[r]) continue;
 			const NiPoint3& rp = cands[r].light->m_worldTransform.pos;
 			for (size_t m = r + 1; m < cands.size(); m++) {
-				if (taken[m]) continue;
+				if (taken[m] || !mayJoin[m]) continue;
 				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
 				const float dx = mp.x - rp.x, dy = mp.y - rp.y, dz = mp.z - rp.z;
 				if (dx * dx + dy * dy + dz * dz < d2max) { taken[m] = true; clusterMembers.push_back(cands[m].key); }
@@ -1575,6 +1594,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool keepDarkening = !forwardInterior || Effects.ShadowsExteriors->Settings.Interiors.Forward.KeepDarkening;
 
 	static bool shadowBufferClear = false;
+	{
+		static bool rtRegistered = false;
+		if (!rtRegistered) { RtSunShadows::Register(); Effects.Reflections->RtRegister(); RtLampShadows::Register(); AmbientOcclusionEffect::RtRegister(); rtRegistered = true; }
+		RtCore::Frame(Device);
+	}
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
@@ -1676,7 +1700,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			static EffectRecord::CachedHandle fusedCache;
 			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
-				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
+				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique &&
+				!RtSunShadows::Replacing();
 			static EffectRecord::CachedHandle sharpCache;
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
 			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
@@ -1694,6 +1719,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
 				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 				sunShadows->Constants.ForwardData.x = forwardWas;
+				RtSunShadows::Apply(Device);
 			}
 #if NVR_TEST_TOOLS
 			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {
@@ -2334,6 +2360,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		if (!cinemaDither) { Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.SkyDither); }
 	}
 	if (SunDepthFit::DebugView > 0) SunDepthFit::RenderView(Device, RenderTarget);
+	RtSunShadows::RenderDebug(Device, RenderTarget);
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		{ Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Debug); }
