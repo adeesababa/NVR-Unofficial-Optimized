@@ -239,18 +239,29 @@ which rt-sun-core's 18d27859 adds). Two kinds of patches:
 Cost: `Reflections trace (half)` 2.0-3.4 ms SSR only -> 6.0 ms RT (about +3 ms); exchange 3.05 ms; helper passes 2.35 ms, scene 0.15 ms
 (686 instances, 811k triangles with land, 125 MB); response 0.46 ms.
 
-### Where the bench stands against "done" (2026-10-29 06:30)
+### 2026-10-29 07:02 iGPU, rtrefl-3 (rain particles off) at og-lake and og-goodsprings, DLL 7835bac1 (core incl. ecf5defe)
+
+The runs are `bench/autotest/20261029-070247-slotC` (og-lake, all 9 shots) and `20261029-072126-slotC` (og-goodsprings, 6 of 9).
+- **og-lake alignment (shot 02)**: the ground slabs that were red now hit, pale blue / white. That is a blend of "hit" and
+  "slightly nearer": the LOD terrain the core falls back to here sits a little off the full-detail ground. The rocks hit as before.
+- **Outdoor picture A/B still impossible in the slot spots**: two RT-off shots differ on 31 % (og-lake) and 51 % (og-goodsprings) of
+  pixels even with the rain particles off. In these spots the light and the player move between shots (the player is mid-jump at
+  og-lake). The reflection-alone view at og-lake differs by only 1.5 % between SSR and RT (few reflecting pixels in dry weather). A clean
+  outdoor A/B needs a still outdoor test spot: a save with the player standing, weather and time frozen. That is a harness item,
+  noted for the bench owners.
+
+### Where the bench stands against "done" (2026-10-29 06:30; og-lake row updated 07:30)
 
 | Scene | Alignment (scene = screen) | Picture A/B | Cost on the iGPU (720p, 2 CUs) |
 |---|---|---|---|
 | Ultra-Luxe (polished floor) | yes | **yes**: the floor picks up the fountain's neon; 1.37 % px vs floor 0.3 %; no wrong colours / leaks | +6-7 ms |
 | Lucky 38 (metal + tiles) | yes (left columns, palm missing: gather filters) | **yes**: 15.5 % more reflection on the floor, cube/sky leaks gone | +9 ms |
-| og-lake (water) | rocks yes, LOD ground missing (fix 18d27859 pending) | no (dust storm, moving player) | ~+1 ms |
-| og-goodsprings rain (wet road) | yes (land in) | no (rain + clouds: 62 % noise) | +3 ms |
+| og-lake (water) | yes since ecf5defe (LOD ground hits, a little off the real ground) | no (light and player move: 31 % noise) | ~+1 ms |
+| og-goodsprings rain (wet road) | yes (land in) | no (51-62 % noise even without rain streaks) | +3 ms |
 
 Water: the game's planar water reflection is untouched by design (see "Water"), so og-lake checks only the shore and rocks.
-Still to do for a full "done": a still outdoor wet-road spot (rain particles off, clouds frozen) for a clean A/B, and og-lake again
-after 18d27859.
+Still to do for a full "done": a clean outdoor A/B needs a still outdoor test spot (a save with the player standing, weather and time
+frozen); the existing og-* spots cannot give one. The gather gaps (actors, alpha-tested leaves, no-shadow statics) are rt-sun-core's.
 
 **Summary of the two interiors:** RT fills SSR's gaps and blocks the fallback's leaks, with no wrong colours seen. It costs +6-9 ms at
 720p on the 2-CU iGPU; the helper's ray passes are most of it.
