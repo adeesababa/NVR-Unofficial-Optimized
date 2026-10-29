@@ -216,6 +216,15 @@ The run is `bench/autotest/20261029-050819-slotA`, with the shots in `H:\_NVR-au
 - **Cost:** `Reflections trace (half)` 4.5 ms SSR only -> 13.65 ms RT (+9 ms); exchange wait 7.5 ms; helper passes 6.41 ms, scene
   rebuild 0.40 ms (2677 instances, 279k triangles), response 1.65 ms.
 
+### 2026-10-29 05:39 iGPU, og-lake (cliff lake shore), slot C, DLL 44d4bd03 (core 8a43b7d1, incl. the land fix 28ea9e77)
+
+The run is `bench/autotest/20261029-053821-slotC`. **Not a usable A/B.** The player is in third person and moving, and there is a dust
+storm: two RT-off shots differ on 26 % of pixels (> 2/255). The alignment check (shot 04) is still readable: rocks and mesquite
+hit (green / white), and the flat ground in front is red. **The land is still not in the scene:** the core logs "land geometry
+met 0 ... cells walked 540, without a land node 0, land node culled 0", so 28ea9e77 doesn't reach the land geometry yet
+(reported to rt-sun-core). Objects: 209 instances, 82 geometries, 525k triangles; helper GPU 1.0 ms, my pass 0.9-1.0 ms (few
+reflecting pixels outdoors in dry weather).
+
 **Summary of the two interiors:** RT fills SSR's gaps and blocks the fallback's leaks, with no wrong colours seen. It costs +6-9 ms at
 720p on the 2-CU iGPU; the helper's ray passes are most of it.
 
