@@ -182,7 +182,16 @@ accumulate (below): both are temporal + edge-aware spatial already.
   ~4.8 ms (AO + GI, sun shadow rays). AmbientLight's GI accumulate 0.7-0.9 ms.
 - Cull mask 0xEF on every ray (ac0598e2): leaves out 0x10, the core's alpha-tested casters (claude/rt-sun-2, off by default), which
   would otherwise block as solid cards. Testing their alpha (RtAlpha.glsl) for the AO and sky rays is the next foliage step.
-- rt-gi-2 (= rt-gi-1 list, DLL 315CD821, GIAmbient 0) queued in lucky22.
+- **rt-gi-2 (10-29 17:11 lucky22, DLL 315CD821, GIAmbient 0):** still +7.8/255 on 71 % (vs +8.3 with the ambient): the wash comes from
+  the LAMPS: the 8 nearest lit every hit unshadowed, through walls and ceilings. RT cost 14.9 ms avg (AO 4 + GI) on the iGPU.
+- **Fix a0b05c51 (DLL 59DC7BCA): lamps by resampled importance sampling** (ReSTIR's direct-light step without the reuse): at a hit one
+  lamp is picked in proportion to its unshadowed light (N.L x quadratic falloff to its reach), its light / its chance, and ONE shadow
+  ray to it (stopping 16 units short of the lamp so its own fixture does not block it). Unbiased; the GI accumulate averages the pick.
+- **Alpha-tested casters (merged claude/rt-sun-2 94998464):** every AO / sky / GI ray now takes them (cull 0xFF) and confirms their
+  candidate hits only where the texture's alpha passes (Compute/Rt/RtAlpha.glsl, the core's atlas on binding 5; a 256x256 R16F
+  stand-in when [Main.Main.RayTracing] AlphaTested is off and there is no atlas). Needs fork patch 0029 when AlphaTested is on.
+- Queued: rt-gi-3 (lucky22, rt-gi-1 list, fork-0029) and rt-ao-5 (og-goodsprings, trees, AlphaTested on via
+  bench/deep-roadmap/rtao/run-toml-igpu-alpha.toml).
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
