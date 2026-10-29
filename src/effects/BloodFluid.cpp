@@ -334,9 +334,22 @@ bool BloodFluid::Ready(IDirect3DDevice9* Device) {
 // arrive under DXVK). Nothing while the NVR overlay or a game menu is open or the game is not the foreground window.
 void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forward, const D3DXVECTOR3& Right, double Elapsed) {
 	auto held = [](int dik) { const int vk = dik > 0 ? ImGuiManager::VkFromDik((unsigned char)dik) : 0; return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0; };
-	const bool usable = !ImGuiManager::IsVisible() && GetForegroundWindow() == ImGuiManager::GetWindow() &&
-		!(InterfaceManager && (InterfaceManager->currentMode == 2 || InterfaceManager->IsPipBoyOpen()));
+	// (2026-10-29: the foreground window by process: ImGuiManager's window handle did not match in game, and no key got through.)
+	DWORD foregroundProcess = 0;
+	GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
+	const bool overlay = ImGuiManager::IsVisible(), focused = foregroundProcess == GetCurrentProcessId();
+	const bool menu = InterfaceManager && (InterfaceManager->currentMode == 2 || InterfaceManager->IsPipBoyOpen());
+	const bool usable = !overlay && focused && !menu;
+	const bool anyHeld = held(Settings.HoseKey) || held(Settings.DumpKey) || held(Settings.ClearKey);
+	static int blockedLogs = 0;
+	if (anyHeld && !usable && blockedLogs < 8) {
+		blockedLogs++;
+		Logger::Log("UNOFFICIAL BloodFluid WaterGun: key held but ignored (overlay %d, game window focused %d, menu %d, interface mode %d)",
+			overlay, focused, menu, InterfaceManager ? (int)InterfaceManager->currentMode : -1);
+	}
 	const bool hose = usable && held(Settings.HoseKey), dump = usable && held(Settings.DumpKey), clear = usable && held(Settings.ClearKey);
+	static bool hoseLogged = false;
+	if (hose && !hoseLogged) { hoseLogged = true; Logger::Log("UNOFFICIAL BloodFluid WaterGun: hose on"); }
 	const float ground = Player ? (float)Player->pos.z - 1.0f : Eye.z - 120.0f;
 	if (clear && !ClearWas) Clear("WaterGun clear key");
 	ClearWas = clear;
@@ -393,7 +406,11 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 		const float ground = Player ? (float)Player->pos.z - 1.0f : eye.z - 120.0f;
 		Queue(eye + forward * 70.0f, ground, forward, 520.0f, 2.0f, 0.08f, 30.0f, 0.06f, (int)(360.0f * Settings.Amount), Hash(0x7E570000ull + (UInt64)(++ThrowCount)), 0, 2);	// (seeded by count: the same throws every run)
 	}
-	if (Settings.WaterGun) WaterGunInput(eye, forward, right, elapsed);
+	if (Settings.WaterGun) {
+		static bool live = false;
+		if (!live) { live = true; Logger::Log("UNOFFICIAL BloodFluid WaterGun: live (keys %d / %d / %d)", Settings.HoseKey, Settings.DumpKey, Settings.ClearKey); }
+		WaterGunInput(eye, forward, right, elapsed);
+	}
 	if (Settings.TestPour && !PourDone && Player) {
 		PourDone = true;
 		D3DXVECTOR3 flat(forward.x, forward.y, 0.0f);
