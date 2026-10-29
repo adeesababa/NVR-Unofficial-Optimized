@@ -25,10 +25,8 @@ namespace RtLampShadows {
 	inline constexpr const char* kSection = "Shaders.ShadowsInteriors.RT";
 
 	// Instance mask bits the RT core gives the scene (FORK-RT-CORE.md: 0x01 land, 0x02 objects); ours for the lamps' own parts,
-	// through the core's mask hook (InstanceMask below): 0x10 lamp glass and glow meshes, 0x20 the rest of a lamp model (2026-10-29:
-	// were 0x04 / 0x08). The core puts alpha-tested casters under 0x04, non-opaque; the lamp rays do not test alpha yet, so they leave
-	// 0x04 out and those casters let lamp light through (the cube maps still draw them alpha-tested: a known difference).
-	inline constexpr UINT MaskGlass = 0x10, MaskLampModel = 0x20, MaskAlphaTested = 0x04;
+	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model.
+	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08;
 
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
@@ -256,7 +254,7 @@ namespace RtLampShadows {
 		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
 		const bool skipModels = TheSettingManager->GetSettingI(kSection, "SkipLampModels") != 0;
 		c.params2[0] = skipModels ? (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampModelDistance"), 0.0f) : 0.0f;
-		UINT farMask = 0xFF & ~MaskAlphaTested;	// non-opaque alpha-tested casters: not tested here, skipped
+		UINT farMask = 0xFF;
 		if (TheSettingManager->GetSettingI(kSection, "SkipLampGlass")) farMask &= ~MaskGlass;
 		c.params2[1] = (float)farMask;
 		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
@@ -292,7 +290,7 @@ namespace RtLampShadows {
 	}
 
 	// RtCore's mask hook (the FULL mask, replacing the core's land 0x01 / objects 0x02): a lamp's glass or model gets ONLY its own bit,
-	// so the lamp rays' cull masks (no 0x10, near the lamp no 0x20) skip it while every other ray (the sun's 0xFF) still hits it.
+	// so the lamp rays' cull masks (no 0x04, near the lamp no 0x08) skip it while every other ray (the sun's 0xFF) still hits it.
 	inline UInt32 MaskCounts[4] = {};		// land, objects, glass, lamp models (logged now and then: is the hook used, does it find lamps?)
 	inline UInt32 MaskHook(NiGeometry* geometry, bool land) {
 		static UInt32 calls = 0;
