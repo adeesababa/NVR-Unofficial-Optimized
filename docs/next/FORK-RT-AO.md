@@ -126,6 +126,15 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   - Read: the cost follows ray count x ray length; on this iGPU the RT AO is ~4x the GTAO it replaces. Expected ratio on a real RT
     GPU unknown (the iGPU only gives relative cost).
 
+### Run 3 (2026-10-29 04:32-04:44, og-desert slot C, rt-ao-1 v2): stopped by the 480 s self-test limit after 8 shots
+- The iGPU runs ~5 fps outdoors (the core's "Ray tracing" timer 24-27 ms avg, min 3.4-5.5 ms; helper 562 instances / 156 geometries /
+  295k triangles); 21 shots x 120 frames do not fit. Not a crash. The sky shots were after the cut: list rt-ao-3 (60 frames a shot,
+  8 shots) covers them.
+- What the 8 shots show: open desert ground stays white (correct: nothing above it); the inside view is white everywhere (no ray starts
+  inside geometry). BUT rt-sun-core's rtsun-5 found **land is not in the core's scene yet**: rays never hit the terrain, so objects
+  standing on it get no ground contact and cliffs / hills occlude nothing. Outdoor RT AO is incomplete until the core adds land.
+- Same-spot A/B still missing: the third-person camera moves between shots here too.
+
 ## Resumed 2026-10-29 (main session, on the user's word)
 - The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
   100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.
