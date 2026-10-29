@@ -381,7 +381,7 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 // NVR_RTAORaw (AO visibility, sky visibility, covered, DebugView 3's value). RtRaw: that texture if it was traced this frame, else null
 // (the callers keep NVR's own passes).
 namespace {
-	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtShader = -1;
+	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtShader = -1;
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -395,6 +395,9 @@ namespace {
 		RtImageIn = RtCore::AddImage("NVR RT ao input", w, h, NVR_EXT_SHARED_RG32F);
 		RtImageOut = RtCore::AddImage("NVR RT ao", w, h, NVR_EXT_SHARED_RGBA16F);
 		RtImageGI = RtCore::AddImage("NVR RT gi", w, h, NVR_EXT_SHARED_RGBA16F);	// (rt-ao-gi) the bounce light; written every trace
+		// (2026-10-29) RtAOTrace.comp binds the core's alpha atlas (binding 5) for the alpha-tested casters; with AlphaTested off there is no
+		// atlas and no such instance (the shader never reads it): this small image stands in so the binding is always an R16F image.
+		if (RtCore::AlphaAtlasImage() < 0) RtImageAlphaStandIn = RtCore::AddImage("NVR RT ao alpha stand-in", 256, 256, NVR_EXT_SHARED_R16F);
 	}
 
 	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
@@ -511,9 +514,11 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
 	}
-	const int images[3] = { RtImageIn, RtImageOut, RtImageGI };
+	const int alphaAtlas = RtCore::AlphaAtlasImage() >= 0 ? RtCore::AlphaAtlasImage() : RtImageAlphaStandIn;
+	if (alphaAtlas < 0) return;
+	const int images[4] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||
-		!RtCore::AddPass(RtShader, images, 3, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+		!RtCore::AddPass(RtShader, images, 4, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
