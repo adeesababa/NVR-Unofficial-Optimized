@@ -52,6 +52,7 @@ public:
 		bool	RtVndf;				// 2026-10-29: glossy rays from the GGX distribution of visible normals (Heitz 2018)
 		bool	RtHitLamps;			// 2026-10-29: the 12 nearest scene lamps light the hits the screen cannot show (one shadow ray to the key lamp)
 		float	RtRoughReach;		// 2026-10-29: a ray's reach at roughness 1, as a share of Distance (0 = full reach)
+		float	RtRoughShare;		// 2026-10-29: above this roughness, 1 ray per 2x2 pixels a frame (0 = every pixel)
 	};
 	SettingsStruct	Settings;
 

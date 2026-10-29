@@ -62,6 +62,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtVndf = TheSettingManager->GetSettingI(rt, "VisibleNormals") != 0;	// UNOFFICIAL 2026-10-29 glossy rays
 	Settings.RtHitLamps = TheSettingManager->GetSettingI(rt, "HitLamps") != 0;
 	Settings.RtRoughReach = std::clamp(TheSettingManager->GetSettingF(rt, "RoughReach"), 0.0f, 0.99f);
+	Settings.RtRoughShare = std::clamp(TheSettingManager->GetSettingF(rt, "RoughShare"), 0.0f, 1.0f);	// 0 off
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -773,7 +774,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
-		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, 0.0f, 0.0f);
 		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {

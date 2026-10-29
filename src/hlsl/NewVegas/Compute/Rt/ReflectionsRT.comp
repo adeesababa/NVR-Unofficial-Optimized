@@ -41,7 +41,8 @@ const uint NoData = 0xFFFFFFFFu;
 // [Main.Main.RayTracing] AlphaTested, 2026-10-29): left out until this pass tests alpha (RtAlpha.glsl), else foliage cards would
 // reflect as solid quads. Lamp glass (0x04) and lamp models (0x08) are kept: they show in reflections.
 const uint RtMask = 0xEFu;
-const float LandSelfHit = 40.0;   // game units (a tessellation bump's height and more)
+const float LandSelfHit = 40.0;
+const float LampShadowRoughness = 0.25;   // the key-lamp shadow ray only on smoother surfaces   // game units (a tessellation bump's height and more)
 const uint RecordLand = 0x01u, RecordGlow = 0x04u, RecordAlbedoKnown = 0x10u;
 
 vec3 OctDecode(vec2 e) {
@@ -64,7 +65,7 @@ void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y)) return;
 	vec2 ray = imageLoad(rayImage, pixel).xy;
-	if (ray.x <= 0.0 || ray.y < 1.5) {
+	if (ray.x <= 0.0 || ray.y < 1.5 || ray.y > 3.5) {   // (> 3.5: a rough pixel that borrows its block's ray this frame)
 		imageStore(hitImage, pixel, vec4(-1.0, 0.0, 0.0, 0.0));
 		imageStore(shadeImage, pixel, vec4(0.4, 0.4, 0.4, 1.0));
 		return;
@@ -79,7 +80,7 @@ void main() {
 	vec3 start = surface;
 	// Ray budget by roughness: a rough reflection blurs far detail away, so its rays need not go as far. The reach share at
 	// roughness 1 (RoughReach) is forward.w's fraction (its integer part is the lamp count).
-	float roughness = ray.y - 2.0;
+	float roughness = ray.y - 2.0;   // (cast pixels: roughness + 2)
 	float roughReach = fract(p.forward.w);   // RoughReach (0 = full reach; the integer part is the lamp count)
 	float tMax = p.size.z * (roughReach > 0.0 ? mix(1.0, roughReach, clamp(roughness, 0.0, 1.0)) : 1.0);
 	if (p.origin.w > 0.5) {
@@ -156,7 +157,9 @@ void main() {
 			float c = fall * fall * max(dot(normal, toLamp / max(d, 1.0e-3)), 0.0) * dot(p.lamps[2 * i + 1].rgb, vec3(0.2126, 0.7152, 0.0722));
 			if (c > best) { best = c; key = i; }
 		}
-		if (key >= 0) {
+		// (The shadow ray only where the reflection is sharp enough to show it: roughness below LampShadowRoughness; rougher hits keep
+		// the lamp unshadowed, visible = 1. rtrefl-4 luxe: this ray cost 1.5-5 ms on the iGPU on all hits.)
+		if (key >= 0 && roughness < LampShadowRoughness) {
 			vec3 toLamp = p.lamps[2 * key].xyz - off;
 			float d = length(toLamp);
 			// Stop short of the lamp itself (its bulb, shade or glass mesh is in the scene).
