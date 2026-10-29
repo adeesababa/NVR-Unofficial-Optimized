@@ -135,64 +135,6 @@ namespace {
 		int uvStream = -1; UInt32 uvOffset = 0; bool uvHalf = false;	// TEXCOORD0 (FLOAT2 / FLOAT16_2): alpha-tested casters
 	};
 
-	// UNOFFICIAL 2026-10-29 alpha-tested casters: a diffuse texture's alpha as 64 x 64 halfs (nearest), from the smallest mip at least
-	// 64 wide. Managed textures; DXT1 (1-bit), DXT3, DXT5, A8R8G8B8. false: not readable (the geometry stays out of the scene).
-	bool ReadAlphaMask(IDirect3DBaseTexture9* base, unsigned short* out) {
-		IDirect3DTexture9* texture = nullptr;
-		if (!base || base->GetType() != D3DRTYPE_TEXTURE || FAILED(base->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&texture)) || !texture) return false;
-		const UInt32 S = NVR_RT_ALPHA_SLOT_SIZE;
-		DWORD level = 0;
-		D3DSURFACE_DESC desc = {};
-		for (DWORD l = 0; l < texture->GetLevelCount(); l++) {
-			D3DSURFACE_DESC d = {};
-			if (FAILED(texture->GetLevelDesc(l, &d)) || d.Width < S || d.Height < S) break;
-			level = l;
-		}
-		bool ok = false;
-		D3DLOCKED_RECT locked = {};
-		if (SUCCEEDED(texture->GetLevelDesc(level, &desc)) && desc.Pool == D3DPOOL_MANAGED &&
-			(desc.Format == D3DFMT_DXT1 || desc.Format == D3DFMT_DXT3 || desc.Format == D3DFMT_DXT5 || desc.Format == D3DFMT_A8R8G8B8) &&
-			SUCCEEDED(texture->LockRect(level, &locked, nullptr, D3DLOCK_READONLY | D3DLOCK_NO_DIRTY_UPDATE))) {
-			const unsigned char* bits = (const unsigned char*)locked.pBits;
-			std::vector<float> alpha(S * S);
-			for (UInt32 y = 0; y < S; y++) for (UInt32 x = 0; x < S; x++) {
-				const UInt32 tx = x * desc.Width / S, ty = y * desc.Height / S;
-				float a = 1.0f;
-				if (desc.Format == D3DFMT_A8R8G8B8) a = bits[ty * locked.Pitch + tx * 4 + 3] / 255.0f;
-				else {
-					const UInt32 blockBytes = desc.Format == D3DFMT_DXT1 ? 8 : 16;
-					const unsigned char* block = bits + (ty / 4) * locked.Pitch + (tx / 4) * blockBytes;
-					const UInt32 i = (ty & 3) * 4 + (tx & 3);
-					if (desc.Format == D3DFMT_DXT1) {
-						const unsigned short c0 = *(const unsigned short*)block, c1 = *(const unsigned short*)(block + 2);
-						const UInt32 index = (*(const UInt32*)(block + 4) >> (2 * i)) & 3;
-						a = (c0 <= c1 && index == 3) ? 0.0f : 1.0f;
-					}
-					else if (desc.Format == D3DFMT_DXT3) a = ((block[i / 2] >> ((i & 1) * 4)) & 15) / 15.0f;
-					else {
-						const UInt32 a0 = block[0], a1 = block[1];
-						unsigned long long codes = 0;
-						for (int k = 0; k < 6; k++) codes |= (unsigned long long)block[2 + k] << (8 * k);
-						const UInt32 c = (UInt32)(codes >> (3 * i)) & 7;
-						float v;
-						if (c == 0) v = (float)a0;
-						else if (c == 1) v = (float)a1;
-						else if (a0 > a1) v = ((8 - c) * a0 + (c - 1) * a1) / 7.0f;
-						else if (c < 6) v = ((6 - c) * a0 + (c - 1) * a1) / 5.0f;
-						else v = c == 6 ? 0.0f : 255.0f;
-						a = v / 255.0f;
-					}
-				}
-				alpha[y * S + x] = a;
-			}
-			texture->UnlockRect(level);
-			D3DXFloat32To16Array((D3DXFLOAT16*)out, alpha.data(), S * S);
-			ok = true;
-		}
-		texture->Release();
-		return ok;
-	}
-
 	struct PendingCopy { int image; IUnknown* target; };
 
 	struct Core {
@@ -246,6 +188,9 @@ namespace {
 		// Alpha-tested casters ([Main.Main.RayTracing] AlphaTested, read at each helper start): the alpha atlas (a shared R16F image,
 		// 64 x 64 a texture) and the textures already in it
 		bool		alphaOn = false;
+		// alpha-tested meshes by fate (exchanges 1-60): [0] blended only, [1] feature off, [2] not described, [3] texcoords not in the
+		// position's stream, [4] no diffuse texture, [5] alpha unreadable (format / pool) or atlas full, [6] waited (upload budget), [7] taken
+		UInt32		alphaFate[8] = {};
 		int			atlasImage = -1;
 		UInt32		atlasUsed = 0, atlasThisFrame = 0;
 		std::unordered_map<const void*, int> alphaSlots;		// texture -> slot (-1: unreadable)
@@ -273,7 +218,9 @@ namespace {
 
 	Core TheCore;
 
-	// A texture's slot in the alpha atlas: >= 0, -1 unreadable (never again), -2 not this frame (8 uploads a frame at most).
+	// A texture's slot in the alpha atlas: >= 0, -1 not possible (never again), -2 not this frame (8 a frame at most). On the GPU: the
+	// fork pass RtAlphaToAtlas draws the texture's alpha into a 64 x 64 R16F target (the texture's mips downsample; any pool and format),
+	// then that goes into the atlas slot. Both are recorded before this exchange's signal, so the helper sees them this frame.
 	int Core::AlphaSlotOf(IDirect3DBaseTexture9* texture) {
 		auto found = alphaSlots.find(texture);
 		if (found != alphaSlots.end()) return found->second;
@@ -282,21 +229,59 @@ namespace {
 		if (atlasThisFrame >= 8) return -2;
 		atlasThisFrame++;
 		const UInt32 S = NVR_RT_ALPHA_SLOT_SIZE;
-		static unsigned short halfs[NVR_RT_ALPHA_SLOT_SIZE * NVR_RT_ALPHA_SLOT_SIZE];
-		int slot = -1;
-		if (ReadAlphaMask(texture, halfs)) {
-			if (!alphaUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_DYNAMIC, D3DFMT_R16F, D3DPOOL_DEFAULT, &alphaUpload, nullptr);
-			D3DLOCKED_RECT locked = {};
-			if (alphaUpload && SUCCEEDED(alphaUpload->LockRect(0, &locked, nullptr, D3DLOCK_DISCARD))) {
-				for (UInt32 y = 0; y < S; y++) memcpy((char*)locked.pBits + y * locked.Pitch, halfs + y * S, S * 2);
-				alphaUpload->UnlockRect(0);
-				const RECT all = { 0, 0, (LONG)S, (LONG)S };
-				const UInt32 at = atlasUsed;
-				if (SUCCEEDED(share->CopyToShared(images[atlasImage], (at % NVR_RT_ALPHA_ATLAS_SLOTS) * S, (at / NVR_RT_ALPHA_ATLAS_SLOTS) * S, alphaUpload, &all))) {
-					slot = (int)at;
-					atlasUsed++;
-				}
+		static ID3D9NvrExtPipeline* pipeline = nullptr;
+		static bool tried = false;
+		if (!tried) {
+			tried = true;
+			std::vector<char> spirv;
+			ID3D9NvrExt* ext = DxvkCompute::Extension();
+			if (ext && DxvkCompute::LoadSpirv("RtAlphaToAtlas", spirv)) {
+				NVR_EXT_BINDING_DESC bindings[2] = {
+					{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+					{ 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 4 },
+				};
+				NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
+				desc.pFragmentSpirv = spirv.data();
+				desc.FragmentSpirvSize = (UINT)spirv.size();
+				desc.BindingCount = 2;
+				desc.pBindings = bindings;
+				desc.PushConstantSize = 16;
+				desc.UsesSamplerHeap = TRUE;
+				desc.SamplerHeapSet = 0;
+				desc.SamplerHeapBinding = 0;
+				desc.ColorTargetCount = 1;
+				desc.Blend = NVR_EXT_BLEND_NONE;
+				desc.ColorWriteMask = 0xFu;
+				desc.pDebugName = "RtAlphaToAtlas";
+				if (FAILED(ext->CreateGraphicsPipeline(&desc, &pipeline))) pipeline = nullptr;
 			}
+			if (!pipeline) Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters: the alpha pass could not be made (Compute\\RtAlphaToAtlas.spv; the DXVK log says why)");
+		}
+		int slot = -1;
+		if (!alphaUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &alphaUpload, nullptr);
+		ID3D9NvrExtSampler* sampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
+		IDirect3DSurface9* target = nullptr;
+		if (pipeline && sampler && alphaUpload && SUCCEEDED(alphaUpload->GetSurfaceLevel(0, &target))) {
+			NVR_EXT_RESOURCE_BINDING bindings[2] = {};
+			bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = texture;
+			bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = sampler;
+			const UInt32 push[4] = { 0, 0, 0, 0 };
+			NVR_EXT_DRAW_DESC draw = {};
+			draw.pPipeline = pipeline;
+			draw.TargetCount = 1;
+			draw.Targets[0].pResource = target;
+			draw.BindingCount = 2;
+			draw.pBindings = bindings;
+			draw.pPushData = push;
+			draw.PushDataSize = sizeof(push);
+			const RECT all = { 0, 0, (LONG)S, (LONG)S };
+			const UInt32 at = atlasUsed;
+			if (SUCCEEDED(DxvkCompute::Extension()->Draw(&draw)) &&
+				SUCCEEDED(share->CopyToShared(images[atlasImage], (at % NVR_RT_ALPHA_ATLAS_SLOTS) * S, (at / NVR_RT_ALPHA_ATLAS_SLOTS) * S, alphaUpload, &all))) {
+				slot = (int)at;
+				atlasUsed++;
+			}
+			target->Release();
 		}
 		alphaSlots.emplace(texture, slot);
 		return slot;
@@ -651,7 +636,8 @@ namespace {
 		// Alpha-tested casters (AlphaTested on): traced with their diffuse alpha (RtAlpha.glsl); blended-only (glass, fx) stays out
 		bool alphaTested = false;
 		if (alpha && (alpha->flags & (NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK | NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))) {
-			if (!alphaOn || !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; return; }
+			if (!(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; alphaFate[0]++; return; }
+			if (!alphaOn) { skip[kAlpha]++; alphaFate[1]++; return; }
 			alphaTested = true;
 		}
 
@@ -659,7 +645,7 @@ namespace {
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		GeometryKey key;
 		if (!Describe(geo, desc, ranges, key)) {
-			if (alphaTested) { skip[kAlpha]++; return; }
+			if (alphaTested) { skip[kAlpha]++; alphaFate[2]++; return; }
 			skip[kDescribe]++;
 			static int told = 0;
 			NiGeometryBufferData* bd = geo->geomData->m_pkBuffData;
@@ -674,13 +660,13 @@ namespace {
 		int alphaSlot = -1;
 		if (alphaTested) {
 			// the texcoords must sit in the position's stream; the diffuse alpha must be readable
-			if (lastElement.uvStream != lastElement.stream || !shaderProperty->IsLightingProperty()) { skip[kAlpha]++; return; }
+			if (lastElement.uvStream != lastElement.stream || !shaderProperty->IsLightingProperty()) { skip[kAlpha]++; alphaFate[3]++; return; }
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
-			if (!texture || !texture->rendererData || !texture->rendererData->dTexture) { skip[kAlpha]++; return; }
+			if (!texture || !texture->rendererData || !texture->rendererData->dTexture) { skip[kAlpha]++; alphaFate[4]++; return; }
 			alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
-			if (alphaSlot == -2) { waiting++; return; }	// this frame's uploads are used up: next frame
-			if (alphaSlot < 0) { skip[kAlpha]++; return; }
+			if (alphaSlot == -2) { waiting++; alphaFate[6]++; return; }	// this frame's uploads are used up: next frame
+			if (alphaSlot < 0) { skip[kAlpha]++; alphaFate[5]++; return; }
 			desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
 		}
 		GeometryEntry& entry = geometries[key];
@@ -727,6 +713,7 @@ namespace {
 		}
 		if (record->instanceCount >= NVR_RT_MAX_INSTANCES) return;
 		skip[kTaken]++;
+		if (alphaTested) alphaFate[7]++;
 		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
 		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
@@ -988,6 +975,12 @@ namespace {
 				(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
+			if (n == 60) {
+				const UInt32* a = c.alphaFate;
+				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
+					"not described %u, texcoords not in the position's stream %u, no diffuse texture %u, alpha unreadable or atlas full %u; "
+					"waited for an upload %u", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			}
 			if (n == 60)
 				for (int k = 0; k < 3; k++) {
 					const UInt32* m = c.skips[k];
