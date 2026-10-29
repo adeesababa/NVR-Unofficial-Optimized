@@ -1847,7 +1847,7 @@ Splats = true                          # Fresh blood splats (on screen as they a
 Pools = true                           # A body that has just died bleeds a fluid pool (BloodFlow's own pool is not drawn for that body). Bodies that were already dead keep BloodFlow's pool.
 ReplaceStreams = true                  # While the fluid runs, BloodFlow's painted streams and splat drips are off (the fluid's runs replace them). The game's decals and BloodFlow's splat shapes stay.
 Amount = 1.0                           # [0.2-3] How much blood: particles per splat and per pool, x.
-MaxParticles = 16384                   # [2048-65536] Most blood particles at once (64 bytes each, plus 48 for drawing); the oldest go first. Changing it clears the blood.
+MaxParticles = 16384                   # [2048-262144] (set 131072+ for the WaterGun) Most blood particles at once (64 bytes each, plus 48 for drawing); the oldest go first. Changing it clears the blood.
 SettleTime = 12.0                      # [3-60] Seconds blood keeps moving before it has settled (it slows from 40 % of this).
 BleedTime = 8.0                        # [1-30] Seconds a body bleeds its pool.
 Viscosity = 8.0                        # [0-30] How much the blood moves as one (higher: thicker, slower, fewer separate runs).
@@ -1866,6 +1866,16 @@ DebugView = 0                          # 1: stains red (paler = thinner), their 
 TestThrow = 0.0                        # Test only: every this many seconds a throw of blood from the camera at whatever is in the middle of the view. 0: off.
 TestPour = false                       # Test only: a pool bleeds on the ground a little ahead of the player (once each time this is turned on).
 StatsEvery = 0                         # Test only: every this many frames, log what the particles are doing (waits for the GPU: stutters). 0: off.
+
+[_Shaders.BloodFlow.WaterGun]
+Enabled = false                        # UNOFFICIAL (2026-10-29): a water 'tool gun' on the blood fluid (needs [Shaders.BloodFlow.Fluid] Enabled, BloodFlow on and NVR DXVK). Clear water that runs, pools, drips off ledges and shines; it never dries. Raise [Shaders.BloodFlow.Fluid] MaxParticles (131072) and Lifetime for big floods. Keys do nothing while the NVR menu or a game menu is open. Applies immediately
+HoseKey = 48                           # DirectInput key code held for a hose from the camera at the middle of the view (48 = B). 0: none.
+DumpKey = 47                           # Key code pressed for a big ball of water dropped ahead (47 = V; V is also VATS, rebind if you use it). 0: none.
+ClearKey = 49                          # Key code pressed to clear all fluid, water and blood (49 = N). 0: none.
+HoseFlow = 6000.0                      # [100-30000] Particles a second from the hose.
+HoseSpeed = 700.0                      # [50-3000] Hose speed (game units a second; 700 = about 10 m/s).
+DumpAmount = 6000                      # [100-8192] Particles in one ball.
+DumpDistance = 350.0                   # [50-3000] How far ahead the ball appears (game units); it starts a third of that above the view.
 
 [_Shaders.BloodFlow.Status]
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.

@@ -9,6 +9,7 @@
 #include "BloodFluid.h"
 #include "../core/DxvkCompute.h"
 #include "../core/FrameClock.h"
+#include "../core/ImGuiManager.h"
 
 namespace {
 	// The blocks as the GLSL declares them (BloodFluid.glsl Frame, std140: vec4s only; BloodFluidSim.comp Push and Emitter).
@@ -24,8 +25,7 @@ namespace {
 	struct SimPush { UInt32 mode, total, pad0, pad1; float shift[4]; };
 
 	const UInt32 ParticleBytes = 64, DrawBytes = 48;
-	const UInt32 GridCells = 1u << 17;		// hashed grid nodes (16 bytes each: 2 MB)
-	const UInt32 TileCap = 128;				// particles a 16 x 16 tile lists
+	const UInt32 GridCells = 1u << 19;		// hashed grid nodes (16 bytes each: 8 MB; 2026-10-29 WaterGun: was 1 << 17, 2 MB, for 64k particles)
 	const float Step = 1.0f / 120.0f;		// fixed simulation step (the spike's)
 	const int MaxSteps = 4;
 	// The spike's numbers (proto/fluid_preview.cpp), game units: particle radius 1.2, grid cell 3, rest density = particles per
@@ -72,7 +72,7 @@ void BloodFluid::ReadSettings() {
 	Settings.Pools = TheSettingManager->GetSettingI(s, "Pools") != 0;
 	Settings.ReplaceStreams = TheSettingManager->GetSettingI(s, "ReplaceStreams") != 0;
 	Settings.Amount = std::clamp(TheSettingManager->GetSettingF(s, "Amount"), 0.1f, 4.0f);
-	Settings.MaxParticles = std::clamp(TheSettingManager->GetSettingI(s, "MaxParticles"), 2048, 65536);
+	Settings.MaxParticles = std::clamp(TheSettingManager->GetSettingI(s, "MaxParticles"), 2048, 262144);	// (2026-10-29 WaterGun: up to 262144, was 65536)
 	Settings.SettleTime = std::clamp(TheSettingManager->GetSettingF(s, "SettleTime"), 2.0f, 120.0f);
 	Settings.BleedTime = std::clamp(TheSettingManager->GetSettingF(s, "BleedTime"), 0.5f, 60.0f);
 	Settings.Viscosity = std::clamp(TheSettingManager->GetSettingF(s, "Viscosity"), 0.0f, 60.0f);
@@ -93,6 +93,15 @@ void BloodFluid::ReadSettings() {
 	if (!pour) PourDone = false;	// (on again: a new pour)
 	Settings.TestPour = pour;
 	Settings.StatsEvery = std::clamp(TheSettingManager->GetSettingI(s, "StatsEvery"), 0, 100000);
+	const char* w = "Shaders.BloodFlow.WaterGun";
+	Settings.WaterGun = TheSettingManager->GetSettingI(w, "Enabled") != 0;
+	Settings.HoseKey = std::clamp(TheSettingManager->GetSettingI(w, "HoseKey"), 0, 255);
+	Settings.DumpKey = std::clamp(TheSettingManager->GetSettingI(w, "DumpKey"), 0, 255);
+	Settings.ClearKey = std::clamp(TheSettingManager->GetSettingI(w, "ClearKey"), 0, 255);
+	Settings.HoseFlow = std::clamp(TheSettingManager->GetSettingF(w, "HoseFlow"), 100.0f, 30000.0f);
+	Settings.HoseSpeed = std::clamp(TheSettingManager->GetSettingF(w, "HoseSpeed"), 50.0f, 3000.0f);
+	Settings.DumpAmount = std::clamp(TheSettingManager->GetSettingI(w, "DumpAmount"), 100, 8192);
+	Settings.DumpDistance = std::clamp(TheSettingManager->GetSettingF(w, "DumpDistance"), 50.0f, 3000.0f);
 	static int logged = -1;
 	if (logged != (Settings.Enabled ? 1 : 0)) {
 		logged = Settings.Enabled ? 1 : 0;
@@ -105,7 +114,7 @@ bool BloodFluid::On() const {
 }
 
 bool BloodFluid::Active() const {
-	return On() && (PendingCount > 0 || (Used > 0 && TheFrameRateManager->Time < AliveUntil) || Settings.TestThrow > 0.0f || (Settings.TestPour && !PourDone));
+	return On() && (PendingCount > 0 || (Used > 0 && TheFrameRateManager->Time < AliveUntil) || Settings.TestThrow > 0.0f || Settings.WaterGun || (Settings.TestPour && !PourDone));
 }
 
 void BloodFluid::Queue(const D3DXVECTOR3& Origin, float GroundZ, const D3DXVECTOR3& Dir, float Speed, float Spread, float Cone, float BackOff,
@@ -135,7 +144,7 @@ void BloodFluid::Queue(const D3DXVECTOR3& Origin, float GroundZ, const D3DXVECTO
 	PendingParticles += (UInt32)Count;
 	Emitted += (UInt64)Count;
 	AliveUntil = (std::max)(AliveUntil, TheFrameRateManager->Time + Window + Settings.Lifetime + 1.0);
-	if (LoggedEmits < 24) {
+	if (LoggedEmits < 24 && Kind != 3) {
 		LoggedEmits++;
 		if (Kind == 1) Logger::Log("UNOFFICIAL BloodFluid: a body bleeds, %d particles at (%.1f %.1f %.1f), ground %.1f sloping (%.2f %.2f), spreading at %.0f",
 			Count, Origin.x, Origin.y, Origin.z, GroundZ, Dir.x, Dir.y, Speed);
@@ -307,8 +316,10 @@ bool BloodFluid::Ready(IDirect3DDevice9* Device) {
 	if (!Emitters) Emitters = MakeBuffer(EmittersMax * sizeof(Emitter), NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "BloodFluid emitters");
 	if (!FrameBuffer) FrameBuffer = MakeBuffer((sizeof(FrameBlock) + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "BloodFluid frame");
 	const UInt32 w = TheRenderManager->width, h = TheRenderManager->height;
-	if (w != Width || h != Height || !TileCounts || !TileLists) {
+	const UInt32 tileCap = Settings.WaterGun ? 256u : 128u;
+	if (w != Width || h != Height || !TileCounts || !TileLists || tileCap != TileCap) {
 		DxvkCompute::Drop(TileCounts); DxvkCompute::Drop(TileLists);
+		TileCap = tileCap;
 		TilesX = (w + 15) / 16; TilesY = (h + 15) / 16;
 		TileCounts = MakeBuffer(TilesX * TilesY * 4, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "BloodFluid tile counts");
 		TileLists = MakeBuffer(TilesX * TilesY * TileCap * 4, NVR_EXT_BUFFER_STORAGE, "BloodFluid tile lists");
@@ -316,6 +327,38 @@ bool BloodFluid::Ready(IDirect3DDevice9* Device) {
 	}
 	if (!Grid || !Emitters || !FrameBuffer || !TileCounts || !TileLists) { Failed = true; Release(); return false; }
 	return true;
+}
+
+// UNOFFICIAL 2026-10-29 WaterGun: keys polled here on the render thread (GetAsyncKeyState, as ImGuiManager; WM messages do not
+// arrive under DXVK). Nothing while the NVR overlay or a game menu is open or the game is not the foreground window.
+void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forward, const D3DXVECTOR3& Right, double Elapsed) {
+	auto held = [](int dik) { const int vk = dik > 0 ? ImGuiManager::VkFromDik((unsigned char)dik) : 0; return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0; };
+	const bool usable = !ImGuiManager::IsVisible() && GetForegroundWindow() == ImGuiManager::GetWindow() &&
+		!(InterfaceManager && (InterfaceManager->currentMode == 2 || InterfaceManager->IsPipBoyOpen()));
+	const bool hose = usable && held(Settings.HoseKey), dump = usable && held(Settings.DumpKey), clear = usable && held(Settings.ClearKey);
+	const float ground = Player ? (float)Player->pos.z - 1.0f : Eye.z - 120.0f;
+	if (clear && !ClearWas) Clear("WaterGun clear key");
+	ClearWas = clear;
+	if (hose) {
+		// A stream from just right of and below the eye (as from a held nozzle) at the view centre.
+		HoseDebt += Elapsed * Settings.HoseFlow;
+		const int count = (int)(std::min)(HoseDebt, 8000.0);
+		if (count >= 16) {
+			HoseDebt -= count;
+			const D3DXVECTOR3 nozzle = Eye + Forward * 40.0f + Right * 10.0f - D3DXVECTOR3(0.0f, 0.0f, 12.0f);
+			Queue(nozzle, ground, Forward, Settings.HoseSpeed, 1.5f, 0.04f, 0.0f, (float)(std::max)(Elapsed, 1.0 / 120.0), count,
+				Hash(0x3A7E000000000000ull + (UInt64)(++WaterShots)), 0, 3);
+		}
+	}
+	else HoseDebt = 0.0;
+	if (dump && !DumpWas) {
+		// A ball of water in the air ahead, dropped (thrown gently down, spread wide).
+		const D3DXVECTOR3 at = Eye + Forward * Settings.DumpDistance + D3DXVECTOR3(0.0f, 0.0f, Settings.DumpDistance / 3.0f);
+		Queue(at, ground, D3DXVECTOR3(0.0f, 0.0f, -1.0f), 60.0f, 6.0f + 0.004f * Settings.DumpAmount, 0.6f, 0.0f, 0.15f, Settings.DumpAmount,
+			Hash(0x3A7E100000000000ull + (UInt64)(++WaterShots)), 0, 3);
+		Logger::Log("UNOFFICIAL BloodFluid WaterGun: a ball of %d particles at (%.0f %.0f %.0f)", Settings.DumpAmount, at.x, at.y, at.z);
+	}
+	DumpWas = dump;
 }
 
 bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDirect3DSurface9* Source, BloodFlowEffect* Owner) {
@@ -349,6 +392,7 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 		const float ground = Player ? (float)Player->pos.z - 1.0f : eye.z - 120.0f;
 		Queue(eye + forward * 70.0f, ground, forward, 520.0f, 2.0f, 0.08f, 30.0f, 0.06f, (int)(360.0f * Settings.Amount), Hash(0x7E570000ull + (UInt64)(++ThrowCount)), 0, 2);	// (seeded by count: the same throws every run)
 	}
+	if (Settings.WaterGun) WaterGunInput(eye, forward, right, elapsed);
 	if (Settings.TestPour && !PourDone && Player) {
 		PourDone = true;
 		D3DXVECTOR3 flat(forward.x, forward.y, 0.0f);

@@ -1790,6 +1790,8 @@ static int DikToVk(BYTE dik) {
 	}
 }
 
+int ImGuiManager::VkFromDik(unsigned char dik) { return DikToVk(dik); }
+
 // ---- Frame -------------------------------------------------------------------
 
 void ImGuiManager::NewFrame() {
