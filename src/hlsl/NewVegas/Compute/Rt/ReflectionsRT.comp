@@ -5,9 +5,11 @@
 // direction. At a hit (2026-10-29, protocol v2): the hit triangle's normal from the helper's copy of the geometry (binding 11), the
 // draw's average diffuse colour (binding 10), and one shadow ray toward the sun from the hit along that normal (outdoors by day).
 // Outputs (ReflectionsRTResolve.frag reads them):
-//   hit:   x hit distance (-1 no ray asked, 0 nothing within Distance), y flags (1 land, 2 albedo known, 4 normal known, 8 glow map),
-//          zw the hit's normal (world axes, octahedral, facing the ray; -dir when unknown)
-//   shade: rgb the draw's albedo (linear; 0.4 grey when unknown), a sun visible at the hit (0..1)
+//   hit:   x hit distance (-1 no ray asked, 0 nothing within Distance), y flags (1 land, 2 albedo known, 4 normal known, 8 glow map;
+//          + 16 x (1 + the key lamp's index) when a lamp shadow ray was traced), zw the hit's normal (world axes, octahedral, facing the
+//          ray; -dir when unknown)
+//   shade: rgb the draw's albedo (linear; 0.4 grey when unknown), a the sun visible at the hit (0..1) outdoors by day, else the key
+//          lamp visible from the hit (2026-10-29: the lamp that lights the hit most of the nearest 12, one shadow ray)
 // Compile: glslangValidator -V --target-env vulkan1.2 -o ReflectionsRT.spv ReflectionsRT.comp (tools/nvr-dxvk/compile-compute.sh)
 #extension GL_EXT_ray_query : require
 
@@ -16,12 +18,14 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 size;          // x width, y height (of the images), z Distance, w 1 = sun shadow rays
-	vec4 forward;       // xyz camera forward (scene space)
+	vec4 forward;       // xyz camera forward (scene space), w the lamp count (0..12) + RoughReach (the fraction)
 	vec4 right;         // xyz camera right / projection[0][0]
 	vec4 up;            // xyz camera up / projection[1][1]
 	vec4 origin;        // xyz the eye in scene space (RtCore::Eye()), w 1 = the alignment check (RT DebugView 5)
 	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up (outdoors, by day)
+	                    // (2026-10-29: size.z Distance is the mirror's reach; a rough ray reaches less, down to RoughReach x it at roughness 1)
 	vec4 layout_;       // xy one half-resolution texel in screen uv, zw one full-resolution texel (RayGen's pixel centre rule)
+	vec4 lamps[24];     // 2026-10-29: [2i] xyz the lamp in scene space, w its reach; [2i + 1] rgb its colour x dimmer (TESR gamma), w unused
 } p;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D dirImage;      // RayGen: the reflected direction, octahedral (world = scene axes)
 layout(set = 0, binding = 3, rg32f) uniform readonly image2D rayImage;      // RayGen: x the surface's view z (0: nothing), y roughness (+2: cast)
@@ -33,6 +37,11 @@ struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uin
 layout(set = 0, binding = 10, std430) readonly buffer Records { Record records[]; };
 layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; };
 const uint NoData = 0xFFFFFFFFu;
+// The instances these rays see: everything opaque. 0x10 (NVR_RT_MASK_ALPHA) is the core's alpha-tested casters (non-opaque,
+// [Main.Main.RayTracing] AlphaTested, 2026-10-29): left out until this pass tests alpha (RtAlpha.glsl), else foliage cards would
+// reflect as solid quads. Lamp glass (0x04) and lamp models (0x08) are kept: they show in reflections.
+const uint RtMask = 0xEFu;
+const float LandSelfHit = 40.0;   // game units (a tessellation bump's height and more)
 const uint RecordLand = 0x01u, RecordGlow = 0x04u, RecordAlbedoKnown = 0x10u;
 
 vec3 OctDecode(vec2 e) {
@@ -68,7 +77,11 @@ void main() {
 	// Start a little way along the ray: past the depth buffer's own error far away (no hit on the surface itself).
 	float tMin = 1.0 + ray.x * 0.0015;
 	vec3 start = surface;
-	float tMax = p.size.z;
+	// Ray budget by roughness: a rough reflection blurs far detail away, so its rays need not go as far. The reach share at
+	// roughness 1 (RoughReach) is forward.w's fraction (its integer part is the lamp count).
+	float roughness = ray.y - 2.0;
+	float roughReach = fract(p.forward.w);   // RoughReach (0 = full reach; the integer part is the lamp count)
+	float tMax = p.size.z * (roughReach > 0.0 ? mix(1.0, roughReach, clamp(roughness, 0.0, 1.0)) : 1.0);
 	if (p.origin.w > 0.5) {
 		// The alignment check: from the camera toward the surface the screen shows there. Its hit should be that surface (t = its
 		// distance from the camera); ReflectionsRTResolve compares.
@@ -79,7 +92,7 @@ void main() {
 	}
 
 	rayQueryEXT q;
-	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, start, tMin, dir, tMax);
+	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, RtMask, start, tMin, dir, tMax);
 	while (rayQueryProceedEXT(q)) { }
 	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
 		imageStore(hitImage, pixel, vec4(0.0, 0.0, 0.0, 0.0));
@@ -87,6 +100,19 @@ void main() {
 		return;
 	}
 	float t = rayQueryGetIntersectionTEXT(q, true);
+	// 2026-10-29 (noon still-spot run): NVR's land tessellation moves the ground the screen shows off the flat mesh the scene holds, so
+	// a ray leaving displaced ground can hit that same ground right away (amber blotches of "ground" in wet ground's reflection). A land
+	// hit very close to the start (LandSelfHit + 1 % of the view distance) is taken as the ground itself: one more query from past it.
+	if (p.origin.w < 0.5 && (records[rayQueryGetIntersectionInstanceIdEXT(q, true)].flags & RecordLand) != 0u && t < LandSelfHit + ray.x * 0.01) {
+		rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, RtMask, start, t + 1.0, dir, tMax);
+		while (rayQueryProceedEXT(q)) { }
+		if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+			imageStore(hitImage, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+			imageStore(shadeImage, pixel, vec4(0.4, 0.4, 0.4, 1.0));
+			return;
+		}
+		t = rayQueryGetIntersectionTEXT(q, true);
+	}
 	Record r = records[rayQueryGetIntersectionInstanceIdEXT(q, true)];
 	uint flags = ((r.flags & RecordLand) != 0u ? 1u : 0u) | ((r.flags & RecordAlbedoKnown) != 0u ? 2u : 0u) | ((r.flags & RecordGlow) != 0u ? 8u : 0u);
 
@@ -106,14 +132,40 @@ void main() {
 		}
 	}
 
-	// The sun at the hit: one shadow ray off the hit along its normal.
+	// The sun at the hit: one shadow ray off the hit along its normal. Indoors or at night instead: the lamp of the nearest 12 that
+	// lights the hit most (ReflectionsRTResolve.frag adds all 12, this one through its shadow ray).
 	float sun = 1.0;
-	if (p.size.w > 0.5 && p.sun.w > 0.5 && p.origin.w < 0.5 && dot(normal, p.sun.xyz) > 0.0) {
-		vec3 h = start + dir * t + normal * max(1.0, t * 0.001);
-		rayQueryEXT s;
-		rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, h, 0.5, p.sun.xyz, 30000.0);
-		while (rayQueryProceedEXT(s)) { }
-		sun = rayQueryGetIntersectionTypeEXT(s, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+	vec3 hitPos = start + dir * t;
+	vec3 off = hitPos + normal * max(1.0, t * 0.001);
+	if (p.size.w > 0.5 && p.sun.w > 0.5 && p.origin.w < 0.5) {
+		if (dot(normal, p.sun.xyz) > 0.0) {
+			rayQueryEXT s;
+			rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, RtMask, off, 0.5, p.sun.xyz, 30000.0);
+			while (rayQueryProceedEXT(s)) { }
+			sun = rayQueryGetIntersectionTypeEXT(s, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+		}
+	}
+	else if (p.size.w > 0.5 && p.origin.w < 0.5) {
+		int key = -1;
+		float best = 0.0;
+		int count = int(floor(p.forward.w));
+		for (int i = 0; i < count; i++) {
+			vec3 toLamp = p.lamps[2 * i].xyz - hitPos;
+			float d = length(toLamp), reach = p.lamps[2 * i].w;
+			float fall = clamp(1.0 - (d * d) / (reach * reach), 0.0, 1.0);
+			float c = fall * fall * max(dot(normal, toLamp / max(d, 1.0e-3)), 0.0) * dot(p.lamps[2 * i + 1].rgb, vec3(0.2126, 0.7152, 0.0722));
+			if (c > best) { best = c; key = i; }
+		}
+		if (key >= 0) {
+			vec3 toLamp = p.lamps[2 * key].xyz - off;
+			float d = length(toLamp);
+			// Stop short of the lamp itself (its bulb, shade or glass mesh is in the scene).
+			rayQueryEXT s;
+			rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, RtMask, off, 0.5, toLamp / max(d, 1.0e-3), max(d - 24.0, 0.6));
+			while (rayQueryProceedEXT(s)) { }
+			sun = rayQueryGetIntersectionTypeEXT(s, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+			flags += 16u * uint(key + 1);
+		}
 	}
 	vec3 albedo = (flags & 2u) != 0u ? r.albedo.rgb : vec3(0.4);
 	imageStore(hitImage, pixel, vec4(t, float(flags), OctEncode(normal)));

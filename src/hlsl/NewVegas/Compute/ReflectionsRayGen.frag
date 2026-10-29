@@ -32,6 +32,23 @@ void main() {
     vec3 tangent = normalize(abs(N.z) < 0.999 ? cross(N, vec3(0, 0, 1)) : cross(N, vec3(1, 0, 0)));
     vec3 bitangent = cross(N, tangent);
     vec3 H = normalize(tangent * (sinTheta * cos(phi)) + bitangent * (sinTheta * sin(phi)) + N * cosTheta);
+    // UNOFFICIAL 2026-10-29 RT reflections, glossy rays: with RT on (and RtVndf), the half vector is drawn from the GGX distribution of
+    // VISIBLE normals (Heitz 2018, "Sampling the GGX Distribution of Visible Normals"): only microfacets the eye sees, so far fewer
+    // rays go below the surface or into near-grazing directions, and a rough reflection converges in fewer frames. Same noise numbers.
+    if (RtOn && rtc.rt3.x > 0.5 && a > 1.0e-4) {
+        vec3 Vt = vec3(dot(-V, tangent), dot(-V, bitangent), dot(-V, N));   // toward the eye, in the tangent frame
+        vec3 Vh = normalize(vec3(a * Vt.x, a * Vt.y, Vt.z));
+        float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+        vec3 T1 = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+        vec3 T2 = cross(Vh, T1);
+        float r = sqrt(u1), ph = 6.2831853 * u2;
+        float t1 = r * cos(ph), t2 = r * sin(ph);
+        float s = 0.5 * (1.0 + Vh.z);
+        t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
+        vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+        vec3 Ht = normalize(vec3(a * Nh.x, a * Nh.y, max(0.0, Nh.z)));
+        H = normalize(tangent * Ht.x + bitangent * Ht.y + N * Ht.z);
+    }
     vec3 R = reflect(V, H);
     if (dot(R, N) <= 0.0) R = reflect(V, N);   // spread below the surface: the plain mirror direction
 

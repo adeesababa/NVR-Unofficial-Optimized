@@ -21,9 +21,11 @@ layout(set = 1, binding = 21) uniform texture2D t_rtShade;    // the helper: rgb
 
 layout(set = 2, binding = 1, std140) uniform RtConstants {
     vec4 rt;    // x 1 = on, y MaxRoughness, z Distance (game units), w DebugView
-    vec4 rt2;   // x screen match tolerance (share of the depth), y the estimate's brightness, z sun amount (0 night / indoors), w unused
+    vec4 rt2;   // x screen match tolerance (share of the depth), y the estimate's brightness, z sun amount (0 night / indoors), w the lamp count
     vec4 sunDir;    // world, toward the sun (TESR_SunDirection)
     vec4 sunColor;  // TESR_SunColor (gamma)
+    vec4 rt3;       // 2026-10-29: x 1 = VNDF-sampled rays (RtVndf), yzw unused
+    vec4 lamps[24]; // 2026-10-29: the 12 nearest scene lamps: [2i] xyz camera-relative position, w reach; [2i + 1] rgb colour x dimmer (gamma)
 } rtc;
 
 #define RtOn (rtc.rt.x > 0.5)
@@ -52,9 +54,19 @@ float RtFade(float roughness) { return 1.0 - smoothstep(0.75 * RtMaxRoughness, R
 // average diffuse colour (protocol v2 records; 0.4 grey when unknown) on the hit triangle's own normal (facing the ray when unknown),
 // lit by the surroundings cube's blurriest mip round that normal (the light the place has) and, outdoors by day, the sun as far as
 // the helper's shadow ray from the hit saw it. No texture detail and no lamps of their own (tiers 5-6).
-vec3 RtShadeHit(vec3 normal, vec3 albedo, float sunVisible) {
+// 2026-10-29: plus the 12 nearest scene lamps (the game's own colour, dimmer and reach; a squared-quadratic falloff), the hit's key
+// lamp (keyLamp >= 0, indoors / at night) through the helper's shadow ray (visible = shade.a then).
+vec3 RtShadeHit(vec3 hitW, vec3 normal, vec3 albedo, float visible, int keyLamp) {
     vec3 light = CubeOn > 0.0 ? EnvAlong(normal, 1.0).rgb : SkyAlong(vec3(0.0, 0.0, 1.0)) * 0.5;
     float sunAmount = rtc.rt2.z;
-    if (sunAmount > 0.0) light += linearize(rtc.sunColor.rgb) * saturate(dot(normal, normalize(rtc.sunDir.xyz))) * sunAmount * sunVisible;
+    if (sunAmount > 0.0) light += linearize(rtc.sunColor.rgb) * saturate(dot(normal, normalize(rtc.sunDir.xyz))) * sunAmount * visible;
+    int count = int(rtc.rt2.w + 0.5);
+    for (int i = 0; i < count; i++) {
+        vec3 toLamp = rtc.lamps[2 * i].xyz - hitW;
+        float d = length(toLamp), reach = rtc.lamps[2 * i].w;
+        float fall = saturate(1.0 - (d * d) / (reach * reach));
+        vec3 c = linearize(rtc.lamps[2 * i + 1].rgb) * fall * fall * saturate(dot(normal, toLamp / max(d, 1.0e-3)));
+        light += i == keyLamp ? c * visible : c;
+    }
     return albedo * light * rtc.rt2.y;
 }

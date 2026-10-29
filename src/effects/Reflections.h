@@ -49,6 +49,9 @@ public:
 		float	RtEstimate;			// brightness of the estimate for hits neither the screen nor the cube can show
 		bool	RtSunShadows;		// the estimate's sun goes through a shadow ray
 		bool	RtSplitTest;		// test only: RayGen + Resolve without rays (no helper needed): must be the normal trace's picture
+		bool	RtVndf;				// 2026-10-29: glossy rays from the GGX distribution of visible normals (Heitz 2018)
+		bool	RtHitLamps;			// 2026-10-29: the 12 nearest scene lamps light the hits the screen cannot show (one shadow ray to the key lamp)
+		float	RtRoughReach;		// 2026-10-29: a ray's reach at roughness 1, as a share of Distance (0 = full reach)
 	};
 	SettingsStruct	Settings;
 

@@ -59,6 +59,9 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtEstimate = std::clamp(TheSettingManager->GetSettingF(rt, "EstimateBrightness"), 0.0f, 4.0f);
 	Settings.RtSunShadows = TheSettingManager->GetSettingI(rt, "SunShadows") != 0;
 	Settings.RtSplitTest = TheSettingManager->GetSettingI(rt, "SplitTest") != 0;	// test only
+	Settings.RtVndf = TheSettingManager->GetSettingI(rt, "VisibleNormals") != 0;	// UNOFFICIAL 2026-10-29 glossy rays
+	Settings.RtHitLamps = TheSettingManager->GetSettingI(rt, "HitLamps") != 0;
+	Settings.RtRoughReach = std::clamp(TheSettingManager->GetSettingF(rt, "RoughReach"), 0.0f, 0.99f);
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -67,7 +70,41 @@ void ReflectionsEffect::UpdateSettings() {
 namespace {
 	ReflectionsEffect* RtEffect = nullptr;
 	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
-	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout; };	// Rt/ReflectionsRT.comp's Pass block (std140)
+	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout, lamps[24]; };	// Rt/ReflectionsRT.comp's Pass block (std140, 496 bytes)
+	static_assert(sizeof(RtPassConstants) <= 512, "the RT core's pass constants limit");
+
+	// UNOFFICIAL 2026-10-29: the 12 scene lamps nearest the camera that reach within Distance of it ([2i] position relative to the
+	// camera = scene space, reach; [2i + 1] colour x dimmer as the game gives it), for the hits' shading (helper + Resolve).
+	const int RtMaxLamps = 12;
+	D3DXVECTOR4 RtLampData[RtMaxLamps * 2] = {};
+	int RtLampCount = 0;
+	void RtGatherLamps(float distance) {
+		RtLampCount = 0;
+		if (!SceneNode) return;
+		struct Candidate { float key; NiPointLight* light; };
+		Candidate best[RtMaxLamps];
+		int n = 0;
+		const D3DXVECTOR4 eye = TheRenderManager->CameraPosition;
+		for (auto* e = SceneNode->lights.start; e; e = e->next) {
+			NiPointLight* light = e->data ? e->data->sourceLight : nullptr;
+			if (!light || light->Spec.r <= 0.0f || (light->Diff.r + light->Diff.g + light->Diff.b) * light->Dimmer <= 5.0f / 255.0f) continue;
+			const NiPoint3& p = light->m_worldTransform.pos;
+			const float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
+			const float key = sqrtf(dx * dx + dy * dy + dz * dz) - light->Spec.r;	// how far its light starts from the camera
+			if (key > distance) continue;
+			int at = n < RtMaxLamps ? n++ : RtMaxLamps;
+			if (at == RtMaxLamps) { if (key >= best[RtMaxLamps - 1].key) continue; at = RtMaxLamps - 1; }
+			while (at > 0 && best[at - 1].key > key) { best[at] = best[at - 1]; at--; }
+			best[at] = { key, light };
+		}
+		for (int i = 0; i < n; i++) {
+			NiPointLight* light = best[i].light;
+			const NiPoint3& p = light->m_worldTransform.pos;
+			RtLampData[2 * i] = D3DXVECTOR4(p.x - eye.x, p.y - eye.y, p.z - eye.z, light->Spec.r);
+			RtLampData[2 * i + 1] = D3DXVECTOR4(light->Diff.r * light->Dimmer, light->Diff.g * light->Dimmer, light->Diff.b * light->Dimmer, 0.0f);
+		}
+		RtLampCount = n;
+	}
 	RtPassConstants RtPending = {};
 	bool RtRecorded = false;
 
@@ -141,6 +178,7 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 	if (!RtWanted() || !RtImages()) return false;
 	// SplitTest (no helper): RayGen casts no ray, so Resolve must give the normal trace's picture exactly (the split checked on any GPU).
 	rtRays = RtCoreClient::Ready();
+	if (rtRays && Settings.RtHitLamps) RtGatherLamps(Settings.RtDistance); else RtLampCount = 0;	// UNOFFICIAL 2026-10-29 (before RayGen: both passes read them)
 	if (!ExtRender(Device, Rt.MarchSurface, Rt.MarchSurface, 8, false, Rt.MarchSurface)) return false;
 	bool traced = !rtRays;	// SplitTest: nothing to trace
 	if (rtRays) {
@@ -158,6 +196,10 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 		D3DXVec3Normalize(&toSun, &toSun);
 		RtPending.sun = D3DXVECTOR4(toSun.x, toSun.y, toSun.z, RtSunAmount() > 0.0f ? 1.0f : 0.0f);
 		RtPending.layout = D3DXVECTOR4(Constants.Layout.x, Constants.Layout.y, 1.0f / TheRenderManager->width, 1.0f / TheRenderManager->height);
+		// forward.w: the lamp count (integer part; RtGatherLamps ran before RayGen, ExtRender 8 uploads the same lamps for Resolve) +
+		// RoughReach (fraction part, below 1: a rough ray's reach share at roughness 1).
+		RtPending.forward.w = (float)RtLampCount + std::clamp(Settings.RtRoughReach, 0.0f, 0.99f);
+		memcpy(RtPending.lamps, RtLampData, sizeof(RtLampData));
 		static GpuTimer exchangeTimer("  Reflections RT (exchange)");
 		GpuProfileScope gpu(exchangeTimer, Device);
 		traced = RtCoreClient::Exchange(Device, RtUser) && RtRecorded;
@@ -550,7 +592,7 @@ namespace {
 	// three outputs and the helper's hits (set 1, bindings 17-20, image slots 16-19).
 	const UINT RtUniformSlot = 2;
 	const NVR_EXT_BINDING_DESC ReflRtUniformBinding = { 2, 1, NVR_EXT_BIND_UNIFORM_BUFFER, RtUniformSlot, NVR_EXT_VIEW_2D, FALSE, 0 };
-	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, sunDir, sunColor; };	// ReflectionsRT.glsl RtConstants (std140)
+	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, sunDir, sunColor, rt3, lamps[24]; };	// ReflectionsRT.glsl RtConstants (std140)
 	ReflRtUniforms RtUploaded;
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
@@ -730,6 +772,9 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.rt2 = D3DXVECTOR4(Settings.RtScreenTolerance, Settings.RtEstimate, RtSunAmount(), 0.0f);
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
+		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
+		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {
 			rtBuffer = ExtUniforms(extRtUniforms, &rtu, sizeof(rtu));
