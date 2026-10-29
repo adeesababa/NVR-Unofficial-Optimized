@@ -45,7 +45,7 @@ namespace RtAmbient {
 	struct TraceConstants {
 		D3DXMATRIX	viewToWorld;	// NVR's view -> scene directions: rows right, up, forward of the view (row-vector matrix)
 		D3DXVECTOR4	projection;		// x 1 / P00, y 1 / P11, zw the trace grid's size
-		D3DXVECTOR4	origin;			// xyz the view origin in scene space (CameraLocation - CameraPosition), w the frame number (0-1023)
+		D3DXVECTOR4	origin;			// xyz the view origin in scene space (RtCore::Eye(), 0), w the frame number (0-1023)
 		D3DXVECTOR4	ao;				// x distance, y rays (0 none), z 1 = move the noise each frame
 		D3DXVECTOR4	sky;			// x distance, y rays (0 none)
 	};

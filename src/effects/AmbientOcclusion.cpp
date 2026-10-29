@@ -452,9 +452,10 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	c.viewToWorld._31 = view._13; c.viewToWorld._32 = view._23; c.viewToWorld._33 = view._33;
 	c.viewToWorld._44 = 1.0f;
 	c.projection = D3DXVECTOR4(1.0f / proj._11, 1.0f / proj._22, (float)width, (float)height);
-	const NiPoint3* location = Pointers::Generic::CameraLocation;
-	c.origin = D3DXVECTOR4(location->x - TheRenderManager->CameraPosition.x, location->y - TheRenderManager->CameraPosition.y,
-		location->z - TheRenderManager->CameraPosition.z, (float)(TheFrameRateManager->FrameNumber % 1024));
+	// The eye in scene space (RtCore::Eye: 0, the scene is camera-relative). 2026-10-29: was CameraLocation - CameraPosition, which put
+	// every ray ~71000 units outside the scene (CameraLocation reads ~0 in game: the every-ray-misses bug, rt-sun-core 4ba2abfd).
+	const D3DXVECTOR3 eye = RtCore::Eye();
+	c.origin = D3DXVECTOR4(eye.x, eye.y, eye.z, (float)(TheFrameRateManager->FrameNumber % 1024));
 	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, rt.DebugView >= 4 ? (float)rt.DebugView : 0.0f);	// (both consumers keep a history: the noise moves)
 	c.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
 	const int images[2] = { RtImageIn, RtImageOut };

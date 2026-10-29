@@ -17,7 +17,7 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;   // the co
 layout(set = 0, binding = 1, std140) uniform Constants {
     mat4 viewToWorld;   // NVR's view space -> scene directions (rows right, up, forward of the view; as stored, cb.M * v)
     vec4 projection;    // x 1 / P00, y 1 / P11, zw the trace grid's size in texels
-    vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition), w the frame number (0-1023)
+    vec4 origin;        // xyz the view origin in scene space (RtCore::Eye(), 0), w the frame number (0-1023)
     vec4 ao;            // x distance, y rays (0: no AO rays), z 1 = move the noise each frame (a history averages it), w the input check
                         // (DebugView 4: x = view distance / 2000; 5: x = the normal's up component * 0.5 + 0.5; 0 = off)
     vec4 sky;           // x distance, y rays (0, 8 or 16; 0: no sky rays), zw unused
