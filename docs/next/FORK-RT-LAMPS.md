@@ -17,6 +17,29 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### Lucky 38, full list (2026-10-29 04:54, run 20261029-045431-slotA, 16/16 shots, PASS; DLL 7CA65BE9)
+- **Clean A/B:** cube-a = cube-b and rt1-a = rt1-b to the pixel (0.0 %), so every difference below is the feature.
+- **Cost (iGPU 2 CUs, 720p; GPU PROFILE "Ray tracing (copies + helper + waits)" p50 per frame, matched to the shots):**
+
+  | shot | lamps traced | rays | ms / frame |
+  |---|---|---|---|
+  | cost-m0 | 0 | - | 0 (no trace: the core idles) |
+  | cost-m4 | 4 | 1 | 15.7 |
+  | rt1 / cost-m9 | 9 | 1 | 26.0 |
+  | soft4 / cost-r4 | 9 | 4 (radius 4) | 90-94 |
+  | noskip | 9 | 1, glass + models block | 21.3 |
+
+  Scene: 2677 instances, 265 geometries, 279k triangles, 43 MB; scene build 0.5 ms a frame, first BLAS builds 47 ms once.
+  About 2.5-3 ms per traced lamp per ray here; a 40-CU RDNA2 or an RTX card should be ~15-30x faster (estimate, unmeasured).
+- **Picture:** rt1 vs cube 7.9 % of pixels > 2/255, 2.2 % > 16, darker on average (-0.22). The clearest difference: the lamp-lit
+  stripe by the stair base (cube) is in shadow traced: likely a lamp shadowing ITSELF (the red globe lamps: the light sits inside
+  its glass globe). noskip (glass and lamp models allowed to block) = rt1 to 0.2 %: the mask skip has no effect, so either the
+  core's mask hook is not applied or LampFixtures does not class these globes. Coverage (exact view): green 43.5 % (traced value
+  used), red 0.4 %, blue 0 %, grey 14.9 % (no traced lamp on that draw). soft4 = rt1 to 0.3 % (radius 4 barely softens);
+  actorsmin vs rt1 2.7 %.
+- **Next (built after the batch, not during it):** per-lamp stop past the lamp's own glowing part (LampFixtures::NearestLampPart,
+  independent of masks) and a mask-hook log (class counts, glow-list size), then the same lists + LampStop 24/48 shots.
+
 ### First run with hitting rays (2026-10-29 04:23, saloon16, run 20261029-042346-slotA, 7 of 16 shots)
 - Merged rt-sun-core's ray fix (4ba2abfd: the ray origin is RtCore::Eye = 0; CameraLocation reads ~0 in game, so every ray had
   started ~71000 units outside the camera-relative scene); my pass used the same CameraLocation for its origin and for the
