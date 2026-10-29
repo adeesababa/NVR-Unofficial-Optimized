@@ -1755,7 +1755,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// fork, a GPU with ray tracing and the helper are there).
 	{
 		static bool rtRegistered = false;
-		if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
+		if (!rtRegistered) { RtSunShadows::Register(); Effects.Reflections->RtRegister();	/* UNOFFICIAL 2026-10-28 RT reflections */ rtRegistered = true; }
 		RtCore::Frame(Device);
 	}
 	// render a shadow pass for point lights

@@ -18,6 +18,15 @@ for f in *.frag *.comp; do
   spirv-val --target-env vulkan1.1 "$b.spv"
   n=$((n+1))
 done
+# UNOFFICIAL 2026-10-28 (RT): Rt/*.comp are the RT helper's passes (NvrRtHelper.exe, 64-bit; GL_EXT_ray_query needs SPIR-V 1.4+): Vulkan 1.2.
+for f in Rt/*.comp; do
+  [ -e "$f" ] || continue
+  b="${f%.*}"
+  [ ${#NAMES[@]} -eq 0 ] || want "$(basename "$b")" || continue
+  if ! log=$(glslangValidator -V --target-env vulkan1.2 -o "$b.spv" "$f" 2>&1); then echo "$log" >&2; echo "FAILED: $f" >&2; exit 1; fi
+  spirv-val --target-env vulkan1.2 "$b.spv"
+  n=$((n+1))
+done
 v=0
 while read -r frag suffix defs; do
   case "$frag" in ""|\#*) continue ;; esac
