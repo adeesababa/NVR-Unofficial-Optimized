@@ -116,7 +116,22 @@ void main() {
   your constants; `RtSunShadows.cpp` / `RtSunShadow.comp` show the depth-buffer reconstruction that matches SunShadows.glsl's
   `toWorld()` (view z = depth x farZ; forward + right x (2u - 1) / P00 - up x (2v - 1) / P11; view normal from the normals buffer
   as right / up / forward components) and the camera-to-scene origin offset.
-- `rayQueryGetIntersectionInstanceCustomIndexEXT`: 1 land, 0 objects. Cull mask: 0x01 land, 0x02 objects.
+- `rayQueryGetIntersectionInstanceCustomIndexEXT`: 1 land, 0 objects. Cull mask: see the table below.
+
+### Instance mask bits (the one source; agreed 2026-10-29 by the main session and the RT strands)
+| Bit | Who sets it | Meaning |
+|---|---|---|
+| 0x01 | core (default) | land (full land and LOD land) |
+| 0x02 | core (default) | objects (opaque statics) |
+| 0x04 | rt-lamp-shadows (`SetMaskHook`, `MaskGlass`) | lamp glass |
+| 0x08 | rt-lamp-shadows (`SetMaskHook`, `MaskLampModel`) | lamp models |
+| 0x10 | core, `[Main.Main.RayTracing] AlphaTested` (`NVR_RT_MASK_ALPHA`) | alpha-tested casters: NON-OPAQUE, record flag 0x20; replaces the hook's mask for those instances |
+| 0x20 | core, `[Main.Main.RayTracing] Actors` (`NVR_RT_MASK_ACTOR`) | skinned actors (NPCs, creatures, the player's 3rd-person body), posed every frame (fork patch 0030) |
+| 0x40-0x80 | free | ask in the RT sessions first, then add a row here |
+
+Rays that do not test alpha use a cull mask without 0x10 (e.g. **0xEF**); otherwise alpha-tested cards act as solid quads. Rays
+that test alpha keep 0x10, drop `gl_RayFlagsOpaqueEXT` and confirm candidates with `rtAlphaPass()` (`Compute/Rt/RtAlpha.glsl`, the
+atlas = `RtCore::AlphaAtlasImage()` among the pass images).
 - Geometry is opaque only; no texture coordinates yet.
 - Protocol v2 extras (always bound):
   ```glsl
