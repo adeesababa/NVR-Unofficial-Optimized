@@ -126,7 +126,7 @@ void main() {
 | 0x04 | rt-lamp-shadows (`SetMaskHook`, `MaskGlass`) | lamp glass |
 | 0x08 | rt-lamp-shadows (`SetMaskHook`, `MaskLampModel`) | lamp models |
 | 0x10 | core, `[Main.Main.RayTracing] AlphaTested` (`NVR_RT_MASK_ALPHA`) | alpha-tested casters: NON-OPAQUE, record flag 0x20; replaces the hook's mask for those instances |
-| 0x20 | core, `[Main.Main.RayTracing] Actors` (`NVR_RT_MASK_ACTOR`) | skinned actors (NPCs, creatures, the player's 3rd-person body), posed every frame (fork patch 0030) |
+| 0x20 | core, `[Main.Main.RayTracing] Actors` (`NVR_RT_MASK_ACTOR`) | skinned actors (NPCs, creatures, the player's 3rd-person body), posed every frame (fork patch 0033) |
 | 0x40-0x80 | free | ask in the RT sessions first, then add a row here |
 
 Rays that do not test alpha use a cull mask without 0x10 (e.g. **0xEF**); otherwise alpha-tested cards act as solid quads. Rays

@@ -1174,7 +1174,7 @@ __CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0
 #endif
 
 /**
- * UNOFFICIAL 2026-10-29 (1.8-rt-skin, patch 0030): skinned geometry (actors) for the ray tracing helper, found with
+ * UNOFFICIAL 2026-10-29 (1.8-rt-skin, patch 0033): skinned geometry (actors) for the ray tracing helper, found with
  * QueryInterface(__uuidof(ID3D9NvrExtRtSkin)) (a fork without it answers E_NOINTERFACE). StageSkinnedGeometry is
  * StageGeometry with the vertices posed: each position (float3 / float4) is blended from up to 4 bones of pPalette (3 x 4
  * row-major matrices, p' = M (x, y, z, 1): straight into scene space) by the vertex's blend weights and indices, which sit

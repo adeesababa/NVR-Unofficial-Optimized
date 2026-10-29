@@ -146,7 +146,7 @@ namespace {
 		std::vector<RtCore::User> users;
 		ID3D9NvrExtShare*		share = nullptr;
 		ID3D9NvrExtRt*			rt = nullptr;
-		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0030 (skinned actors); null without it
+		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
@@ -353,7 +353,7 @@ namespace {
 		}
 		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSkin), (void**)&rtSkin))) rtSkin = nullptr;
 		actorsOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Actors") != 0;
-		if (actorsOn && !rtSkin) Logger::Log("UNOFFICIAL NVR DXVK: RT actors off: this d3d9.dll cannot pose skinned geometry (fork patch 0030, 1.8-rt-skin).");
+		if (actorsOn && !rtSkin) Logger::Log("UNOFFICIAL NVR DXVK: RT actors off: this d3d9.dll cannot pose skinned geometry (fork patch 0033, 1.8-rt-skin).");
 		NVR_EXT_SHARE_INFO info = {};
 		share->GetShareInfo(&info);
 		if (!info.Supported) { TurnOff("the Vulkan driver cannot share images and semaphores between processes"); return false; }
@@ -654,7 +654,7 @@ namespace {
 		return true;
 	}
 
-	// UNOFFICIAL 2026-10-29 skinned actors ([Main.Main.RayTracing] Actors; fork patch 0030 ID3D9NvrExtRtSkin): every partition of a
+	// UNOFFICIAL 2026-10-29 skinned actors ([Main.Main.RayTracing] Actors; fork patch 0033 ID3D9NvrExtRtSkin): every partition of a
 	// skinned geometry, posed every frame by the fork (palette = bone world x SkinToBone, Gamebryo's skinning, scene-relative), built
 	// fast in the helper, placed with the identity. Mask NVR_RT_MASK_ACTOR.
 	void Core::AddSkinned(NiGeometry* geo) {
@@ -912,7 +912,7 @@ namespace {
 			if (type == TESForm::FormType::kFormType_Land) continue;
 			const bool actor = type == TESForm::FormType::kFormType_NPC || type == TESForm::FormType::kFormType_Creature ||
 				type == TESForm::FormType::kFormType_LeveledCreature;
-			if (actor && !(actorsOn && rtSkin)) continue;	// actors: [Main.Main.RayTracing] Actors + fork patch 0030
+			if (actor && !(actorsOn && rtSkin)) continue;	// actors: [Main.Main.RayTracing] Actors + fork patch 0033
 			if ((TESObjectREFR*)Player == ref) continue;	// walked once, by Gather
 			Walk(ref->GetNode(), false);
 		}

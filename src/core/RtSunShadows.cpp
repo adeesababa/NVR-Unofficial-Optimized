@@ -3,6 +3,7 @@
 
 #include "RtSunShadows.h"
 #include "RtCore.h"
+#include "RtDenoise.h"
 #include "DxvkCompute.h"
 #include "GpuProfiler.h"
 
@@ -18,6 +19,8 @@ namespace {
 		float	normalBiasPerUnit = 0.0005f;
 		float	startBias = 1.0f;
 		float	rayLength = 30000.0f;
+		float	sunAngle = 0.0f;		// degrees across the sun's disc: 0 = one hard ray, > 0 = rays jittered inside it + the denoiser
+		bool	denoise = true;
 		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
@@ -28,6 +31,10 @@ namespace {
 
 	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1;
 	IDirect3DTexture9*	visibilityTexture = nullptr;
+	IDirect3DTexture9*	denoisedTexture = nullptr;		// SunAngle > 0: the denoised visibility (R16F)
+	IDirect3DSurface9*	denoisedSurface = nullptr;
+	IDirect3DTexture9*	signalTexture = nullptr;		// what Apply / RenderDebug use this frame (the denoised one when it ran)
+	RtDenoise::Denoiser* denoiser = nullptr;
 	IDirect3DSurface9*	visibilitySurface = nullptr;
 	UINT		textureWidth = 0, textureHeight = 0;
 	bool		tracedThisFrame = false;
@@ -47,6 +54,8 @@ namespace {
 		S.startBias = TheSettingManager->GetSettingF(kSection, "StartBias");
 		S.rayLength = (std::max)(100.0f, TheSettingManager->GetSettingF(kSection, "RayLength"));
 		S.debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
+		S.sunAngle = (std::min)((std::max)(TheSettingManager->GetSettingF(kSection, "SunAngle"), 0.0f), 10.0f);
+		S.denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
 	}
 
 	const D3DXVECTOR4* Constant(const char* name) {
@@ -104,6 +113,8 @@ namespace {
 		c.sun[3] = shadows->Constants.ShadowFade.x < 1.0f ? 1.0f : 0.0f;
 		c.bias[0] = S.normalBias; c.bias[1] = S.normalBiasPerUnit; c.bias[2] = S.startBias; c.bias[3] = S.rayLength;
 		c.alpha[0] = RtCore::AlphaTested() ? 1.0f : 0.0f;
+		c.alpha[1] = (float)(frames & 1023);								// the jitter's frame
+		c.alpha[2] = tanf(0.5f * S.sunAngle * 0.0174532925f);				// the sun cone's half-angle tangent (0: hard)
 		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f : 0.0f;
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
@@ -162,7 +173,21 @@ namespace RtSunShadows {
 		const bool traced = tracedThisFrame;
 		tracedThisFrame = false;
 		tracedForDebug = traced;
-		if (!traced || S.debugView == 2 || S.debugView >= 4 || !visibilityTexture) return;
+		signalTexture = visibilityTexture;
+		// Soft shadows: the jittered one-ray visibility through the shared denoiser (RtDenoise.h)
+		if (traced && visibilityTexture && S.sunAngle > 0.0f && S.denoise) {
+			const UINT w = TheRenderManager->width, h = TheRenderManager->height;
+			if (!denoisedTexture || textureWidth != w || textureHeight != h) {
+				if (denoisedSurface) { denoisedSurface->Release(); denoisedSurface = nullptr; }
+				if (denoisedTexture) { denoisedTexture->Release(); denoisedTexture = nullptr; }
+				Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &denoisedTexture, nullptr);
+				if (denoisedTexture) denoisedTexture->GetSurfaceLevel(0, &denoisedSurface);
+			}
+			if (!denoiser) denoiser = RtDenoise::Create("RT sun shadows");
+			RtDenoise::Settings settings;
+			if (denoisedSurface && RtDenoise::Run(denoiser, Device, visibilityTexture, denoisedSurface, settings)) signalTexture = denoisedTexture;
+		}
+		if (!traced || S.debugView == 2 || S.debugView >= 4 || !signalTexture) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		IDirect3DSurface9* target = shadows->Textures.ShadowPassSurface;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(S.debugView == 1 || S.debugView == 3 ? 1 : 0);
@@ -180,7 +205,7 @@ namespace RtSunShadows {
 
 		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { S.debugView ? 1.0f : (std::min)((std::max)(S.strength, 0.0f), 1.0f), 0, 0, 0 };
 		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
-		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = visibilityTexture;
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = signalTexture;
 		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
 		NVR_EXT_DRAW_DESC draw = {};
 		draw.pPipeline = pipeline;
@@ -199,7 +224,7 @@ namespace RtSunShadows {
 	void RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
 		const bool traced = tracedForDebug;
 		tracedForDebug = false;
-		if (!traced || S.debugView < 4 || !visibilityTexture || !RenderTarget) return;
+		if (!traced || S.debugView < 4 || !signalTexture || !RenderTarget) return;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(2);
 		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
 		SunShadowsEffect* sunShadows = TheShaderManager->Effects.SunShadows;
@@ -209,7 +234,7 @@ namespace RtSunShadows {
 		Device->SetRenderTarget(0, sunShadows->scratchSurface[0]);	// a pass may not draw into the device's current target
 		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { 1.0f, 0, 1, 0 };
 		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
-		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = visibilityTexture;
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = S.debugView == 4 ? signalTexture : visibilityTexture;
 		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
 		NVR_EXT_DRAW_DESC draw = {};
 		draw.pPipeline = pipeline;
