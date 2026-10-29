@@ -15,6 +15,7 @@
 // the draw's lights' traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
 
 #include <algorithm>
+#include "PointShadowSchedule.h"	// PointShadowSlotState (KeepCube)
 #include "LampFixtures.h"
 #include "DxvkCompute.h"
 #include "RtCore.h"
@@ -25,8 +26,10 @@ namespace RtLampShadows {
 	inline constexpr const char* kSection = "Shaders.ShadowsInteriors.RT";
 
 	// Instance mask bits the RT core gives the scene (FORK-RT-CORE.md: 0x01 land, 0x02 objects); ours for the lamps' own parts,
-	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model.
-	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08;
+	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model. The core puts
+	// alpha-tested casters under 0x10, non-opaque (agreed scheme 2026-10-29); the lamp rays do not test alpha yet, so they leave 0x10
+	// out and those casters let lamp light through (the cube maps still draw them alpha-tested: a known difference).
+	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08, MaskAlphaTested = 0x10;
 
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
@@ -37,6 +40,7 @@ namespace RtLampShadows {
 		float lamps[TracedSlots][4];
 		float radius[3][4];
 		float stops[3][4];						// per lamp: where its rays stop short of it, at least LampStop (its own globe / bulb / glass)
+		float flags[4];							// x: OneSided (diagnostic: count only casters facing the lamp, as the cube maps do)
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
@@ -63,7 +67,8 @@ namespace RtLampShadows {
 	inline TracedCamera Pending = {};
 
 	// Per draw
-	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view
+	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view, 4 one lamp (DebugView 3)
+	inline float DebugLamp = 0.0f;			// c217.z: DebugView 3's traced lamp index
 	inline int MaxLamps = 8;				// cube slots below min(this, 9) use the traced result
 	inline float Reproject[4][4] = {};		// c206-c209
 	inline float RtConstant[4] = {};		// c215
@@ -161,13 +166,30 @@ namespace RtLampShadows {
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
 		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
 		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
-		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : 1.0f;
+		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : debugView == 3 ? 4.0f : 1.0f;
+		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TracedSlots - 1);
 		RtConstant[0] = Mode;
 	}
 
 	// The slot a draw's light reads in the traced result, -1 for its cube map.
 	inline float TracedSlot(int cubeSlot) {
 		return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MapSlots && TracedMap[cubeSlot] >= 0 ? (float)TracedMap[cubeSlot] : -1.0f;
+	}
+
+	// UNOFFICIAL 2026-10-29 SkipTracedCubes ([Shaders.ShadowsInteriors.RT], on): the cost win. A lamp the trace covered last frame
+	// keeps the cube map it has (the fallback where the traced frame did not see a point) instead of redrawing it: no redraw for the
+	// schedule, moved casters or a moved light. Drawn as before when it has no cube map of its own yet (new lamp, new cell, another
+	// light in the slot, another radius, a partial one), and, with ActorsFromCubeMaps on, while people move near it (their shadows
+	// come from the cube map). ShadowManager's cube loop asks before drawing slot i.
+	inline UInt32 SkippedCubes = 0, SkippedCubesFrames = 0;
+	inline bool KeepCube(int slot, const PointShadowSlotState& last, const PointShadowSlotState& now) {
+		if (!CompiledIn || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;
+		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
+		if (!last.valid || last.partial || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
+			last.radius != now.radius) return false;
+		if (!now.staticCasters && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps")) return false;
+		SkippedCubes++;
+		return true;
 	}
 
 	// PointShadowForward::SetForPass: slots = the draw's lights' TracedSlot (-1 none).
@@ -178,7 +200,7 @@ namespace RtLampShadows {
 		memcpy(c[4], RtConstant, sizeof(RtConstant));
 		c[4][0] = Mode;
 		memcpy(c[5], slots, 4 * sizeof(float));
-		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = c[6][3] = -1.0f;
+		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = DebugLamp; c[6][3] = -1.0f;	// z: DebugView 3's lamp
 		if (force || !UploadedValid || memcmp(c, Uploaded, sizeof(c))) {
 			TheRenderManager->device->SetPixelShaderConstantF(206, &c[0][0], 4);
 			TheRenderManager->device->SetPixelShaderConstantF(215, &c[4][0], 3);
@@ -252,11 +274,12 @@ namespace RtLampShadows {
 		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
 		const bool skipModels = TheSettingManager->GetSettingI(kSection, "SkipLampModels") != 0;
 		c.params2[0] = skipModels ? (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampModelDistance"), 0.0f) : 0.0f;
-		UINT farMask = 0xFF;
+		UINT farMask = 0xFF & ~MaskAlphaTested;	// 0xEF: non-opaque alpha-tested casters are not tested here, skipped
 		if (TheSettingManager->GetSettingI(kSection, "SkipLampGlass")) farMask &= ~MaskGlass;
 		c.params2[1] = (float)farMask;
 		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
 		c.params2[3] = (float)TracedSlots;
+		c.flags[0] = TheSettingManager->GetSettingI(kSection, "OneSided") ? 1.0f : 0.0f;
 		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
 		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
 		for (int i = 0; i < LampCount; i++) {	// traced index i (PendingMap)
@@ -275,6 +298,16 @@ namespace RtLampShadows {
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
 		memcpy(TracedMap, PendingMap, sizeof(TracedMap));
+		// Which lamps were traced (index -> cube slot -> where): matches the LAMPSLOT lines of LogLamps; now and then
+		if ((FramesTraced % 600) == 1 && FramesTraced <= 6001) {
+			char text[900]; int used = 0;
+			for (int i = 0; i < LampCount && used < 800; i++)
+				used += sprintf_s(text + used, sizeof(text) - used, " | %d: slot %d at %.0f %.0f %.0f reach %.0f stop %.0f", i, Lamps[i].slot,
+					Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, Lamps[i].reach, Lamps[i].stop);
+			Logger::Log("UNOFFICIAL RT lamp shadows: trace %u, %d lamps, cube redraws skipped %u since the last line (SkipTracedCubes)%s",
+				FramesTraced, LampCount, SkippedCubes, LampCount ? text : "");
+			SkippedCubes = 0;
+		}
 		if (FramesTraced++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
 	}

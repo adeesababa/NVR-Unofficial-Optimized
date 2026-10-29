@@ -17,6 +17,24 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+## Phase 2 (2026-10-29 from 16:00, branch claude/rt-lamps-2 from claude/rt-test-merge af12c7e7)
+### Step 1: the Lucky 38 stair-base stripe = a cube-map LEAK, traced is right (runs rtlamp-5 16:38, rtlamp-6 16:52, PASS)
+- DebugView 3 (one traced lamp, DebugLamp) + the traced-lamps log: the stripe is lamp 3 of the trace = cube slot 3, an invisible fill
+  light at (1789, -3505, 7805), reach 834, no fixture. Traced, a large surface blocks it over the floor with a straight edge.
+- OneSided (diagnostic: only the closest caster counts, and only if it faces the lamp, as the cube maps draw casters): that lamp's
+  blocked region becomes lit and the stripe comes back (rt1-onesided vs rt1: 5.6 % of pixels, +0.50). So the blocker faces AWAY
+  from the lamp: the one-sided cube map does not draw it and leaks the light; the two-sided rays block it. No RT fix needed; it is
+  the cube maps' single-sided-caster problem (the main session's "rings under cups"), which RT removes.
+- Also: mask scheme agreed with rt-sun-core (ba320c39): lamp glass 0x04, lamp models 0x08, alpha-tested casters 0x10 (the core's,
+  non-opaque); the lamp rays use 0xEF (0xE7 near the lamp) until they test alpha.
+### Step 4: SkipTracedCubes (f100ad80, DLL D6ECAD36, on): DONE (run rtlamp-7 17:16, 20261029-171614-slotA, PASS)
+- A traced lamp keeps its cube map (the fallback) instead of redrawing it; drawn when it has none of its own, and while people move
+  near it with ActorsFromCubeMaps on. ~2600-3000 redraws skipped per 600 traces.
+- Picture identical: rt-skip vs rt-redraw 0.0 % of pixels > 2/255 in Lucky 38 and Vault 21 (pairs repeat to 0.0-0.1 %).
+- Lucky 38 (iGPU): "Point shadow cubemaps" GPU 3.9 -> 1.86 ms a frame, "Shadow maps (CPU)" 1.5 -> 1.07 ms. Vault 21: little (8.5 ->
+  7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
+  win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
+
 ## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
 Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
 - **Works end to end on the iGPU** (9800X3D RDNA2, 2 CUs, 720p): the RT core's 64-bit helper traces the 9 lamps the visible draws

@@ -308,6 +308,12 @@ float PointShadowTraced(float slot, float3 worldPos) {
 // RED = the traced frame saw another depth there (brighter = further off), GREY = no light of this draw is traced. Exact per pixel
 // (an earlier version sent the classes through the lighting as encoded shadow values, which other lighting maths then distorted).
 float3 PointShadowRtCoverage(float3 worldPos) {
+    // UNOFFICIAL 2026-10-29 DebugView 3 (x 4): ONE traced lamp, NVR_PointShadowRTSlot[1].z, at every pixel whatever the draw's own lamps:
+    // white = lit .. black = blocked, MAGENTA = no traced data there (off the traced frame, another depth).
+    [branch] if (NVR_PointShadowRT.x > 3.5f) {
+        float one = PointShadowTraced(NVR_PointShadowRTSlot[1].z, worldPos);
+        return one >= 0.0f ? one : float3(1.0f, 0.0f, 1.0f);
+    }
     float slot = NVR_PointShadowRTSlot[0].x;
     slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].y;
     slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].z;

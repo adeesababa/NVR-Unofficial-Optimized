@@ -27,6 +27,8 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 lamps[9];      // xyz the lamp (scene space), w its reach (units; 0 = no lamp in this slot)
 	vec4 radius[3];     // the radius the rays aim over for lamp k: radius[k / 4][k % 4]
 	vec4 stops[3];      // lamp k's own stop (past its globe / bulb / glass; 0 = none): the rays stop max(LampStop, this) short of it
+	vec4 flags;         // x: 1 = OneSided (diagnostic): only the closest surface counts, and only if it faces the lamp, as the cube
+	                    //    maps draw casters (one-sided, seen from the lamp); 0 = every surface both ways (the scene's own)
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
@@ -41,9 +43,12 @@ float hash12(vec2 q) {
 bool blocked(vec3 origin, vec3 segment, float tMin, float tMax, uint mask) {
 	if (!(tMax > tMin)) return false;
 	rayQueryEXT q;
-	rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, origin, tMin, segment, tMax);
+	bool oneSided = p.flags.x > 0.5;
+	rayQueryInitializeEXT(q, scene, (oneSided ? 0u : gl_RayFlagsTerminateOnFirstHitEXT) | gl_RayFlagsOpaqueEXT, mask, origin, tMin, segment, tMax);
 	while (rayQueryProceedEXT(q)) { }
-	return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) return false;
+	// OneSided: the ray runs from the surface toward the lamp, so a caster facing the lamp is hit on its BACK face
+	return !oneSided || !rayQueryGetIntersectionFrontFaceEXT(q, true);
 }
 
 void main() {
