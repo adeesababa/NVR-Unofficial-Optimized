@@ -155,7 +155,7 @@ namespace ObjectMotion {
 			"float4 B[54] : register(c9); float4 PB[54] : register(c64); row_major float4x4 PW : register(c118);"
 			"float4 CD : register(c122); float4 FW : register(c123);"
 			"struct I { float4 p : POSITION; float4 bw : BLENDWEIGHT; float4 bi : BLENDINDICES; };"
-			"struct O { float4 pos : POSITION; float4 delta : TEXCOORD0; };"
+			"struct O { float4 pos : POSITION; float4 delta : TEXCOORD0; };\n"	// (a #define must start its own line)
 			"#define SKIN(M) { float4 q = float4(IN.p.xyz, 1.0f); float4 o = IN.bi.zyxw * 765.01f;"
 			"  float3 a = mul(float3x4(M[0 + o.w], M[1 + o.w], M[2 + o.w]), q); float3 b = mul(float3x4(M[0 + o.z], M[1 + o.z], M[2 + o.z]), q);"
 			"  float3 c = mul(float3x4(M[0 + o.x], M[1 + o.x], M[2 + o.x]), q); float3 e = mul(float3x4(M[0 + o.y], M[1 + o.y], M[2 + o.y]), q);"
