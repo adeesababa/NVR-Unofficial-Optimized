@@ -162,7 +162,7 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   (bench runs have FSR off).
 - **Bench:** the third-person view ignores `player.setangle`; move the sun (GameHour) instead to vary the light direction.
 - **Cost on a real RT GPU** unknown (the iGPU only shows relative cost).
-- **The 1070:** with `Enabled` false (the default) no helper starts and nothing changes. NOT tested: Enabled on while the game
-  runs on the 1070 (no ray query there). The helper picks the first RT-capable GPU (it would pick the iGPU), whose memory cannot
-  hold the game's shared images; the import should fail and the core switch itself off (as when the first in-game run's images
-  were refused), but the helper should rather pick the game's own GPU (match the adapter LUID) and stay off when it has no RT.
+- **The 1070:** with `Enabled` false (the default) no helper starts and nothing changes. With it on while the game runs on the
+  1070, the helper takes the game's own GPU (matched by adapter LUID, driver UUID checked), finds no ray query there and stops
+  ("no ray tracing on the game's GPU"); the core then switches itself off and the old path runs. Code path read, not run in game
+  on the 1070.
