@@ -1160,3 +1160,4 @@ UInt32 RtCore::Waiting() { return TheCore.waiting; }
 UInt32 RtCore::Released() { return TheCore.released; }
 bool RtCore::AlphaTested() { return TheCore.state == Core::Running && TheCore.alphaOn && TheCore.atlasImage >= 0; }
 int RtCore::AlphaAtlasImage() { return TheCore.alphaOn ? TheCore.atlasImage : -1; }
+bool RtCore::Actors() { return TheCore.state == Core::Running && TheCore.actorsOn && TheCore.rtSkin; }

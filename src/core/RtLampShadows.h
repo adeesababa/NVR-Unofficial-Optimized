@@ -33,6 +33,12 @@ namespace RtLampShadows {
 	// out and those casters let lamp light through (the cube maps still draw them alpha-tested: a known difference).
 	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08, MaskAlphaTested = 0x10;
 
+	// ActorsFromCubeMaps applies only while the traced scene has no people: with the RT core's posed actors in it (RtCore::Actors(),
+	// mask 0x20, which the lamp rays' masks keep) people cast traced shadows and their cube-map layer is neither read nor redrawn.
+	inline bool ActorsFromCubeMaps() {
+		return !RtCore::Actors() && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps");
+	}
+
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
 
@@ -157,7 +163,7 @@ namespace RtLampShadows {
 		Reproject[3][3] = D3DXVec3Dot(&d, &forward);
 		RtConstant[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "DepthTolerance"), 0.004f);	// at least the depth code's step
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
-		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
+		RtConstant[3] = ActorsFromCubeMaps() ? 1.0f : 0.0f;
 		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
 		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : debugView == 3 ? 4.0f : 1.0f;
 		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TableSlots - 1);
@@ -180,7 +186,7 @@ namespace RtLampShadows {
 		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
 		if (!last.valid || last.partial || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
 			last.radius != now.radius) return false;
-		if (!now.staticCasters && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps")) return false;
+		if (!now.staticCasters && ActorsFromCubeMaps()) return false;
 		SkippedCubes++;
 		return true;
 	}

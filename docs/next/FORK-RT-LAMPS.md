@@ -35,6 +35,13 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Step 2: actors (merged claude/rt-sun-2 7fc7ffc2: [Main.Main.RayTracing] Actors, mask 0x20, fork patch 0030) -- built, NOT run
+- The lamp rays' masks (far 0xEF, near 0xE7) already keep 0x20, so posed people block lamp rays once the core has them.
+- New RtCore::Actors() (running + Actors on + the fork's 1.8-rt-skin): while true, ActorsFromCubeMaps is ignored, so people's
+  shadows come from the trace only and SkipTracedCubes also skips the people-only refreshes (Vault 21: 7 a frame, ~8 ms iGPU).
+- To run once rt-sun-core ships a fork d3d9 with patch 0030: rtlamp-8 list with Actors on/off; watch actors' self-shadowing
+  (StartOffset on skinned normals) and the Vault 21 cube time.
+
 ### Step 3, part 1: per-pixel lamp selection over every shadowed lamp (v4, 62575ea4, DLL FBF611F4; run rtlamp-8 18:00, PASS)
 - The trace's lamp table holds every published shadow lamp (cube slots 0-62; 24 in this run's toml, LightPoints); each pixel ranks
   them by the unshadowed light they bring it (intensity x the game's falloff x N.L) and traces its LampsPerPixel strongest. The
