@@ -1876,6 +1876,12 @@ HoseFlow = 6000.0                      # [100-30000] Particles a second from the
 HoseSpeed = 700.0                      # [50-3000] Hose speed (game units a second; 700 = about 10 m/s).
 DumpAmount = 6000                      # [100-8192] Particles in one ball.
 DumpDistance = 350.0                   # [50-3000] How far ahead the ball appears (game units); it starts a third of that above the view.
+WaterScale = 1.0                       # [1-4] (2026-10-29) Particle size x this while the water gun is on: each particle holds scale^3 the water (64x at 4), so the same MaxParticles makes a flood; puddles merge smoother, thin streams look blobbier. Blood too (one simulation). Changing it clears the fluid.
+FloodKey = 50                          # (2026-10-29) Key code pressed to start / stop a flood: rain of water over the area ahead (50 = M). 0: none.
+FloodRate = 60000.0                    # [1000-500000] Flood particles a second (at most 8192 a frame).
+FloodRadius = 900.0                    # [50-4000] Flood area radius (game units) round the spot ahead.
+FloodDistance = 700.0                  # [0-4000] The flood's spot: this far ahead of the camera, on the level.
+FloodHeight = 600.0                    # [0-3000] The rain starts this far above the camera.
 
 [_Shaders.BloodFlow.Status]
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.

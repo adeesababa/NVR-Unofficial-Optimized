@@ -103,6 +103,12 @@ void BloodFluid::ReadSettings() {
 	Settings.HoseSpeed = std::clamp(TheSettingManager->GetSettingF(w, "HoseSpeed"), 50.0f, 3000.0f);
 	Settings.DumpAmount = std::clamp(TheSettingManager->GetSettingI(w, "DumpAmount"), 100, 8192);
 	Settings.DumpDistance = std::clamp(TheSettingManager->GetSettingF(w, "DumpDistance"), 50.0f, 3000.0f);
+	Settings.WaterScale = std::clamp(TheSettingManager->GetSettingF(w, "WaterScale"), 1.0f, 4.0f);
+	Settings.FloodKey = std::clamp(TheSettingManager->GetSettingI(w, "FloodKey"), 0, 255);
+	Settings.FloodRate = std::clamp(TheSettingManager->GetSettingF(w, "FloodRate"), 1000.0f, 500000.0f);
+	Settings.FloodRadius = std::clamp(TheSettingManager->GetSettingF(w, "FloodRadius"), 50.0f, 4000.0f);
+	Settings.FloodDistance = std::clamp(TheSettingManager->GetSettingF(w, "FloodDistance"), 0.0f, 4000.0f);
+	Settings.FloodHeight = std::clamp(TheSettingManager->GetSettingF(w, "FloodHeight"), 0.0f, 3000.0f);
 	static int logged = -1;
 	if (logged != (Settings.Enabled ? 1 : 0)) {
 		logged = Settings.Enabled ? 1 : 0;
@@ -317,7 +323,7 @@ bool BloodFluid::Ready(IDirect3DDevice9* Device) {
 	if (!Emitters) Emitters = MakeBuffer(EmittersMax * sizeof(Emitter), NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "BloodFluid emitters");
 	if (!FrameBuffer) FrameBuffer = MakeBuffer((sizeof(FrameBlock) + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "BloodFluid frame");
 	const UInt32 w = TheRenderManager->width, h = TheRenderManager->height;
-	const UInt32 tileCap = Settings.WaterGun ? 256u : 128u;
+	const UInt32 tileCap = Settings.WaterGun ? (Settings.WaterScale > 1.5f ? 512u : 256u) : 128u;	// (big water particles cover many tiles each)
 	if (w != Width || h != Height || !TileCounts || !TileLists || tileCap != TileCap) {
 		DxvkCompute::Drop(TileCounts); DxvkCompute::Drop(TileLists);
 		TileCap = tileCap;
@@ -352,7 +358,19 @@ void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forwar
 	if (hose && !hoseLogged) { hoseLogged = true; Logger::Log("UNOFFICIAL BloodFluid WaterGun: hose on"); }
 	const float ground = Player ? (float)Player->pos.z - 1.0f : Eye.z - 120.0f;
 	// (2026-10-29: a press is the key going down, whatever the focus test said: focus flickered and one V gave a ball a frame.)
-	const bool clearRaw = held(Settings.ClearKey), dumpRaw = held(Settings.DumpKey);
+	const bool clearRaw = held(Settings.ClearKey), dumpRaw = held(Settings.DumpKey), floodRaw = held(Settings.FloodKey);
+	if (usable && floodRaw && !FloodWas) { Flooding = !Flooding; Logger::Log("UNOFFICIAL BloodFluid WaterGun: flood %s", Flooding ? "on" : "off"); }
+	FloodWas = floodRaw;
+	if (Flooding) {
+		// Rain over a disc round the spot ahead, from above the camera (unseen water in the air keeps falling).
+		D3DXVECTOR3 flat(Forward.x, Forward.y, 0.0f);
+		const float fl = BloodFlowBoxes::Length(flat);
+		flat = fl > 1e-3f ? flat / fl : D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+		const D3DXVECTOR3 at = Eye + flat * Settings.FloodDistance + D3DXVECTOR3(0.0f, 0.0f, Settings.FloodHeight);
+		const int count = (int)(std::min)(Settings.FloodRate * Elapsed, 8192.0);
+		if (count >= 16) Queue(at, ground, D3DXVECTOR3(0.0f, 0.0f, -1.0f), 150.0f, Settings.FloodRadius, 0.15f, 0.0f, (float)(std::max)(Elapsed, 1.0 / 120.0), count,
+			Hash(0x3A7E200000000000ull + (UInt64)(++WaterShots)), 0, 3);
+	}
 	if (clear && !ClearWas) Clear("WaterGun clear key");
 	ClearWas = clearRaw;
 	if (hose) {
@@ -400,6 +418,8 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 		AllocCapacity = (UInt32)Settings.MaxParticles;
 	}
 
+	const float scale = Settings.WaterGun ? Settings.WaterScale : 1.0f;
+	if (scale != LastScale) { if (Used > 0 || PendingCount > 0) Clear("WaterScale changed"); LastScale = scale; }
 	// TEST emitters: a throw from the camera at the view centre, a pool bleeding on the ground ahead.
 	const D3DXVECTOR4* viewConstant = Constant("TESR_ViewTransform");
 	const D3DXVECTOR4* projConstant = Constant("TESR_ProjectionTransform");
@@ -471,18 +491,20 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	// the fluid works in, zw still 1 / the textures' size, for UVs. The tiles cover only that part.)
 	const UInt32 rw = RenderRect::Width(Width), rh = RenderRect::Height(Height);
 	f.screen[0] = (float)rw; f.screen[1] = (float)rh; f.screen[2] = 1.0f / Width; f.screen[3] = 1.0f / Height;
-	f.sim[0] = Step; f.sim[1] = Gravity; f.sim[2] = Radius; f.sim[3] = (float)steps;
-	f.fluid[0] = 600.0f; f.fluid[1] = 120.0f; f.fluid[2] = Settings.Viscosity; f.fluid[3] = powf(Cell / (2.0f * Radius), 3.0f);
+	// (2026-10-29 WaterScale: particle and grid cell scaled together, so the fluid's rest density per cell stays the same.)
+	const float S = scale, r = Radius * S, cell = Cell * S;
+	f.sim[0] = Step; f.sim[1] = Gravity; f.sim[2] = r; f.sim[3] = (float)steps;
+	f.fluid[0] = 600.0f; f.fluid[1] = 120.0f; f.fluid[2] = Settings.Viscosity; f.fluid[3] = powf(cell / (2.0f * r), 3.0f);
 	// (2026-10-27: blood in flight counts as on a surface up to 10 units behind what the camera sees there, 25 before. The window
 	// is for drops fast enough to pass a surface within a step (a drop off a 2 m ledge moves under 4 units a step); 25 also caught
 	// blood behind a body's legs or under it and put it on the body's front, where it ran off as drops.)
 	const bool old = Settings.OldThrow;
-	f.wall[0] = Settings.Friction; f.wall[1] = Settings.Cling; f.wall[2] = 1.5f; f.wall[3] = old ? 25.0f : 10.0f;
+	f.wall[0] = Settings.Friction; f.wall[1] = Settings.Cling; f.wall[2] = 1.5f * S; f.wall[3] = (old ? 25.0f : 10.0f) * S;
 	f.settle[0] = 0.4f * Settings.SettleTime; f.settle[1] = 0.6f * Settings.SettleTime; f.settle[2] = 0.5f; f.settle[3] = 0.4f;	// (splash: the spike's 1.0 flung a throw over a whole table top in game, 2026-10-26)
-	f.gridf[0] = Cell; f.gridf[1] = 1.0f / Cell; f.gridf[2] = 1500.0f; f.gridf[3] = Settings.Lifetime;
+	f.gridf[0] = cell; f.gridf[1] = 1.0f / cell; f.gridf[2] = 1500.0f; f.gridf[3] = Settings.Lifetime;
 	f.counts[0] = Capacity; f.counts[1] = Used; f.counts[2] = (rw + 15) / 16; f.counts[3] = (rh + 15) / 16;
 	f.counts2[0] = TileCap; f.counts2[1] = GridCells - 1; f.counts2[2] = (UInt32)Settings.DebugView; f.counts2[3] = (UInt32)PendingCount;
-	f.look[0] = Settings.StainSize; f.look[1] = Radius * (old ? 1.3f : Settings.DropSize); f.look[2] = Settings.Threshold; f.look[3] = Settings.Bump;
+	f.look[0] = Settings.StainSize * S; f.look[1] = r * (old ? 1.3f : Settings.DropSize); f.look[2] = Settings.Threshold; f.look[3] = Settings.Bump;
 	// UNOFFICIAL 2026-10-27: BloodFlow's wet look (TESR_BloodFlowLook) and the reworked throws and drops (BloodFluid.glsl rework):
 	// x 1 splat blood born on its surface and pools born lying on the ground; y the share of drops in the air drawn; z 1 the
 	// field's slope bends the normal mostly at the edges (a pool's top is flat, not every particle's bump); w the drops' glints.
