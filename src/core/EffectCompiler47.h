@@ -30,7 +30,13 @@ namespace EffectCompiler47 {
 
 	// The setting, read on the main thread (EffectPrecompile::Start and LoadEffect) and kept for the workers.
 	inline bool Use = false;
-	inline void ReadSetting() { Use = TheSettingManager->GetSettingI("Main.Main.Performance", "NewEffectCompiler") != 0 && Function(); }
+	// A missing key (an older defaults toml next to the new DLL: macintroll, P84 v4, "stuck loading shaders") means on, the shipped
+	// default, not 0 (the old compiler, minutes on the big effects).
+	inline void ReadSetting() {
+		SettingManager::Configuration::ConfigNode node;
+		const bool wanted = TheSettingManager->Config.FillNode(&node, "Main.Main.Performance", "NewEffectCompiler") ? node.BoolValue : true;
+		Use = wanted && Function();
+	}
 
 	// What an effect's preprocessed cache file holds and is checked against: PortableSource, plus a line naming the compiler when the
 	// new one is chosen (an older cache, made by D3DX, then counts as stale once).
