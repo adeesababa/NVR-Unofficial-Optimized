@@ -203,6 +203,8 @@ public:
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;	// LampSwitchMargin clamped to 0..0.9
 			bool ShadowClusterEnabled = false;	// UNOFFICIAL (2026-10-26): lamps closer than ShadowClusterDistance share one shadow (the brightest one's)
 			float ShadowClusterDistance = 128.0f;
+			bool ShadowClusterInvisibleOnly = false;	// UNOFFICIAL (2026-10-29): only invisible lights (LampFixtures) give their shadow up
+			int ShadowClusterMinLights = 0;				// UNOFFICIAL (2026-10-29): ... and only where this many lights stand within the distance
 			float FillLightRadius;		// UNOFFICIAL (2026-10-08): lamps reaching farther than this are fill lights (0 = none)
 			float FillLightShadowStrength;	// UNOFFICIAL (2026-10-08): how dark fill lights' shadows are, 0..1 (0 = no shadow)
 			int Quality;				// UNOFFICIAL (2026-10-10): PCF taps, 0 Low (1), 1 Medium (4, as before), 2 High (10), 3 Ultra (20)

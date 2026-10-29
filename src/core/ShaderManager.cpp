@@ -964,7 +964,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
 	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
-		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps);	// (they need the cell's lamps listed)
+		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps ||
+		(Settings->Forward.ShadowClusterEnabled && Settings->Forward.ShadowClusterInvisibleOnly));	// (they need the cell's lamps listed)
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 	LampFixtures::LogModels = logLamps;
 
@@ -1081,12 +1082,32 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		}
 		std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.brightness > b.brightness; });
 		const float d2max = Settings->Forward.ShadowClusterDistance * Settings->Forward.ShadowClusterDistance;
+		// UNOFFICIAL 2026-10-29 (user: "not all invisible lights just ones where there's a lot in one place. vault 21 like 900 lights"):
+		// ShadowClusterInvisibleOnly: a lamp that is really there (a glowing part within FixtureDistance, LampFixtures) keeps its own
+		// shadow; only the level designers' invisible fill lights join a neighbour's. ShadowClusterMinLights: and only where at least that
+		// many lights (itself included) stand within ShadowClusterDistance, so rooms with a few lights keep every shadow. 0 / off: as before.
+		const bool invisibleOnly = Settings->Forward.ShadowClusterInvisibleOnly;
+		const int minLights = Settings->Forward.ShadowClusterMinLights;
+		std::vector<bool> mayJoin(cands.size(), true);
+		for (size_t m = 0; m < cands.size(); m++) {
+			if (invisibleOnly && !LampFixtures::Invisible(cands[m].light, Settings->Forward.FixtureDistance)) { mayJoin[m] = false; continue; }
+			if (minLights > 1) {
+				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
+				int neighbours = 0;
+				for (size_t o = 0; o < cands.size() && neighbours < minLights; o++) {
+					const NiPoint3& op = cands[o].light->m_worldTransform.pos;
+					const float dx = op.x - mp.x, dy = op.y - mp.y, dz = op.z - mp.z;
+					if (dx * dx + dy * dy + dz * dz < d2max) neighbours++;
+				}
+				if (neighbours < minLights) mayJoin[m] = false;
+			}
+		}
 		std::vector<bool> taken(cands.size(), false);
 		for (size_t r = 0; r < cands.size(); r++) {
 			if (taken[r]) continue;	// r is a representative: it takes every untaken lamp near it
 			const NiPoint3& rp = cands[r].light->m_worldTransform.pos;
 			for (size_t m = r + 1; m < cands.size(); m++) {
-				if (taken[m]) continue;
+				if (taken[m] || !mayJoin[m]) continue;
 				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
 				const float dx = mp.x - rp.x, dy = mp.y - rp.y, dz = mp.z - rp.z;
 				if (dx * dx + dy * dy + dz * dz < d2max) { taken[m] = true; clusterMembers.push_back(cands[m].key); }

@@ -630,6 +630,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.FadeIn = TheSettingManager->GetSettingF(section, "FadeIn");
 		forward.ShadowClusterEnabled = TheSettingManager->GetSettingI(section, "ShadowClusterEnabled") != 0;
 		forward.ShadowClusterDistance = (std::max)(0.0f, (std::min)(512.0f, TheSettingManager->GetSettingF(section, "ShadowClusterDistance")));
+		forward.ShadowClusterInvisibleOnly = TheSettingManager->GetSettingI(section, "ShadowClusterInvisibleOnly") != 0;	// UNOFFICIAL 2026-10-29
+		forward.ShadowClusterMinLights = (std::max)(0, (std::min)(64, TheSettingManager->GetSettingI(section, "ShadowClusterMinLights")));
 		forward.CameraIndependent = TheSettingManager->GetSettingI(section, "CameraIndependent") != 0;
 		forward.KeepLampsInView = TheSettingManager->GetSettingI(section, "KeepLampsInView") != 0;
 		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));

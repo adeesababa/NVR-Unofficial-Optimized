@@ -150,6 +150,10 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	if (!forwardSettings.LampModelShadows)
 		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
+	// UNOFFICIAL 2026-10-29 TwoSidedCasters ([Shaders.ShadowsInteriors.Main], RenderShadowCubeMap): switching it redraws the kept maps too
+	// (the first bench run switched it live and the static maps stayed as they were drawn).
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TwoSidedCasters") != 0)
+		hash = (hash ^ 0x2D5A6B1C3E4F7081ULL) * 1099511628211ULL;
 	if (!LampFixtures::NoShadowWords.empty())	// UNOFFICIAL NoShadowLampModels (2026-10-27): its words and the cell's lamp list redraw too
 		hash = (hash ^ (UInt64)std::hash<std::string>{}(LampFixtures::NoShadowFrom) ^ ((UInt64)LampFixtures::Generation << 40) ^
 			(UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
