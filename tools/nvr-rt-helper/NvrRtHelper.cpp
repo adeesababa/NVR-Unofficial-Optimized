@@ -153,6 +153,7 @@ namespace {
 		VkPhysicalDeviceAccelerationStructurePropertiesKHR asProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
 		VkPhysicalDeviceMemoryProperties memory = {};
 		uint32_t			timestampBits = 0;
+		const char*			matchedBy = "";	// how the game's GPU was found: "adapter LUID" / "device UUID" / "first RT GPU (probe)"
 		PFN_vkImportSemaphoreWin32HandleKHR			importSemaphoreWin32Handle = nullptr;
 		PFN_vkCreateAccelerationStructureKHR		createAs = nullptr;
 		PFN_vkDestroyAccelerationStructureKHR		destroyAs = nullptr;
@@ -212,13 +213,15 @@ namespace {
 			std::string why;
 			const bool usable = DeviceUsable(d, why);
 			bool match;
-			if (luid && luidValid && ids.deviceLUIDValid) match = !memcmp(ids.deviceLUID, luid, VK_LUID_SIZE);
-			else if (uuid) match = !memcmp(ids.deviceUUID, uuid, VK_UUID_SIZE);
-			else match = usable;
+			const char* how;
+			if (luid && luidValid && ids.deviceLUIDValid) { match = !memcmp(ids.deviceLUID, luid, VK_LUID_SIZE); how = "adapter LUID"; }
+			else if (uuid) { match = !memcmp(ids.deviceUUID, uuid, VK_UUID_SIZE); how = "device UUID"; }
+			else { match = usable; how = "first RT GPU (probe)"; }
 			Log("Vulkan device: %s (vendor 0x%04X, API %u.%u.%u): %s%s", props.properties.deviceName, props.properties.vendorID,
 				VK_VERSION_MAJOR(props.properties.apiVersion), VK_VERSION_MINOR(props.properties.apiVersion), VK_VERSION_PATCH(props.properties.apiVersion),
 				usable ? "ray tracing OK" : why.c_str(), match && !vk.physical ? "  <- this one" : "");
 			if (match && !vk.physical) {
+				vk.matchedBy = how;
 				if (!usable) whyNot = std::string(props.properties.deviceName) + ": " + why;
 				vk.physical = d;
 				vk.properties = props.properties;
@@ -227,7 +230,7 @@ namespace {
 			}
 		}
 		if (!vk.physical) { Status("Vulkan: the GPU the game uses was not found among %u Vulkan devices", count); return false; }
-		if (!whyNot.empty()) { Status("no ray tracing on the game's GPU (%s)", whyNot.c_str()); return false; }
+		if (!whyNot.empty()) { Status("no ray tracing on the game's GPU (%s, found by %s): the RT effects stay off", whyNot.c_str(), vk.matchedBy); return false; }
 
 		VkPhysicalDeviceProperties2 props2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &vk.asProperties };
 		vkGetPhysicalDeviceProperties2(vk.physical, &props2);
@@ -1187,7 +1190,8 @@ namespace {
 			if (h.structures.Allocate(h.vk, 256, block, offset)) h.structures.Free(block, offset, 256);
 			if (!EnsureScratch(h, 16ull << 20)) return fail(nullptr);
 		}
-		Status("ready: ray tracing on %s (%u shared images, arena %ux%u)", h.vk.properties.deviceName, h.imageCount, arena.width, arena.height);
+		Status("ready: ray tracing on %s, the game's GPU (found by %s; %u shared images, arena %ux%u)", h.vk.properties.deviceName, h.vk.matchedBy,
+			h.imageCount, arena.width, arena.height);
 		SetState(NVR_RT_STATE_READY);
 
 		uint64_t next = 1;
