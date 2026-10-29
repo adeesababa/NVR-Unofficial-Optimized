@@ -85,7 +85,7 @@ namespace ManyLamps {
 
 	// UNOFFICIAL 2026-10-29 LightCommonLamps ([Main.Main.Misc], restart; docs/next/ROOT-ASSUMPTIONS-PLAN.md C, Includes/LightCommon.hlsl): the
 	// same lamps, but from ONE lamp table a frame (a float texture on s3) instead of each lamp's position and colour in the draw's constants:
-	// a draw gets its list of table indices and its own world -> object rows (c37-c43), and the shader lights every lamp past the sixth in a
+	// a draw gets its list of table indices and its own world -> object rows (c37-c44), and the shader lights every lamp past the sixth in a
 	// real loop (constant arrays can only be unrolled in ps_3_0). MANY_LAMPS_ON is then 2 (ShaderRecord::BuildDefines). Off: as before.
 	inline int TableWanted = -1;
 	inline bool TableAtStartup() {
@@ -138,7 +138,7 @@ namespace ManyLamps {
 	}
 
 	// --- LightCommonLamps: the frame's lamp table ---------------------------------------------------------------------------------
-	enum { TableLamps = 128, TableTexels = 2 * TableLamps, NoLamp = 255 };	// LightCommon.hlsl LIGHT_COMMON_TEXELS / LIGHT_COMMON_NONE
+	enum { TableLamps = 1024, TableTexels = 2 * TableLamps, NoLamp = 4095 };	// LightCommon.hlsl LIGHT_COMMON_TEXELS / LIGHT_COMMON_NONE
 	inline IDirect3DTexture9* Table = nullptr;
 	inline bool TableFailed = false;
 	inline UInt32 TableFrame = 0;		// FrameId the table was filled for
@@ -235,9 +235,9 @@ namespace ManyLamps {
 		const D3DXMATRIX& m = ToObject;	// row vectors: local = (world, 1) x m, so row r of the shader's transform is m's column r
 		const float rows[3][4] = { { m._11, m._21, m._31, m._41 }, { m._12, m._22, m._32, m._42 }, { m._13, m._23, m._33, m._43 } };
 		memcpy(Block[2], rows, sizeof(rows));
-		for (int f = 0; f < 8; f++)	// three indices a float (exact below 2^24), twelve a float4
-			Block[5 + f / 4][f % 4] = (float)(idx[f * 3] + 256 * idx[f * 3 + 1] + 65536 * idx[f * 3 + 2]);
-		BlockRegisters = 7;
+		for (int f = 0; f < 12; f++)	// two 12-bit indices a float (exact below 2^24), eight a float4 (LightCommonIndex)
+			Block[5 + f / 4][f % 4] = (float)(idx[f * 2] + 4096 * idx[f * 2 + 1]);
+		BlockRegisters = 8;
 		Upload();
 		TheRenderManager->renderState->SetTexture(3, Table);	// through the game's state cache, so its own binds there still happen
 		for (DWORD s : { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER }) TheRenderManager->renderState->SetSamplerState(3, (D3DSAMPLERSTATETYPE)s, D3DTEXF_POINT, false);
