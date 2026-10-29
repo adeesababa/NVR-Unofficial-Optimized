@@ -35,6 +35,20 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Step 3, part 1: per-pixel lamp selection over every shadowed lamp (v4, 62575ea4, DLL FBF611F4; run rtlamp-8 18:00, PASS)
+- The trace's lamp table holds every published shadow lamp (cube slots 0-62; 24 in this run's toml, LightPoints); each pixel ranks
+  them by the unshadowed light they bring it (intensity x the game's falloff x N.L) and traces its LampsPerPixel strongest. The
+  result: three (cube slot + visibility) entries + the depth code per pixel; a draw's lamp not among them uses its cube map there.
+- Coverage (exact): Lucky 38 green 39.6 %, yellow (the pixel traced other, stronger lamps) 2.9 %, red 1.1 %, blue 0; Vault 21
+  green 38.7 %, yellow 4.2 %, red 0.7 %. A/B pairs repeat to 0.0-0.1 %. rt vs cube: Lucky 38 8.7 % / -0.34, Vault 21 5.5 % / -0.02.
+- Lamps per pixel: 2 = 3 to 0.1-0.2 % of pixels; 1 differs 1.8 %. Default 2.
+- Cost, helper GPU incl. copies and waits (iGPU 2 CUs, 720p, 1 ray): Lucky 38 1 / 2 / 3 lamps a pixel = 19.4 / 25.8 / 31.3 ms; Vault 21
+  17.6 / 23.8 / 24.4 ms. (v3: 9 fixed lamps for every pixel: 23-26 / 16.5 ms, with Vault 21's visible lamps mostly untraced.)
+- Cube maps (SkipTracedCubes): Lucky 38 1.75 ms (3.7 without RT); Vault 21 stays 8.1 ms although ~14 redraws a frame are skipped:
+  what else is in that timer there is open (people's "onto copy" layer? the static layers?).
+- Still to do in step 3: soft shadows without noise = the shared denoiser (rt-sun-core); true ReSTIR (reservoir reuse across pixels
+  and frames) would only pay off with many more lamps per pixel than the forward lamp shaders can use (they shade 1-6 lamps each).
+
 ## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
 Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
 - **Works end to end on the iGPU** (9800X3D RDNA2, 2 CUs, 720p): the RT core's 64-bit helper traces the 9 lamps the visible draws
