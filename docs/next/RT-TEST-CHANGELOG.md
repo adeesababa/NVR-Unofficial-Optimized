@@ -26,3 +26,15 @@ nothing here is pushed, released or installed unless the user says so.
 - Bench PASS: 1070 RT off (20261029-174556-slotC) vs round 0 = 7/7 shots at noise level; iGPU interior (174850-slotA): lamp
   RT 8 lamps core p50 20.5 ms (Vault 21 frame 118 -> 140 ms), reflections + AO trace, all on 118 -> 152 ms, cube A/B 0.04 %.
 - DLL CRC32 C7A8960B, helper 24B71C7E and fork d3d9 373E51A6 unchanged. Package `H:\_NVR-pkg\rt-test-37b1b043\`.
+
+## Round 2 (2026-10-29 ~18:50): 6aa00dd4
+- In: claude/rt-sun-2 94998464: NvrRtHelper picks the game's GPU by adapter LUID (device UUID / probe as fallbacks) and names it
+  in its ready / no-RT messages; RT core alpha-tested casters ([Main.Main.RayTracing] AlphaTested, off; mask bit 0x10, shared
+  Compute/Rt/RtAlpha.glsl; not effective yet, ~5 meshes a frame); fork patch 0029 (1.8-rt-uv, texcoords staged); the mask table
+  in FORK-RT-CORE.md (0x01 land, 0x02 objects, 0x04/0x08 rt-lamp, 0x10 alpha-tested; non-alpha rays 0xEF); defaults toml fixed.
+- Held: rt-sun-2 dc1a5dd4 (GPU alpha atlas, until rtsun-12), rt-lamps-2 fb07f685 (no READY line yet), rt-ao-gi.
+- Merge clean, no line-ending churn, toml parses; includers of NvrDxvkExt.h / RtCore.h touched and rebuilt. Helper rebuilt
+  (protocol header changed); fork d3d9 now rtsun\fork-0029 (0027 + 0028 + 0029).
+- Bench PASS: 1070 RT off (20261029-182620-slotC) vs round 0 = 7/7 at noise level; iGPU Goodsprings (183737-slotC): helper
+  "found by adapter LUID", sun / reflections / AO trace, core timer p50 3.4 ms.
+- DLL CRC32 BABE6FD4, NvrRtHelper E09D0B71, fork d3d9 8FC9AE11. Package `H:\_NVR-pkg\rt-test-6aa00dd4\`.
