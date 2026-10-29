@@ -17,6 +17,19 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### Vault 21 lobby + Lucky 38 lamp tint (2026-10-29 06:56, run 20261029-065640-slotA, rtlamp-4, 15 shots, PASS; DLL 7AE67874)
+- **Vault 21 (447 lights): traced = cube to 0.1 %, coverage 0 % green.** No draw on screen used a traced lamp: the lamps lighting
+  this view held cube slots above 8, and the trace took cube slots 0-8 whatever the screen showed (its cost fell to ~3 ms, the
+  trace running for lamps nothing visible used). A/B clean (cube-a = cube-b, rt1-a = rt1-b: 0.0 %).
+- **Fix (1a5e4025, DLL B1BD417C):** trace the lamps the screen uses most. Every draw counts its lamps by cube slot (NoteUse), the
+  next frame's trace takes the MaxLamps most used (ties: NVR's own slot order), and the result carries its own slot -> traced-index
+  map (TracedMap), so draws always decode with the map of the frame they read. This replaces "how lamps are picked" above: it is
+  now the 9 lamps the visible draws used most last frame, out of NVR's published shadow lamps.
+- Lucky 38 tint shots (forward DebugView 2 + LogLamps): rt vs cube 7.4 %, the stair-base stripe still shadowed traced; LampSlot
+  log has the 12 lamps (red globes and two orange ones); the stripe's lamp is not identified yet (the room is red-lit, the tint does
+  not separate it). Still open.
+- Re-run of the same list on B1BD417C queued (rtlamp-4b).
+
 ### Lucky 38 self-shadow check (2026-10-29 06:38, run 20261029-063825-slotA, rtlamp-3, 13 shots, PASS; DLL 7AE67874)
 - The mask hook works: "mask hook 200000 calls: objects 190034, lamp glass 5169, lamp models 4796 (cell glow list 132)".
 - **The stair-base stripe is NOT a lamp shadowing itself:** noskip (glass + models block), LampStop 24 and LampStop 48 all equal
