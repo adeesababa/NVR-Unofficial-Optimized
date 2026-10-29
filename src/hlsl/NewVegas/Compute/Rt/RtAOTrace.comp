@@ -13,6 +13,10 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+// The instance mask every ray tests (2026-10-29): all but 0x10, the core's alpha-tested casters (rt-sun-core claude/rt-sun-2: non-opaque,
+// they would block as solid cards without the alpha test). 0x04 / 0x08 are rt-lamp's lamp glass / lamp models: kept (they occlude).
+#define RT_CULL 0xEFu
+
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;   // the core's: world minus CameraPosition, z up
 layout(set = 0, binding = 1, std140) uniform Constants {
     mat4 viewToWorld;   // NVR's view space -> scene directions (rows right, up, forward of the view; as stored, cb.M * v)
@@ -22,7 +26,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
                         // (DebugView 4: x = view distance / 2000; 5: x = the normal's up component * 0.5 + 0.5; 0 = off)
     vec4 sky;           // x distance, y rays (0, 8 or 16; 0: no sky rays), zw unused
     // 2026-10-29 (rt-ao-gi) one-bounce diffuse GI, all linear rgb (core/RtAmbient.h TraceConstants)
-    vec4 gi;            // x distance, y rays (0 or 1), z lamps given (0-8), w unused
+    vec4 gi;            // x distance, y rays (0 or 1), z lamps given (0-8), w GIAmbient (the ambient's share at the hit, 0-1)
     vec4 sunDir;        // xyz toward the sun, w 1 = the sun lights
     vec4 sunColor;      // rgb the sun's light on a surface facing it
     vec4 ambient;       // rgb the ambient (sky) light from above
@@ -69,7 +73,7 @@ vec2 R2(float i) { return fract(i * vec2(0.7548777, 0.5698403)); }
 vec2 Trace(vec3 p, vec3 d, float tMin, float tMax, bool anyHit) {
     rayQueryEXT q;
     uint flags = gl_RayFlagsOpaqueEXT | (anyHit ? gl_RayFlagsTerminateOnFirstHitEXT : 0u);
-    rayQueryInitializeEXT(q, scene, flags, 0xFFu, p + cb.origin.xyz, tMin, d, tMax);
+    rayQueryInitializeEXT(q, scene, flags, RT_CULL, p + cb.origin.xyz, tMin, d, tMax);
     while (rayQueryProceedEXT(q)) {}
     if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) return vec2(-1.0, 0.0);
     return vec2(rayQueryGetIntersectionTEXT(q, true), rayQueryGetIntersectionFrontFaceEXT(q, true) ? 0.0 : 1.0);
@@ -87,7 +91,7 @@ vec3 Vertex(uint base, uint i) {
 // scene by the instance's transform), turned toward the ray; the ray's reverse when the helper had no room for the data.
 vec4 Bounce(vec3 start, vec3 d, float tMin) {
     rayQueryEXT q;
-    rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, start + cb.origin.xyz, tMin, d, cb.gi.x);
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, RT_CULL, start + cb.origin.xyz, tMin, d, cb.gi.x);
     while (rayQueryProceedEXT(q)) {}
     if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) return vec4(0.0, 0.0, 0.0, 1.0);
     float t = rayQueryGetIntersectionTEXT(q, true);
@@ -105,11 +109,11 @@ vec4 Bounce(vec3 start, vec3 d, float tMin) {
     vec3 albedo = (r.flags & 0x10u) != 0u ? clamp(r.albedo.rgb, 0.0, 1.0) : vec3(0.5);
     vec3 hit = start + d * t;
     vec3 lift = hit + n * (1.0 + 0.002 * t);
-    vec3 e = cb.ambient.rgb * (0.5 + 0.5 * n.z);
+    vec3 e = cb.ambient.rgb * (cb.gi.w * (0.5 + 0.5 * n.z));   // GIAmbient (default 0: the game's ambient is already the indirect light)
     float sunCos = dot(n, cb.sunDir.xyz);
     if (cb.sunDir.w > 0.5 && sunCos > 0.0) {
         rayQueryEXT s;
-        rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, lift + cb.origin.xyz, 0.0, cb.sunDir.xyz, 30000.0);
+        rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, RT_CULL, lift + cb.origin.xyz, 0.0, cb.sunDir.xyz, 30000.0);
         while (rayQueryProceedEXT(s)) {}
         if (rayQueryGetIntersectionTypeEXT(s, true) != gl_RayQueryCommittedIntersectionTriangleEXT) e += cb.sunColor.rgb * sunCos;
     }

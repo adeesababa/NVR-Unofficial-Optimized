@@ -509,7 +509,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		c.sunDir = D3DXVECTOR4(sunDir.x, sunDir.y, sunDir.z, sunUp ? 1.0f : 0.0f);
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
 		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
-		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), 0.0f);
+		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
 	}
 	const int images[3] = { RtImageIn, RtImageOut, RtImageGI };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||

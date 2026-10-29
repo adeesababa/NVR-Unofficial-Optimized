@@ -33,6 +33,7 @@ namespace RtAmbient {
 		bool	GI = false;
 		float	GIDistance = 1500.0f;	// [100-8000] GI ray length, world units
 		float	GIStrength = 1.0f;		// [0-4] the bounce light added (x the surface colour), as ComputeGIStrength
+		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
 	};
 	inline Settings Current;
 
@@ -48,6 +49,7 @@ namespace RtAmbient {
 		Current.GI = TheSettingManager->GetSettingI(s, "GI") != 0;
 		Current.GIDistance = std::clamp(TheSettingManager->GetSettingF(s, "GIDistance"), 100.0f, 8000.0f);
 		Current.GIStrength = std::clamp(TheSettingManager->GetSettingF(s, "GIStrength"), 0.0f, 4.0f);
+		Current.GIAmbient = std::clamp(TheSettingManager->GetSettingF(s, "GIAmbient"), 0.0f, 1.0f);
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -60,7 +62,7 @@ namespace RtAmbient {
 		D3DXVECTOR4	ao;				// x distance, y rays (0 none), z 1 = move the noise each frame
 		D3DXVECTOR4	sky;			// x distance, y rays (0 none)
 		// UNOFFICIAL 2026-10-29 (rt-ao-gi) one-bounce GI (all linear rgb; 0 rays = no GI rays)
-		D3DXVECTOR4	gi;				// x distance, y rays (0 or 1), z the lamps given, w unused
+		D3DXVECTOR4	gi;				// x distance, y rays (0 or 1), z the lamps given, w GIAmbient
 		D3DXVECTOR4	sunDir;			// xyz toward the sun (scene = world axes), w 1 = the sun lights (exteriors, above the horizon)
 		D3DXVECTOR4	sunColor;		// rgb the sun's light on a surface facing it
 		D3DXVECTOR4	ambient;		// rgb the ambient (sky) light, the upper hemisphere's
