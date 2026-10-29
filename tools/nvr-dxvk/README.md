@@ -50,6 +50,11 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                             makes StageGeometry also write each vertex's texcoord (float2) after the triangle list, for
                             alpha-tested casters in the RT scene; a fork without it ignores the flag (MeasureGeometry's
                             Texels tells NVR which).
+                 0033       (claude/rt-sun-2) "1.8-rt-skin": ID3D9NvrExtRtSkin (QueryInterface) StageSkinnedGeometry poses
+                            skinned vertices by a bone palette (blend weights / indices from the vertex buffer) straight
+                            into scene space, for actors in the RT scene ([Main.Main.RayTracing] Actors).
+                            Numbered after the HDR stack's 0030-0032 (claude/hdr-fork-rt) but applies on 0029 alone too
+                            (the RT-only forks the train ships build 0001-0029 + 0033).
                GetInfo reports 1.6. The "1.5-<feature>" parts are separate interfaces found with QueryInterface (or, for sm6,
                by MaxSlots), not by the minor version: NVR checks each one itself and keeps its D3D9 path without it.
 - `debug/`     dxvk.conf templates for debugging (`dxvk.conf.pipelinelog`: the 0017 measurement): `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
