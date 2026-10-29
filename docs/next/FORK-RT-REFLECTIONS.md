@@ -169,6 +169,19 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 18:27 the ray budget (rtrefl-5; DLL 3142cb6b + shaders eed3580d): RoughShare + the key-lamp shadow ray only below roughness 0.25
+
+The runs are `bench/autotest/20261029-182734-slotA` (lucky22) and `20261029-184453-slotA` (luxe), all 9 shots each. Budget = RoughShare 0.3 (above
+roughness 0.3, one ray per 2x2 pixels a frame; the caster moves round the block, the others shade its hit point). Full = RoughShare 0.
+- **Cost (helper passes, the RT CORE lines):** luxe **4.7 ms** (6.0-9.8 in rtrefl-4), lucky22 **5.4-5.7 ms** (8.9-11.2). The
+  budget and the smooth-only lamp shadow take back what the lamp shadow ray cost, and the lamps stay. Exchange wait: luxe 5.6-6.0 ms,
+  lucky22 6.5-7.8 ms. (The first try, 20261029-181234: exchange 6.8-8.2 ms budget vs 9.8-10.9 full at lucky22.)
+- **Picture, budget vs full:** luxe 0.32 % of pixels vs a 0.14 % noise floor: the same. lucky22 3.3 % vs 0.07 %, mean -0.12/255
+  (the budget a little darker; reflection alone 13.7 %, -0.33). The first try's flaw was fixed in eed3580d: a block whose caster the
+  screen had answered gave its neighbours nothing to borrow. The fix barely moved lucky22 (3.5 -> 3.3 %), so what is left is not
+  missing rays. Most likely it is the averaging: four pixels sharing one sample, then averaged in the compressed (Tame) space, give a
+  slightly lower mean than four independent samples. Small; RoughShare can go up (rougher surfaces only) or to 0.
+
 ### 2026-10-29 17:41 lucky22, rtrefl-4 (DLL 42db45eb), all 11 shots
 
 The run is `bench/autotest/20261029-174137-slotA`. Noise floor: 0.08 %.
