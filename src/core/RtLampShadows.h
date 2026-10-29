@@ -25,8 +25,10 @@ namespace RtLampShadows {
 	inline constexpr const char* kSection = "Shaders.ShadowsInteriors.RT";
 
 	// Instance mask bits the RT core gives the scene (FORK-RT-CORE.md: 0x01 land, 0x02 objects); ours for the lamps' own parts,
-	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model.
-	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08;
+	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model. The core puts
+	// alpha-tested casters under 0x10, non-opaque (agreed scheme 2026-10-29); the lamp rays do not test alpha yet, so they leave 0x10
+	// out and those casters let lamp light through (the cube maps still draw them alpha-tested: a known difference).
+	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08, MaskAlphaTested = 0x10;
 
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
@@ -254,7 +256,7 @@ namespace RtLampShadows {
 		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
 		const bool skipModels = TheSettingManager->GetSettingI(kSection, "SkipLampModels") != 0;
 		c.params2[0] = skipModels ? (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampModelDistance"), 0.0f) : 0.0f;
-		UINT farMask = 0xFF;
+		UINT farMask = 0xFF & ~MaskAlphaTested;	// 0xEF: non-opaque alpha-tested casters are not tested here, skipped
 		if (TheSettingManager->GetSettingI(kSection, "SkipLampGlass")) farMask &= ~MaskGlass;
 		c.params2[1] = (float)farMask;
 		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
