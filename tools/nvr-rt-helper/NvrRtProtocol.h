@@ -45,6 +45,14 @@
 #define NVR_RT_RECORD_GLOW          0x04u     // the draw has a glow / emissive map
 #define NVR_RT_RECORD_METAL         0x08u
 #define NVR_RT_RECORD_ALBEDO_KNOWN  0x10u     // albedo is the diffuse texture's average (else a neutral grey)
+// UNOFFICIAL 2026-10-29 alpha-tested casters ([Main.Main.RayTracing] AlphaTested): the geometry is non-opaque (cull mask bit
+// NVR_RT_MASK_ALPHA), its texcoords follow the triangle list in binding 11 at the word offset floatBitsToUint(albedo.w), its
+// diffuse alpha is the alpha atlas' slot (flags >> 16) (RtCore::AlphaAtlasImage(): R16F 2048x2048, 64x64 texels a slot, 32 a row), and
+// a candidate hit counts where alpha >= ((flags >> 8) & 0xFF) / 255. src/hlsl/NewVegas/Compute/Rt/RtAlpha.glsl does it.
+#define NVR_RT_RECORD_ALPHA_TESTED  0x20u
+#define NVR_RT_MASK_ALPHA           0x10u     // the instance mask of alpha-tested geometry (rays that cannot test alpha leave it out)
+#define NVR_RT_ALPHA_SLOT_SIZE      64u
+#define NVR_RT_ALPHA_ATLAS_SLOTS    32u       // a row (and rows): 2048 x 2048 texels, 1024 slots
 
 // <base> is passed as "--shm <base>"; events <base>-frame (auto-reset, NVR -> helper) and <base>-status (helper -> NVR).
 #define NVR_RT_EVENT_FRAME_SUFFIX  L"-frame"
@@ -78,13 +86,16 @@ struct NvrRtImageDesc {
 	uint32_t	dedicated;
 };
 
+#define NVR_RT_OP_FLAG_TEXCOORDS  0x1u   // 2 x vertexCount more texels: the texcoords after the triangle list (fork 1.8-rt-uv)
+#define NVR_RT_OP_FLAG_ALPHA      0x2u   // built non-opaque (alpha-tested: the rays test the candidates)
+
 struct NvrRtGeometryOp {             // 32 bytes
 	uint32_t	op;                  // NvrRtOp
 	uint32_t	id;                  // NVR's geometry id, 1 .. 2^24 - 1 (0 = none)
 	uint32_t	vertexCount;
 	uint32_t	triangleCount;
 	uint32_t	arenaTexel;          // first 32-bit texel in the arena (row-major)
-	uint32_t	flags;               // reserved
+	uint32_t	flags;               // NVR_RT_OP_FLAG_*
 	uint32_t	pad[2];
 };
 

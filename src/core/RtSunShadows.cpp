@@ -23,7 +23,7 @@ namespace {
 
 	// The trace pass's uniform block (RtSunShadow.comp, std140)
 	struct PassConstants {
-		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4];
+		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4], alpha[4];
 	};
 
 	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1;
@@ -103,11 +103,13 @@ namespace {
 		c.sun[0] = sun.x; c.sun[1] = sun.y; c.sun[2] = sun.z;
 		c.sun[3] = shadows->Constants.ShadowFade.x < 1.0f ? 1.0f : 0.0f;
 		c.bias[0] = S.normalBias; c.bias[1] = S.normalBiasPerUnit; c.bias[2] = S.startBias; c.bias[3] = S.rayLength;
+		c.alpha[0] = RtCore::AlphaTested() ? 1.0f : 0.0f;
 		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f : 0.0f;
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
-		const int images[3] = { imageDepth, imageNormals, imageVisibility };
-		if (!RtCore::AddPass(shader, images, 3, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		const int atlas = RtCore::AlphaAtlasImage();
+		const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
+		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface);
 		if (tracedThisFrame && frames++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows traced (%ux%u, Mode %d: %s, range %.0f, DebugView %d).", w, h, S.mode,
