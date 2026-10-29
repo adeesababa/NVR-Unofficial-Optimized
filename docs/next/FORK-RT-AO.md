@@ -211,7 +211,14 @@ accumulate (below): both are temporal + edge-aware spatial already.
   warm near the lit railing, the counter and the lamps, not a wash. Final picture natural. Flaw: sparse orange fireflies where a bounce
   ray lands on a lamp's glow on screen (the per-sample cap is 4.0: too high) -> next: a luminance clamp per sample. Cost unchanged:
   core line 21.3 ms avg, 11.0 ms min (AO 4 + GI 1 + its shadow rays) on the iGPU in Lucky 38.
-- rt-ao-6 (og-goodsprings, AlphaTested on, foliage really in now) running.
+- **rt-ao-6 (10-29 18:51 og-goodsprings slot C, AlphaTested on, DLL 8F014ACC):** foliage IS in the scene now: 54513 alpha-tested
+  meshes taken in 60 exchanges, 46 atlas slots (rt-sun-core dc1a5dd4); the scene 1597 instances / 406 geometries / 1.36 M triangles /
+  211 MB. RT AO (4 rays) core line 15-17 ms p50 (6 ms without the foliage, rt-ao-5): the alpha-tested candidates (any-hit tests per
+  leaf card) roughly triple the AO cost on the iGPU. Visible occlusion from the (thin) Joshua trees in this view: not noticeable.
+- **GIClamp + Interleave (commit after 7e8f80e7, DLL DE2DDFFB):** a bounce sample's luminance is capped at GIClamp (1.0 = the frame's
+  white; keeps the hue) against the fireflies; Interleave 1 / 2 / 4 traces every / every 2nd (checkerboard) / every 4th texel (one of
+  each 2 x 2, in turn) a frame, the rest keep their last result (the shared images persist) for AmbientLight's history to blend: the
+  ray cost / 2 or / 4. Bench rt-gi-2 (lucky22) queued.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
