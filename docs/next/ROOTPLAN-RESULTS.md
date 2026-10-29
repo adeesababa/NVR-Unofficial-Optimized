@@ -15,6 +15,8 @@ Combined branch: **claude/rootplan-combo** (worktree H:\_NVR-efflamps, bench jun
   motion vectors (Compute/FSRPrep.comp, FSRUpPrep.comp), AmbientLight's Accumulate (D3D9 and Vulkan). A world-space delta needs no
   projection, jitter or RenderScale handling: each reader projects with its own camera as before.
 - D's camera-jump flag is the existing GameState.isCameraCut (in place since 10-21).
+- **Verdict PASS.** Run 20261029-174247-slotC (read-back proof): 25 of 5184 sampled pixels carried a move (largest 11 units a frame,
+  a walking NPC) with people in view, 0 when nothing moved in view.
 - Measured: run 20261029-171255-slotC (og-goodsprings, the user's toml, FSR 3.1 at 0.67): 526 geometries noted, 21 moved ones drawn
   (9 skinned) a frame, GPU 0.03 ms; the game's bone matrices are camera relative (log line). Run 1 had the vertex shader fail to compile
   (a #define not at a line start; the feature switched itself off); fixed. Picture A/B is noise-bound (NPCs move between shots); a
@@ -49,9 +51,12 @@ Combined branch: **claude/rootplan-combo** (worktree H:\_NVR-efflamps, bench jun
 - **ABAB (run 20261029-173431-slotA, combo, lc-on toml): Vault 21 pool on -0.64 levels (1.34% of pixels > 16), def-a = def-b and
   pool-a = pool-b to 0.01%; forward lamp shadowing in that view 0.89 -> 1.53 (+70%). Lucky 38 -0.06.** Where: the walkway truss now
   shadows the back wall (diagonal stripes) and the small floor uplights' glow at the seats goes dark: with the user's LampModelShadows =
-  true those lamps' housings shadow them, as the live slots would (check shot pair LightPoints 62 vs pool in rootplan-people-1).
+  true those lamps' housings shadow them, as the live slots would. Checked (run 20261029-181341-slotB): LightPoints 62 with no pool vs
+  LightPoints 24 + pool: 0.27% of pixels > 16, mean -0.12 -- the pool gives what more live slots give (it covers 76 lamps there, the
+  live slots 62). PoolDrawsPerFrame now 2 by default (4 made a 6-11 ms frame on arriving).
 - `PoolPeopleLamps` (live, 0-16, 0 off): people drawn onto the nearest pool lamps' maps too (RedrawActorsOnly's MovingOnto through the
-  spare slot), no shader change.
+  spare slot), no shader change. Same run: 1.5-2 pool lamps a frame got people drawn on, no error, but no visible change at that view
+  (people8 vs people0 0.00%): unproven, needs a spot where a pool lamp throws an NPC's shadow on screen.
 - Needs LightPoints below 63. Memory: one cube map per pool lamp at ShadowCubeMapSize (6 MB at 512).
 - People cast no shadow from pool lamps (they do from the live LightPoints lamps, as before).
 
