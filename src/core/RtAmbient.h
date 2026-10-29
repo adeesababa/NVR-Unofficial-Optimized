@@ -27,6 +27,12 @@ namespace RtAmbient {
 		float	SkyDistance = 800.0f;	// [64-8000] sky ray length (Skylighting's Distance: 800)
 		int		DebugView = 0;		// 1 RT visibility (before strength), 2 RT sky visibility, 3 rays that started inside something / hit distance,
 									// 4 / 5 the helper's input (view distance / 2000, normal up), test only
+		// UNOFFICIAL 2026-10-29 (rt-ao-gi) one-bounce diffuse GI: one ray per half-resolution pixel and frame, GIDistance long; at the
+		// hit the light it sends back = its albedo (the core's per-instance record) x (the sun with a shadow ray + the ambient + the
+		// nearest lamps); into AmbientLight's bounce light (ComputeGI's accumulate and apply), strength GIStrength. AmbientLight only.
+		bool	GI = false;
+		float	GIDistance = 1500.0f;	// [100-8000] GI ray length, world units
+		float	GIStrength = 1.0f;		// [0-4] the bounce light added (x the surface colour), as ComputeGIStrength
 	};
 	inline Settings Current;
 
@@ -38,8 +44,13 @@ namespace RtAmbient {
 		Current.Sky = TheSettingManager->GetSettingI(s, "Sky") != 0;
 		Current.SkyRays = TheSettingManager->GetSettingI(s, "SkyRays") <= 8 ? 8 : 16;
 		Current.SkyDistance = std::clamp(TheSettingManager->GetSettingF(s, "SkyDistance"), 64.0f, 8000.0f);
-		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 5);
+		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 6);
+		Current.GI = TheSettingManager->GetSettingI(s, "GI") != 0;
+		Current.GIDistance = std::clamp(TheSettingManager->GetSettingF(s, "GIDistance"), 100.0f, 8000.0f);
+		Current.GIStrength = std::clamp(TheSettingManager->GetSettingF(s, "GIStrength"), 0.0f, 4.0f);
 	}
+
+	inline constexpr int GILampsMax = 8;
 
 	// RtAOTrace.comp's uniform block (set 0, binding 1 in the helper), std140.
 	struct TraceConstants {
@@ -48,7 +59,15 @@ namespace RtAmbient {
 		D3DXVECTOR4	origin;			// xyz the view origin in scene space (RtCore::Eye(), 0), w the frame number (0-1023)
 		D3DXVECTOR4	ao;				// x distance, y rays (0 none), z 1 = move the noise each frame
 		D3DXVECTOR4	sky;			// x distance, y rays (0 none)
+		// UNOFFICIAL 2026-10-29 (rt-ao-gi) one-bounce GI (all linear rgb; 0 rays = no GI rays)
+		D3DXVECTOR4	gi;				// x distance, y rays (0 or 1), z the lamps given, w unused
+		D3DXVECTOR4	sunDir;			// xyz toward the sun (scene = world axes), w 1 = the sun lights (exteriors, above the horizon)
+		D3DXVECTOR4	sunColor;		// rgb the sun's light on a surface facing it
+		D3DXVECTOR4	ambient;		// rgb the ambient (sky) light, the upper hemisphere's
+		D3DXVECTOR4	lampPos[GILampsMax];	// xyz scene space, w reach
+		D3DXVECTOR4	lampColor[GILampsMax];	// rgb x dimmer
 	};
+	static_assert(sizeof(TraceConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
 	// The RT core (RtCore.h) runs: the helper is ready on a GPU with ray tracing. Off = NVR's own passes.
 	inline bool CoreReady() { return RtCore::Running(); }

@@ -53,6 +53,7 @@ public:
 	static void RtRegister();
 	void RtRecord(IDirect3DDevice9* Device);
 	IDirect3DTexture9* RtRaw();
+	IDirect3DTexture9* RtGI();	// (rt-ao-gi) this frame's traced bounce light, or null
 	static bool SkyHostedByAmbientLight();
 	static D3DXVECTOR2 SkyTakeComposite();	// LightCap for VolumetricFog's composites (Includes/SkyTake.hlsl): x the cap's scale, y no limit
 
@@ -95,6 +96,8 @@ private:
 	IDirect3DSurface9*	rtInputSurface = nullptr;
 	IDirect3DTexture9*	rtRawTexture = nullptr;		// NVR_RTAORaw (half, A16B16G16R16F): the trace's result
 	IDirect3DSurface9*	rtRawSurface = nullptr;
+	IDirect3DTexture9*	rtGITexture = nullptr;		// (rt-ao-gi) NVR_RTGIRaw (half, A16B16G16R16F): the bounce light
+	IDirect3DSurface9*	rtGISurface = nullptr;
 	UINT				rtWidth = 0, rtHeight = 0;
 	IDirect3DTexture9*	rtHistoryTexture[2] = {};
 	IDirect3DSurface9*	rtHistorySurface[2] = {};

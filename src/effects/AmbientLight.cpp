@@ -49,6 +49,8 @@ void AmbientLightEffect::UpdateSettings() {
 	// that began inside something) come out through Estimate's occlusion, so they show through this effect's view 1 (the occlusion alone).
 	RtAmbient::UpdateSettings();
 	if (RtAmbient::Current.Enabled && RtAmbient::Current.DebugView != 0 && RtAmbient::Current.DebugView != 2) Constants.Data2.w = 1.0f;
+	// (rt-ao-gi) RT DebugView 6: the RT bounce light alone, through this effect's view 13 (the GI light as it arrives).
+	if (RtAmbient::Current.Enabled && RtAmbient::Current.GI && RtAmbient::Current.DebugView == 6) Constants.Data2.w = 13.0f;
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -741,7 +743,7 @@ namespace {
 		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
 		{ "AmbientLightGIAccumulate", 4,  0, 0 },
 		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
-		{ "AmbientLightEstimateRT",   2,  0, 0 },	// UNOFFICIAL 2026-10-28 (fork RT): prep, the traced values (AmbientOcclusionEffect::RtRaw)
+		{ "AmbientLightEstimateRT",   3,  0, 0 },	// UNOFFICIAL 2026-10-28 (fork RT): prep, the traced values (AmbientOcclusionEffect::RtRaw), the bounce light (RtGI; 2026-10-29)
 	};
 	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
 		D3DXVECTOR4	frame;
@@ -995,7 +997,12 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	const bool giOn = GIActive();
 	bool giLightReady = false;
 	giDrawn = false;
-	Constants.Data.z = giOn ? giStrength : 0.0f;
+	// UNOFFICIAL 2026-10-29 (rt-ao-gi) [Shaders.AmbientOcclusion.RT] GI: the RT bounce light, traced at the RT core's point earlier this
+	// frame (AmbientOcclusionEffect::RtGI), takes ComputeGI's place: written by the RT estimate into the bounce channel, then ComputeGI's
+	// accumulate (temporal) and apply (x the surface colour x GIStrength). ComputeGI itself, when on, keeps its screen search instead.
+	AmbientOcclusionEffect* rtAO = TheShaderManager->Effects.AmbientOcclusion;
+	IDirect3DTexture9* rtGI = !giOn && rtAO && RtAmbient::Ready() ? rtAO->RtGI() : nullptr;
+	Constants.Data.z = giOn ? giStrength : rtGI ? RtAmbient::Current.GIStrength : 0.0f;
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
@@ -1160,8 +1167,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 						if (rtRaw) {
 							static GpuTimer rtTimer("  Ambient light RT estimate (half)");
 							GpuProfileScope rtGpu(rtTimer, Device);
-							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtRaw };
-							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView, reduced);
+							// (rt-ao-gi) variant bit 8: the bounce light (3rd texture) into rgb; without GI the 3rd is a stand-in, not read.
+							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtRaw, rtGI ? (IDirect3DBaseTexture9*)rtGI : (IDirect3DBaseTexture9*)rtRaw };
+							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView | (rtGI ? 0x100u : 0u), reduced);
+							if (drawn && rtGI) giDrawn = true;	// ComputeGI's accumulate and apply take the bounce light from here
 						}
 						if (!drawn && giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
 						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);	// the first 2
