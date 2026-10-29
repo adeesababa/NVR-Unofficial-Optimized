@@ -71,6 +71,7 @@ void ReflectionsEffect::UpdateSettings() {
 namespace {
 	ReflectionsEffect* RtEffect = nullptr;
 	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
+	int RtShaderAlpha = -1;	// UNOFFICIAL 2026-10-29: Compute\Rt\ReflectionsRTAlpha.spv (with the core's alpha-tested casters)
 	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout, lamps[24]; };	// Rt/ReflectionsRT.comp's Pass block (std140, 496 bytes)
 	static_assert(sizeof(RtPassConstants) <= 512, "the RT core's pass constants limit");
 
@@ -125,8 +126,11 @@ namespace {
 		const ReflectionsEffect::RtImagesStruct& rt = RtEffect->Rt;
 		if (!rt.Dir || !rt.Ray || !rt.HitSurface || !rt.ShadeSurface) return;
 		if (!RtCore::CopyIn(RtImageDir, rt.Dir) || !RtCore::CopyIn(RtImageRay, rt.Ray)) return;
-		const int images[4] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade };
-		if (!RtCore::AddPass(RtShader, images, 4, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
+		// With the core's alpha-tested casters in the scene, the pass that tests them (their alpha atlas as a fifth image).
+		const int atlas = RtCore::AlphaTested() ? RtCore::AlphaAtlasImage() : -1;
+		const bool alpha = atlas > 0 && RtShaderAlpha >= 0;
+		const int images[5] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas };
+		if (!RtCore::AddPass(alpha ? RtShaderAlpha : RtShader, images, alpha ? 5 : 4, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
 		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface) && RtCore::CopyOut(RtImageShade, rt.ShadeSurface);
 	}
 	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
@@ -136,6 +140,7 @@ namespace {
 void ReflectionsEffect::RtRegister() {
 	RtEffect = this;
 	RtShader = RtCore::AddShader("ReflectionsRT");
+	RtShaderAlpha = RtCore::AddShader("ReflectionsRTAlpha");	// UNOFFICIAL 2026-10-29
 	RtCore::AddUser(RtUser);
 }
 
