@@ -35,7 +35,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 ambient;       // rgb the ambient (sky) light from above
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
-    vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), zw unused
+    vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
 } cb;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
@@ -128,6 +128,13 @@ vec4 ScreenLight(vec3 hit) {
     return vec4(pow(c, vec3(2.2)), 1.0);
 }
 
+// (2026-10-29) One bounce sample's light, its luminance capped at GIClamp (keeps the hue): a ray that lands on a lamp's glow or a
+// lit sign gives one pixel a value hundreds of times its neighbours', which the blurs and the history cannot average away (fireflies).
+vec3 Clamped(vec3 c) {
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return l > cb.gi2.z ? c * (cb.gi2.z / l) : c;
+}
+
 vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     rayQueryEXT q;
     rayQueryInitializeEXT(q, scene, 0u, RT_CULL, start + cb.origin.xyz, tMin, d, cb.gi.x);
@@ -148,7 +155,7 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     vec3 albedo = (r.flags & 0x10u) != 0u ? clamp(r.albedo.rgb, 0.0, 1.0) : vec3(0.5);
     vec3 hit = start + d * t;
     vec4 seen = ScreenLight(hit);
-    if (seen.a > 0.5) return vec4(min(seen.rgb, vec3(4.0)), t / cb.gi.x);
+    if (seen.a > 0.5) return vec4(Clamped(seen.rgb), t / cb.gi.x);
     vec3 lift = hit + n * (1.0 + 0.002 * t);
     vec3 e = cb.ambient.rgb * (cb.gi.w * (0.5 + 0.5 * n.z));   // GIAmbient (default 0: the game's ambient is already the indirect light)
     float sunCos = dot(n, cb.sunDir.xyz);
@@ -186,12 +193,18 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
             if (Visible(lift, l / dist, max(dist - 16.0, 0.0))) e += lampLight[chosen] * (total / weights[chosen]);
         }
     }
-    return vec4(min(albedo * e * cb.gi2.x, vec3(4.0)), t / cb.gi.x);
+    return vec4(Clamped(albedo * e * cb.gi2.x), t / cb.gi.x);
 }
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
+    // (2026-10-29) Interleave: only every 2nd (checkerboard) or every 4th (one texel of each 2 x 2, in turn) texel is traced a frame;
+    // the others keep the result they last had (the shared images persist) and AmbientLight's history blends them. Cost / 2 or / 4.
+    int interleave = int(cb.gi2.w + 0.5);
+    int turn = int(cb.origin.w + 0.5);
+    if (interleave == 2 && ((texel.x + texel.y + turn) & 1) != 0) return;
+    if (interleave >= 4 && ((texel.x & 1) + 2 * (texel.y & 1)) != (turn & 3)) return;
     vec4 input_ = imageLoad(inputImage, texel);
     float viewZ = input_.x;
     if (!(viewZ > 0.0)) {

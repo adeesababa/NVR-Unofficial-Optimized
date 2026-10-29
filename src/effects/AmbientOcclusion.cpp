@@ -515,7 +515,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
 		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
-		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, 0.0f, 0.0f);
+		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, rt.GIClamp, (float)rt.Interleave);
 		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
 		// trace grid: on-screen bounce hits take their light from it (RtAOTrace.comp ScreenLight).
 		IDirect3DSurface9* frame = nullptr;
@@ -527,6 +527,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const int alphaAtlas = RtCore::AlphaAtlasImage() >= 0 ? RtCore::AlphaAtlasImage() : RtImageAlphaStandIn;
 	if (alphaAtlas < 0) return;
 	if (RtImageLight < 0) return;
+	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
 	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
