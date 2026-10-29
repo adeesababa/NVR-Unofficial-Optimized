@@ -32,6 +32,9 @@ Combined branch: **claude/rootplan-combo** (worktree H:\_NVR-efflamps, bench jun
 - Run 1 (20261029-170959-slotA vs -170741) found two bugs, both fixed: the index decode divided by 3 (a GPU divides through a reciprocal:
   lamps 3, 6, 9 read the wrong entry, Lucky 38 5 levels darker on half its pixels), and the 128-lamp table was too small for Vault 21's
   447 lights (7798 lamps a frame missing). tests/lightcommon_index_test.cpp decodes 6 x 24 indices on the GPU exactly.
+- **Verdict PASS** (runs 20261029-172544-slotB off / -172917-slotB on, two launches, the user's toml): the picture equals the old path to
+  the cross-launch noise floor (Lucky 38 0.03% of pixels > 16, mean 0.00, as two runs of the old path; Vault 21 0.38% vs 0.26%); the
+  table held all 900 of Vault 21's frame lamps; the same lamps per draw; GPU world scene the same (~3.7 ms Lucky 38, ~7 ms Vault 21).
 - NO-GO measured: the same table for the post effects' 24 lamps (SnowAccumulation) compiles SLOWER under D3DX (161 s vs 137 s): the
   snow pass's compile time is no longer the lamps. Not committed.
 
@@ -43,6 +46,12 @@ Combined branch: **claude/rootplan-combo** (worktree H:\_NVR-efflamps, bench jun
 - Run 20261029-171716-slotB (the user's toml, LightPoints 24): Lucky 38 32 lamps past the live slots, Vault 21 52, all given a still
   shadow; drawing them costs a burst (6-11 ms in one frame) after arriving, then ~0. Vault 21 frame mean 0.65 levels darker with it (all
   forward lamp shadows together: 0.89) -- but that shot pair had camera drift; ABAB rerun rootplan-pool-2.
+- **ABAB (run 20261029-173431-slotA, combo, lc-on toml): Vault 21 pool on -0.64 levels (1.34% of pixels > 16), def-a = def-b and
+  pool-a = pool-b to 0.01%; forward lamp shadowing in that view 0.89 -> 1.53 (+70%). Lucky 38 -0.06.** Where: the walkway truss now
+  shadows the back wall (diagonal stripes) and the small floor uplights' glow at the seats goes dark: with the user's LampModelShadows =
+  true those lamps' housings shadow them, as the live slots would (check shot pair LightPoints 62 vs pool in rootplan-people-1).
+- `PoolPeopleLamps` (live, 0-16, 0 off): people drawn onto the nearest pool lamps' maps too (RedrawActorsOnly's MovingOnto through the
+  spare slot), no shader change.
 - Needs LightPoints below 63. Memory: one cube map per pool lamp at ShadowCubeMapSize (6 MB at 512).
 - People cast no shadow from pool lamps (they do from the live LightPoints lamps, as before).
 
