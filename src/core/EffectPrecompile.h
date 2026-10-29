@@ -6,6 +6,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "EffectCompiler47.h"	// UNOFFICIAL 2026-10-29 NewEffectCompiler
 
 // UNOFFICIAL 2026-10-28 (user: "we should port it"): NVR's effects compiled in parallel at startup, after Conor (mrfury97)'s fork
 // (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, commit ee3ac888, GPL-3.0-or-later: its ShaderPrecompile also does the effects;
@@ -53,13 +54,23 @@ namespace EffectPrecompile {
 			return;	// LoadEffect preprocesses it again and reports the error
 		}
 		if (errors) { errors->Release(); errors = nullptr; }
-		if (!ShaderProgram::CheckPreprocessResult(job->Preprocessed.c_str(), source) || !ShaderProgram::FileExists(job->Compiled.c_str())) {
+		if (!EffectCompiler47::CacheFresh(job->Preprocessed.c_str(), source) || !ShaderProgram::FileExists(job->Compiled.c_str())) {
 			ID3DXEffectCompiler* compiler = nullptr;
 			ID3DXBuffer* binary = nullptr;
-			if (SUCCEEDED(D3DXCreateEffectCompiler((const char*)source->GetBufferPointer(), source->GetBufferSize(), NULL, NULL, NULL, &compiler, &errors)) && compiler) {
+			// UNOFFICIAL 2026-10-29 NewEffectCompiler: d3dcompiler_47 first (seconds instead of minutes on the big effects)
+			ID3DXBuffer* newErrors = nullptr;
+			if (EffectCompiler47::Compile(source, job->Source.c_str(), &binary, &newErrors)) {
+				const std::string portable = EffectCompiler47::CacheText(source);
+				if (WriteFile(job->Compiled, binary->GetBufferPointer(), binary->GetBufferSize()))
+					WriteFile(job->Preprocessed, portable.data(), portable.size());
+				CompiledCount++;
+				binary->Release();
+				binary = nullptr;
+			}
+			else if (SUCCEEDED(D3DXCreateEffectCompiler((const char*)source->GetBufferPointer(), source->GetBufferSize(), NULL, NULL, NULL, &compiler, &errors)) && compiler) {
 				if (errors) { errors->Release(); errors = nullptr; }
 				if (SUCCEEDED(compiler->CompileEffect(NULL, &binary, &errors)) && binary) {
-					const std::string portable = ShaderProgram::PortableSource(source);
+					const std::string portable = EffectCompiler47::CacheText(source);
 					if (WriteFile(job->Compiled, binary->GetBufferPointer(), binary->GetBufferSize()))
 						WriteFile(job->Preprocessed, portable.data(), portable.size());
 					CompiledCount++;
@@ -68,6 +79,7 @@ namespace EffectPrecompile {
 			}
 			if (binary) binary->Release();
 			if (errors) errors->Release();
+			if (newErrors) newErrors->Release();
 		}
 		source->Release();
 	}
@@ -87,6 +99,7 @@ namespace EffectPrecompile {
 		Started = true;
 		if (!TheSettingManager->GetSettingI("Main.Main.Performance", "ParallelShaderCompile")) return;
 		StartTime = (double)GetTickCount64();
+		EffectCompiler47::ReadSetting();	// UNOFFICIAL 2026-10-29 (main thread; the workers read Use)
 		D3DXMACRO macros[8] = {};
 		EffectRecord::BuildMacros(macros);	// string literals: safe to share with the workers
 		CreateDirectoryA(EffectsPath "Cache\\", NULL);
