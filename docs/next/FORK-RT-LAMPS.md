@@ -17,6 +17,19 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+## Phase 2 (2026-10-29 from 16:00, branch claude/rt-lamps-2 from claude/rt-test-merge af12c7e7)
+### Step 1: the Lucky 38 stair-base stripe = a cube-map LEAK, traced is right (runs rtlamp-5 16:38, rtlamp-6 16:52, PASS)
+- DebugView 3 (one traced lamp, DebugLamp) + the traced-lamps log: the stripe is lamp 3 of the trace = cube slot 3, an invisible fill
+  light at (1789, -3505, 7805), reach 834, no fixture. Traced, a large surface blocks it over the floor with a straight edge.
+- OneSided (diagnostic: only the closest caster counts, and only if it faces the lamp, as the cube maps draw casters): that lamp's
+  blocked region becomes lit and the stripe comes back (rt1-onesided vs rt1: 5.6 % of pixels, +0.50). So the blocker faces AWAY
+  from the lamp: the one-sided cube map does not draw it and leaks the light; the two-sided rays block it. No RT fix needed; it is
+  the cube maps' single-sided-caster problem (the main session's "rings under cups"), which RT removes.
+- Also: mask scheme agreed with rt-sun-core (ba320c39): lamp glass 0x04, lamp models 0x08, alpha-tested casters 0x10 (the core's,
+  non-opaque); the lamp rays use 0xEF (0xE7 near the lamp) until they test alpha.
+### Step 4: SkipTracedCubes (f100ad80, DLL D6ECAD36, on): a traced lamp keeps its cube map (fallback) instead of redrawing it;
+  drawn when it has none of its own, and while people move near it with ActorsFromCubeMaps on. Cost run rtlamp-7 queued.
+
 ## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
 Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
 - **Works end to end on the iGPU** (9800X3D RDNA2, 2 CUs, 720p): the RT core's 64-bit helper traces the 9 lamps the visible draws
