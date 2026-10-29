@@ -195,6 +195,17 @@ accumulate (below): both are temporal + edge-aware spatial already.
 - **rt-ao-5 (10-29 17:53 og-goodsprings slot C, AlphaTested on, fork-0029, DLL 59DC7BCA):** ran clean (684 instances, 234 geometries,
   816k triangles; RT AO 4 rays: core line 6.0-6.4 ms). Foliage NOT verified: rt-sun-core's own rtsun-11 at the same spot found the core
   takes only ~5 alpha-tested meshes a frame (the cause is the core's; counters coming). My rays' alpha test waits for that.
+- **rt-gi-3 (10-29 18:08 lucky22, DLL 59DC7BCA, RIS shadowed lamps):** +7.1/255 on 67 % (v1 +8.3, no-ambient +7.8): shadowing the lamps
+  barely helped, so the level, not the leaks, was wrong. Measured: the RT bounce light (view 13) has mean linear 0.026 vs ComputeGI's
+  0.0009 (29x) and vs the frame itself 0.015: the analytic shading at the hit (lamp colour x quadratic falloff x albedo) is not in the
+  game's light units. RT cost (core line) 20.7 ms avg, min 11 ms (AO 4 + GI 1 + its shadow rays) in Lucky 38 on the iGPU.
+- **GI v2 (7e8f80e7, DLL 8F014ACC):** a hit the screen saw takes the light the game drew there: the hit is projected back into the
+  view, and where the input's view distance there matches (5 %, at least 8 units) the lit frame (StretchRect of the render target at
+  the RT core's point: the world is drawn, NVR's effects not yet; to the trace grid, shared as NVR RT gi frame light) gives its linear
+  colour, exactly the light ComputeGI's taps use. Hits off screen keep the analytic light x GIOffscreen (0.1 default; 0 = on-screen
+  bounces only, i.e. ComputeGI's light with ray-traced visibility). Merged claude/rt-sun-2 ffa19075 (alpha atlas on the GPU: ~900
+  alpha-tested meshes a frame at Goodsprings now really in the scene).
+- Queued: rt-gi-4 (lucky22) and rt-ao-6 (og-goodsprings, AlphaTested on), both fork-0029.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
