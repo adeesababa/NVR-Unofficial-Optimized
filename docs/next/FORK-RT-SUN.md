@@ -16,7 +16,10 @@ the sun shadow buffer's red channel right after the contact shadows:
   Then the rays are multiplied in as in Mode 0. Casters the core does not trace (alpha-tested, actors) cast no sun shadow inside
   `Range` in this mode.
 - `DebugView` 1 = the traced shadow alone in the buffer (cascades and contact left out), 2 = traced but not applied (the cascades'
-  picture with the rays' cost), 3 = distance to the caster (white = free or 4096+ units).
+  picture with the rays' cost), 3 = distance to the caster (white = free or 4096+ units), 4 = the traced visibility as grey over
+  the finished picture (use this one with ForwardShadows on), 5 = state codes per pixel (0.1 no depth / sky, 0.2 sun down,
+  0.3 beyond the range, 0.45 facing away, 0.6 traced hit, 0.8 traced free), 6 = camera rays against the scene alone (hit
+  distance / 8192, white = nothing): checks the scene without depth, normals or the sun.
 
 Files: `src/core/RtSunShadows.{h,cpp}` (the core user: settings, the trace pass's constants, the combine pass),
 `src/hlsl/NewVegas/Compute/Rt/RtSunShadow.comp` (+ .spv; runs in the helper), `src/hlsl/NewVegas/Compute/RtSunCombine.frag`
@@ -26,7 +29,7 @@ SunShadows.cpp (flags.w).
 
 ## The ray
 - Position: as SunShadows.glsl's `toWorld()`: view z = depth x farZ; scene position = origin + (forward + right x (2u - 1) / P00 -
-  up x (2v - 1) / P11) x view z (scene space = world minus the camera position; origin = CameraLocation - CameraPosition).
+  up x (2v - 1) / P11) x view z (scene space = world minus the camera position; origin = `RtCore::Eye()` = 0: the eye; see rtsun-4).
 - Normal: the normals buffer's view-space normal turned into scene space (its components along right / up / forward).
 - Pixels facing away from the sun, the sky, and pixels beyond `Range`: visibility 1 (the lighting's N.L does the rest).
 - Bias: start = position + normal x (`NormalBias` + `NormalBiasPerUnit` x view z) + sun x `StartBias`. Ray length `RayLength`.
@@ -85,7 +88,46 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   world translation); the sun pass uses it. Sent to rt-reflections, rt-ao-sky and rt-lamp-shadows (their origins used the same
   formula). Verification: rtsun-5 (rtsun-3's four headings + DebugView 6).
 
-## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first)
+### rtsun-5 (run 20261029-044643-slotC, after the Eye() fix; startup fix f8662fff/f6480bfd in)
+- **Rays hit.** DebugView 6 (camera rays) draws the scene where the screen has it: car, house, fence, windmill, rocks, at the right
+  depth. DebugView 4: the house and fence cast traced shadows on the ground; the faces seen here face away from the sun (the
+  view looks toward it) and stay white, as designed (the light term already darkens them).
+- **No land in the scene:** the ground and the hills are white in DebugView 6, so terrain casts no traced shadow yet. rtsun-6 logs
+  why AddGeometry leaves land out (counts by reason).
+- `player.setangle z` did not turn the third-person view (all four headings show one picture): rtsun-6 moves the sun instead.
+- Cost at 1280x720 on the iGPU: "Ray tracing (copies + helper + waits)" p50 2.49-2.55 ms (rays now hit and the helper does
+  real traversal; it was ~1.35 ms while every ray missed at once), helper GPU 3.8 ms avg incl. the first frame's builds,
+  passes 1.50 ms, scene 0.13 ms; 644 instances, 200 geometries, 782k triangles.
+- rt-reflections confirms on their side (Ultra-Luxe, 20261029-043724-slotA): camera rays hit every reflecting surface except
+  actors and leaves.
+
+### rtsun-6 (run 20261029-050116-slotC; the sun moves: GameHour 9 / 12 / 16)
+- **Matches the cascades for what is in the scene:** at 9:00 the house porch, the car and the crate cast traced shadows where the
+  cascades put them, with no acne on the ground (NormalBias 2 + 0.0005/unit, StartBias 1 hold). The car's side shows thin
+  self-shadow bands from its trim (real geometry, also hard-edged: one ray, no softening).
+- **Missing casters:** land (hills cast nothing; see below) and everything alpha-tested (foliage, fences, power-line wires:
+  56100 of 99960 object geometries met in 60 exchanges were left out for alpha; 2400 not a lighting shader, 2040 decal /
+  refraction, 780 no data). Mode 0 keeps those through the cascades.
+- **Land:** "land geometry met 0". The walk's reach test rejected every land node (their world bounds are not usable; NVR's
+  cascade walk does not test land either). Fix 28ea9e77: land skips it; the loaded grid limits it. Verification: rtsun-7.
+- Cost: "Ray tracing" p50 2.66-2.85 ms at 720p (one 6.0 ms window while GameHour jumped and the cascades rebuilt); helper GPU
+  1.76 ms avg after the builds (passes 1.63 ms, scene 0.13 ms), response 0.42 ms.
+
+### rtsun-7 (run 20261029-054742-slotC, after the land fix 28ea9e77)
+- **Land is in:** "land geometry met 2160, taken 2160" over 60 exchanges (36 land geometries a frame; 540 cells walked, none
+  without a land node). DebugView 6 shows the ground and the hills at the right depth; the scene grew to 680 instances, 238
+  geometries, 821k triangles, 127 MB.
+- Traced shadows from the house, fence, car and the overturned trailer at 9 / 12 / 16 where the cascades have them; no acne on
+  the near ground. Light speckle on far land near the right hill (several thousand units, toward the fade at `Range`): the
+  normal-offset bias grows with distance but the far normals are coarse; see the open problems.
+- **Cost at 1280x720 on the iGPU (Radeon 610M-class RDNA2, 2 CUs):** "Ray tracing (copies + helper + waits)" p50 3.23-3.40 ms
+  (one 6.5 ms window while GameHour jumped); helper GPU 2.40 ms avg after the first frame (passes 2.26 ms = the trace, scene
+  rebuild 0.13 ms), response 0.46 ms. First frame: all 238 builds at once, 126 ms (one hitch when RT is switched on or a new
+  area loads in bulk). ~0.92 M rays a frame (one per pixel; sky, far and back-facing pixels exit before tracing).
+- Verdict for the brief: the RT core works on the iGPU; RT sun shadows match the cascades for every caster the scene holds, with
+  no acne near; casters it does not hold yet are listed below. Mode 0 keeps those through the cascades, so Mode 0 is safe to try.
+
+## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
   a per-frame camera-relative TLAS (649 instances / 197 geometries / 779k triangles at Goodsprings), the trace pass, the
@@ -107,9 +149,20 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   The proper normals buffer (real-surface-normals session) can replace TESR_NormalsBuffer afterwards; it does not cause the bug.
 
 ## Open problems / next
-- Alpha-tested casters (foliage, fences, chain link) and actors are not traced: Mode 0 keeps them through the cascades.
-- Soft shadows: one hard ray per pixel; the contact shadows' blur and the cascades' PCF soften the combined result in Mode 0;
-  Mode 1 is hard-edged. A cone of rays (sun's angular size) + a denoise is the next step if wanted.
-- RenderScale / FSR: the trace runs at the full screen size and assumes the world fills the screen (RenderScale's rect frames
-  draw the world into the top-left part: not handled yet; the bench runs have FSR off).
-- Cost on a real RT GPU unknown (the iGPU only shows relative cost).
+- **Alpha-tested casters** (foliage cards, fences, chain link, power-line wires) are not traced: 56% of the object geometry the
+  walk meets. Next: an any-hit-style test in the ray query (candidate triangles: fetch UVs + the diffuse alpha from the records),
+  which needs texture coordinates in the geometry data (protocol v3) and the diffuse textures shared with the helper.
+- **Actors** (skinned) are not traced: the player, NPCs and creatures cast cascade shadows only. Needs skinned vertices from
+  the GPU (the skin shader's output) per frame.
+- **Soft shadows:** one hard ray per pixel. Mode 0 softens through the cascades' PCF + contact blur; Mode 1 is hard. Next: a cone
+  of rays over the sun's disc + a small denoise.
+- **Far-land speckle** (rtsun-7): raise NormalBiasPerUnit for land (or use the land's geometric normal from the hit-free
+  reconstruction) beyond ~3000 units.
+- **RenderScale / FSR:** the trace assumes the world fills the screen at full size; RenderScale's rect frames are not handled
+  (bench runs have FSR off).
+- **Bench:** the third-person view ignores `player.setangle`; move the sun (GameHour) instead to vary the light direction.
+- **Cost on a real RT GPU** unknown (the iGPU only shows relative cost).
+- **The 1070:** with `Enabled` false (the default) no helper starts and nothing changes. With it on while the game runs on the
+  1070, the helper takes the game's own GPU (matched by adapter LUID, driver UUID checked), finds no ray query there and stops
+  ("no ray tracing on the game's GPU"); the core then switches itself off and the old path runs. Code path read, not run in game
+  on the 1070.
