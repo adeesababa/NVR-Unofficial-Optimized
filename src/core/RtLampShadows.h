@@ -185,8 +185,11 @@ namespace RtLampShadows {
 	inline bool KeepCube(int slot, const PointShadowSlotState& last, const PointShadowSlotState& now) {
 		if (!CompiledIn || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;
 		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
-		if (!last.valid || last.partial || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
+		if (!last.valid || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
 			last.radius != now.radius) return false;
+		// A partial cube map (CubeFaceViewCull left the out-of-view faces of a people refresh as they were) is only the fallback here;
+		// redrawing it for that made a loop: each people refresh is partial again (rtlamp-10: Vault 21 7 refreshes a frame, 8.1 ms)
+		if (last.partial && ActorsFromCubeMaps()) return false;
 		if (!now.staticCasters && ActorsFromCubeMaps()) return false;
 		SkippedCubes++;
 		return true;

@@ -35,6 +35,18 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Runs rtlamp-10 (actors) + rtlamp-11 (soft 32 + filter v2), 2026-10-29 19:44-19:57, both PASS (DLL FB49B761, rt-sun-2 c9e185d8)
+- rtlamp-10, fork-0033 + Actors: the core posed 5040 skinned partitions in exchanges 1-60 (~84 a frame); A/B repeats 0.00 %; rt vs
+  cube L38 2.2 %, V21 1.1 %; nothing wrong on or round the people (no speckle, no self-shadow); people moved between shots, so the
+  run does not prove their traced shadows (needs a still NPC + DebugView 3 on the lamp over them). Cost: RT 36-42 ms (L38) /
+  39 ms (V21) vs 28 / 24 without actors: the skinned rebuilds ~+8 (L38) to +15 ms (V21) on the iGPU.
+- But V21's cube maps stayed 8.1 ms (7 people refreshes a frame): KeepCube refused any lamp whose last redraw was PARTIAL, and a
+  people refresh with CubeFaceViewCull is always partial -> a loop that redrew them every frame (also in rtlamp-7/8 with
+  ActorsFromCubeMaps 0). Fixed (dbb?): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
+- rtlamp-11, LampRadius 32 / invisible 48, 1 ray, Jitter off: hard / soft1 / soft4 still differ on < 0.1 % of pixels: traced lamp
+  shadows are a small part of these views and their penumbrae barely show. Filter v2: +14 ms (iGPU) and further from soft4 than
+  soft1 (0.13 vs 0.05 %): stays off. Soft lamp shadows: LampRadius 4 + Jitter (TAA) is enough here; the filter is parked.
+
 ### Step 3, part 2: soft shadows + a lamp-aware filter (Filter, off; f65dbcce, DLL 1879B367; run rtlamp-9 19:12, PASS)
 - The shared RtDenoise (rt-sun-core) filters one value a pixel; this result is three lamps a pixel whose order differs between
   neighbours, so it cannot go through it. RtLampFilter.comp, a second helper pass: each of the pixel's lamps averages the visibility
