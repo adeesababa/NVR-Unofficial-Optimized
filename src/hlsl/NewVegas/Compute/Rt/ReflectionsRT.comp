@@ -19,7 +19,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 forward;       // xyz camera forward (scene space)
 	vec4 right;         // xyz camera right / projection[0][0]
 	vec4 up;            // xyz camera up / projection[1][1]
-	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition), w 1 = the alignment check (RT DebugView 5)
+	vec4 origin;        // xyz the eye in scene space (RtCore::Eye()), w 1 = the alignment check (RT DebugView 5)
 	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up (outdoors, by day)
 	vec4 layout_;       // xy one half-resolution texel in screen uv, zw one full-resolution texel (RayGen's pixel centre rule)
 } p;

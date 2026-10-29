@@ -144,17 +144,16 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 	if (!ExtRender(Device, Rt.MarchSurface, Rt.MarchSurface, 8, false, Rt.MarchSurface)) return false;
 	bool traced = !rtRays;	// SplitTest: nothing to trace
 	if (rtRays) {
-		// The pass constants: the camera as RtSunShadows gives it (scene space = world minus CameraPosition), the sun, RayGen's pixel rule.
+		// The pass constants: the camera as RtSunShadows gives it (scene space = world minus CameraPosition, eye RtCore::Eye()), the sun, RayGen's pixel rule.
 		const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
-		const NiPoint3* location = Pointers::Generic::CameraLocation;
 		const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.SunDir;
 		RtPending.size = D3DXVECTOR4((float)RtWidth(), (float)RtHeight(), Settings.RtDistance, Settings.RtSunShadows ? 1.0f : 0.0f);
 		RtPending.forward = D3DXVECTOR4(view._13, view._23, view._33, 0.0f);
 		RtPending.right = D3DXVECTOR4(view._11 / proj._11, view._21 / proj._11, view._31 / proj._11, 0.0f);
 		RtPending.up = D3DXVECTOR4(view._12 / proj._22, view._22 / proj._22, view._32 / proj._22, 0.0f);
-		RtPending.origin = D3DXVECTOR4(location->x - TheRenderManager->CameraPosition.x, location->y - TheRenderManager->CameraPosition.y,
-			location->z - TheRenderManager->CameraPosition.z, Settings.RtDebugView == 5 ? 1.0f : 0.0f);	// w: the alignment check
+		const D3DXVECTOR3 eye = RtCore::Eye();	// the eye in scene space (2026-10-29 rt-sun-core 4ba2abfd: CameraLocation reads ~0 in game)
+		RtPending.origin = D3DXVECTOR4(eye.x, eye.y, eye.z, Settings.RtDebugView == 5 ? 1.0f : 0.0f);	// w: the alignment check
 		D3DXVECTOR3 toSun(sun.x, sun.y, sun.z);
 		D3DXVec3Normalize(&toSun, &toSun);
 		RtPending.sun = D3DXVECTOR4(toSun.x, toSun.y, toSun.z, RtSunAmount() > 0.0f ? 1.0f : 0.0f);
