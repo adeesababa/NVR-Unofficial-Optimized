@@ -39,6 +39,7 @@ namespace RtLampShadows {
 		float lamps[TracedSlots][4];
 		float radius[3][4];
 		float stops[3][4];						// per lamp: where its rays stop short of it, at least LampStop (its own globe / bulb / glass)
+		float flags[4];							// x: OneSided (diagnostic: count only casters facing the lamp, as the cube maps do)
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
@@ -261,6 +262,7 @@ namespace RtLampShadows {
 		c.params2[1] = (float)farMask;
 		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
 		c.params2[3] = (float)TracedSlots;
+		c.flags[0] = TheSettingManager->GetSettingI(kSection, "OneSided") ? 1.0f : 0.0f;
 		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
 		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
 		for (int i = 0; i < LampCount; i++) {	// traced index i (PendingMap)
