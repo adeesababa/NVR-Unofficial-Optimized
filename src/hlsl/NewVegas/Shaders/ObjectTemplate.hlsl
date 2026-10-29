@@ -1644,6 +1644,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #define MANY_LAMPS_C 5
     float4 NVR_ManyLampsB[2 * MANY_LAMPS_B] : register(c76);
     float4 NVR_ManyLampsC[2 * MANY_LAMPS_C] : register(c98);
+    #if MANY_LAMPS_ON == 2
+        #include "includes/LightCommon.hlsl"	// UNOFFICIAL 2026-10-29 LightCommonLamps: the lamps from the frame's table (s3)
+    #endif
 #endif
 
 struct PS_INPUT {
