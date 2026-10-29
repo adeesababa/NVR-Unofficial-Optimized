@@ -1335,7 +1335,9 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	static GpuTimer fluidTimer("  Blood fluid");
 	bool fluidDrew = false;
 	// UNOFFICIAL 2026-10-27 RenderScale v2: not in rect frames (its tiles and draw cover the whole screen); the simulation waits.
-	if (TheBloodFluid().On() && !RenderRect::Active()) {
+	// (2026-10-29 WaterGun, user: "nothing happens" on FSR 0.667 + LowResEffects = every frame a rect frame: the fluid never ran.
+	// It now works in the drawn top-left part: BloodFluid.cpp Render, screen = render size, UVs over the full texture.)
+	if (TheBloodFluid().On()) {
 		GpuProfileScope gpu(fluidTimer, device);
 		fluidDrew = TheBloodFluid().Render(device, image, source, this);
 	}

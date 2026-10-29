@@ -85,6 +85,7 @@ vec3 UnpackColour(float t) {
 
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
+    if (px.x >= int(F.screen.x) || px.y >= int(F.screen.y)) discard;   // (2026-10-29: outside a RenderScale frame's drawn part)
     uint tile = uint(px.y >> 4) * F.counts.z + uint(px.x >> 4);
     uint count = min(TileCount[tile], F.counts2.x);
     if (count == 0u) discard;
@@ -99,7 +100,7 @@ void main() {
     vec3 nv = Texel(t_normals, px).xyz * 2.0 - 1.0;
     vec3 Ns = vec3(dot(F.viewRot0.xyz, nv), dot(F.viewRot1.xyz, nv), dot(F.viewRot2.xyz, nv));
     Ns = dot(Ns, Ns) > 1e-6 ? normalize(Ns) : -rd;
-    float aa = max(depth * F.screen.w * 2.0 / F.up.w, 0.05);   // a pixel's size on the surface (units)
+    float aa = max(depth * 2.0 / (F.screen.y * F.up.w), 0.05);   // a pixel's size on the surface (units)
     uint debug = F.counts2.z;
     if (debug == 3u) {   // TEST: the depth this pass reads (red bands every 64 units; green where the raw value is above 0)
         outColor = vec4(fract(depth / 64.0), Texel(t_depth, px).x > 0.0 ? 1.0 : 0.0, 0.0, 0.8);

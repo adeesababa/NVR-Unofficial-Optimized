@@ -10,6 +10,7 @@
 #include "../core/DxvkCompute.h"
 #include "../core/FrameClock.h"
 #include "../core/ImGuiManager.h"
+#include "../core/RenderRect.h"
 
 namespace {
 	// The blocks as the GLSL declares them (BloodFluid.glsl Frame, std140: vec4s only; BloodFluidSim.comp Push and Emitter).
@@ -439,7 +440,10 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	f.right[0] = right.x; f.right[1] = right.y; f.right[2] = right.z; f.right[3] = proj._11;
 	f.up[0] = upv.x; f.up[1] = upv.y; f.up[2] = upv.z; f.up[3] = proj._22;
 	f.fwd[0] = forward.x; f.fwd[1] = forward.y; f.fwd[2] = forward.z; f.fwd[3] = cameraData ? cameraData->x : 5.0f;
-	f.screen[0] = (float)Width; f.screen[1] = (float)Height; f.screen[2] = 1.0f / Width; f.screen[3] = 1.0f / Height;
+	// (2026-10-29: in a RenderScale rect frame the scene is the top-left render-size part of the full-size textures: xy the pixels
+	// the fluid works in, zw still 1 / the textures' size, for UVs. The tiles cover only that part.)
+	const UInt32 rw = RenderRect::Width(Width), rh = RenderRect::Height(Height);
+	f.screen[0] = (float)rw; f.screen[1] = (float)rh; f.screen[2] = 1.0f / Width; f.screen[3] = 1.0f / Height;
 	f.sim[0] = Step; f.sim[1] = Gravity; f.sim[2] = Radius; f.sim[3] = (float)steps;
 	f.fluid[0] = 600.0f; f.fluid[1] = 120.0f; f.fluid[2] = Settings.Viscosity; f.fluid[3] = powf(Cell / (2.0f * Radius), 3.0f);
 	// (2026-10-27: blood in flight counts as on a surface up to 10 units behind what the camera sees there, 25 before. The window
@@ -449,7 +453,7 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	f.wall[0] = Settings.Friction; f.wall[1] = Settings.Cling; f.wall[2] = 1.5f; f.wall[3] = old ? 25.0f : 10.0f;
 	f.settle[0] = 0.4f * Settings.SettleTime; f.settle[1] = 0.6f * Settings.SettleTime; f.settle[2] = 0.5f; f.settle[3] = 0.4f;	// (splash: the spike's 1.0 flung a throw over a whole table top in game, 2026-10-26)
 	f.gridf[0] = Cell; f.gridf[1] = 1.0f / Cell; f.gridf[2] = 1500.0f; f.gridf[3] = Settings.Lifetime;
-	f.counts[0] = Capacity; f.counts[1] = Used; f.counts[2] = TilesX; f.counts[3] = TilesY;
+	f.counts[0] = Capacity; f.counts[1] = Used; f.counts[2] = (rw + 15) / 16; f.counts[3] = (rh + 15) / 16;
 	f.counts2[0] = TileCap; f.counts2[1] = GridCells - 1; f.counts2[2] = (UInt32)Settings.DebugView; f.counts2[3] = (UInt32)PendingCount;
 	f.look[0] = Settings.StainSize; f.look[1] = Radius * (old ? 1.3f : Settings.DropSize); f.look[2] = Settings.Threshold; f.look[3] = Settings.Bump;
 	// UNOFFICIAL 2026-10-27: BloodFlow's wet look (TESR_BloodFlowLook) and the reworked throws and drops (BloodFluid.glsl rework):
