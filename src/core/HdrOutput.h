@@ -20,6 +20,13 @@
 // frame although Windows HDR was on, or SDR again after a short mode change while HDR10 was being set up (user's log 10-29 15:11).
 // Now a monitor seen in HDR mode once in this run (at plugin load, before the game opens its window: NoteDesktop, or at any later
 // check) counts as "Windows HDR on" for the rest of the run; a later SDR reading for it is logged once and ignored.
+// UNOFFICIAL 2026-10-29 (user's run 16:04, "still nothing"): the latch can miss it altogether. Windows HDR was switched on at
+// 16:03:55, the game started at 16:04:01: SDR at load (the monitor was still switching) and at every check after (the game's
+// picture had switched it to SDR), so the fork was never asked. The Windows SETTING ("Use HDR", which the game's picture does not
+// change) is therefore read (ReadWindowsSetting: Windows 11 24H2's highDynamicRangeUserEnabled, else the monitor's own
+// MonitorDataStore entry) and decides when it is found; the current mode and the latch remain for systems where it is not. A
+// refused mode is asked again (with the display check, and whenever the display reads HDR, e.g. alt-tabbed), and the fork reports
+// whether its swap chain really is HDR (GetHdrInfo ActiveMode), which is logged.
 //
 // Test tool: CaptureFrame (a counter: each new non-zero value) writes, 60 frames later, a frame's HDR output, as the fork sends it (scRGB,
 // 1.0 = 80 nits), to NVR-Unofficial-Optimized-Logs\NeonSelfTest_HdrCapture_<n>.pfm.world (a PFM: RGB float, bottom row first;
@@ -40,11 +47,22 @@ namespace HdrOutput {
 		bool					Active = false;		// a HDR mode is set in the fork
 		NVR_EXT_HDR_OUTPUT		Applied = {};
 		bool					Refused = false;	// the fork refused the mode (logged once until the settings change)
+		unsigned				RefusedRetries = 0;	// asked again every 600 frames, 6 times (UNOFFICIAL 2026-10-29)
+		bool					RetryNow = false;	// the display read HDR (e.g. alt-tabbed): ask a refused mode again now
+		bool					SwapSdr = false;	// on, but the fork says its swap chain is SDR (asked again: 3 timed attempts + alt-tab)
+		unsigned				SwapSdrRetries = 0;
+		unsigned				LastAttempt = 0;	// frame of the last SetHdrOutput (a refused mode is asked at most every 30 frames)
+		NVR_EXT_HDR_INFO		Info = {};			// the fork's view (GetHdrInfo)
+		bool					InfoRead = false;
+		int						LastSetting = -1;	// the last Windows setting found for LastMonitor (a failed read keeps it)
+		HMONITOR				LastMonitor = nullptr;
+		bool					SupportedSeen = false;	// DisplayConfig said "advanced colour supported" for it in this run
 		int						DisplayHdr = -1;	// -1 unknown, 0 SDR desktop, 1 Windows HDR on (ST.2084)
 		std::vector<HMONITOR>	SeenHdr;			// monitors seen in HDR mode in this run (UNOFFICIAL 2026-10-29)
 		float					DisplayMaxNits = 0.0f;
 		unsigned				Frame = 0;
 		char					LastReason[160] = "";
+		char					LastCheck[256] = "";	// the display check's last log line (logged when it changes)
 		ID3D9NvrExtPipeline*	GainPipeline = nullptr;
 		bool					GainTried = false;
 		IDirect3DTexture9*		Gain = nullptr;
@@ -98,28 +116,207 @@ namespace HdrOutput {
 		}
 	}
 
+	// UNOFFICIAL 2026-10-29: the Windows HDR SETTING of a monitor, which (unlike the current mode above) the game's picture does not
+	// change. Windows 11 24H2 reports it (DisplayConfig GET_ADVANCED_COLOR_INFO_2: highDynamicRangeUserEnabled, with activeColorMode).
+	// Before that it is only in the registry: AdvancedColorEnabled (HDREnabled on newer builds) of
+	// HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\MonitorDataStore\<entry>, written when the user switches it, never
+	// while a game runs (user's entry: last written 16:03:55 although the game ran until 16:06). The entry is the monitor's: <PnP id><EDID serial>_<week>_<year>_<checksum> (MonitorStoreKey, from
+	// the EDID of the DisplayConfig target; user's: AOCA6102OMQ9JA000349_24_07E8_6B); a prefix match on the PnP id is used only when
+	// exactly one entry has it. The game's monitor is matched by its GDI name (MONITORINFOEX.szDevice = the path's source name).
+	// Monitor null = all monitors (NoteDesktop). -1 = not found.
+	struct WindowsHdr {
+		int			Setting = -1;		// HDR switched on by the user
+		const char*	From = "none";		// where Setting came from
+		int			Mode = -1;			// Windows 11 24H2 activeColorMode == HDR
+		int			Active = -1;		// DisplayConfig advancedColorEnabled / advancedColorActive (also 1 for WCG and auto colour management)
+		int			Supported = -1;		// DisplayConfig advancedColorSupported
+		int			Disabled = -1;		// DisplayConfig advancedColorForceDisabled / advancedColorLimitedByPolicy
+		char		PnpId[16] = "";
+		char		Key[96] = "";		// the MonitorDataStore entry read
+	};
+
+	// DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2 (Windows 11 24H2, DisplayConfig type 15; not in SDK 10.0.19041, behind NTDDI_WIN11_GA in 26100)
+	struct AdvancedColorInfo2 {
+		DISPLAYCONFIG_DEVICE_INFO_HEADER	header;
+		UINT32								value;		// bit 0 advancedColorSupported, 1 advancedColorActive, 3 advancedColorLimitedByPolicy, 5 highDynamicRangeUserEnabled
+		UINT32								colorEncoding;
+		UINT32								bitsPerColorChannel;
+		UINT32								activeColorMode;	// 0 SDR, 1 WCG, 2 HDR
+	};
+	static_assert(sizeof(AdvancedColorInfo2) == 36, "DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2 is 36 bytes");
+
+	// The MonitorDataStore entry name of a monitor, from its EDID (the value EDID of
+	// HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<PnP id>\<instance>\Device Parameters): the PnP id, the serial number text (display descriptor 0xFF), the week, year and checksum bytes.
+	inline bool MonitorStoreKey(const char* pnp, const char* instance, char* key, size_t keySize) {
+		char path[256];
+		sprintf_s(path, "SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\%s\\%s\\Device Parameters", pnp, instance);
+		static BYTE edid[1024];
+		DWORD size = sizeof(edid);
+		if (RegGetValueA(HKEY_LOCAL_MACHINE, path, "EDID", RRF_RT_REG_BINARY, nullptr, edid, &size) != ERROR_SUCCESS || size < 128) return false;
+		char serial[16] = "";
+		for (int d = 54; d <= 108; d += 18) {
+			if (edid[d] || edid[d + 1] || edid[d + 3] != 0xFF) continue;
+			int first = d + 5, last = d + 18;
+			for (int k = first; k < last; k++) if (edid[k] == 0x0A) { last = k; break; }
+			while (first < last && edid[first] == ' ') first++;
+			while (last > first && edid[last - 1] == ' ') last--;
+			int n = 0;
+			for (int k = first; k < last && n < (int)sizeof(serial) - 1; k++) serial[n++] = (char)edid[k];
+			serial[n] = 0;
+		}
+		sprintf_s(key, keySize, "%s%s_%02X_%04X_%02X", pnp, serial, edid[16], 1990 + edid[17], edid[127]);
+		return true;
+	}
+
+	// The HDR switch of one MonitorDataStore entry (-1: no such entry): HDREnabled where Windows has it (newer builds, where
+	// AdvancedColorEnabled can also mean auto colour management on an SDR monitor; Microsoft's HOBL test tool reads it), else
+	// AdvancedColorEnabled (Windows 10: the user's 19044 has only that one)
+	inline int MonitorStoreSetting(const char* key) {
+		char path[160];
+		sprintf_s(path, "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore\\%s", key);
+		DWORD value = 0, size = sizeof(value);
+		if (RegGetValueA(HKEY_LOCAL_MACHINE, path, "HDREnabled", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS) return value ? 1 : 0;
+		size = sizeof(value);
+		if (RegGetValueA(HKEY_LOCAL_MACHINE, path, "AdvancedColorEnabled", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS) return -1;
+		return value ? 1 : 0;
+	}
+
+	inline WindowsHdr ReadWindowsSetting(HMONITOR monitor) {
+		WindowsHdr result;
+		MONITORINFOEXW info = {};
+		info.cbSize = sizeof(info);
+		if (monitor && !GetMonitorInfoW(monitor, &info)) return result;
+		std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+		std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+		LONG status = ERROR_INSUFFICIENT_BUFFER;
+		for (int attempt = 0; attempt < 3 && status == ERROR_INSUFFICIENT_BUFFER; attempt++) {	// the layout can change between the two calls
+			UINT32 pathCount = 0, modeCount = 0;
+			if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS || !pathCount) return result;
+			paths.resize(pathCount);
+			modes.resize(modeCount);
+			status = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr);
+			paths.resize(pathCount);
+		}
+		if (status != ERROR_SUCCESS) return result;
+		for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+			if (monitor) {
+				DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+				source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+				source.header.size = sizeof(source);
+				source.header.adapterId = path.sourceInfo.adapterId;
+				source.header.id = path.sourceInfo.id;
+				if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || _wcsicmp(source.viewGdiDeviceName, info.szDevice)) continue;
+			}
+			AdvancedColorInfo2 color2 = {};
+			color2.header.type = (DISPLAYCONFIG_DEVICE_INFO_TYPE)15;	// DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2
+			color2.header.size = sizeof(color2);
+			color2.header.adapterId = path.targetInfo.adapterId;
+			color2.header.id = path.targetInfo.id;
+			if (DisplayConfigGetDeviceInfo(&color2.header) == ERROR_SUCCESS) {	// Windows 11 24H2 (Windows 10: ERROR_INVALID_PARAMETER)
+				result.Supported = (std::max)(result.Supported, (int)(color2.value & 1));
+				result.Active = (std::max)(result.Active, (int)((color2.value >> 1) & 1));
+				result.Disabled = (std::max)(result.Disabled, (int)((color2.value >> 3) & 1));
+				result.Mode = (std::max)(result.Mode, color2.activeColorMode == 2 ? 1 : 0);
+				result.Setting = (std::max)(result.Setting, (int)((color2.value >> 5) & 1));
+				result.From = "Windows";
+			}
+			else {
+				DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO color = {};
+				color.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+				color.header.size = sizeof(color);
+				color.header.adapterId = path.targetInfo.adapterId;
+				color.header.id = path.targetInfo.id;
+				if (DisplayConfigGetDeviceInfo(&color.header) == ERROR_SUCCESS) {
+					result.Supported = (std::max)(result.Supported, color.advancedColorSupported ? 1 : 0);
+					result.Active = (std::max)(result.Active, color.advancedColorEnabled ? 1 : 0);
+					result.Disabled = (std::max)(result.Disabled, color.advancedColorForceDisabled ? 1 : 0);
+				}
+			}
+			DISPLAYCONFIG_TARGET_DEVICE_NAME target = {};
+			target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+			target.header.size = sizeof(target);
+			target.header.adapterId = path.targetInfo.adapterId;
+			target.header.id = path.targetInfo.id;
+			if (DisplayConfigGetDeviceInfo(&target.header) != ERROR_SUCCESS) continue;
+			// "\\?\DISPLAY#AOCA610#5&37e6d2eb&1&UID4355#{...}": the PnP id and the device instance between the '#'
+			char device[128] = {};
+			for (int c = 0; c < 127 && target.monitorDevicePath[c]; c++) device[c] = (char)target.monitorDevicePath[c];
+			char* pnp = strchr(device, '#');
+			char* instance = pnp ? strchr(pnp + 1, '#') : nullptr;
+			char* tail = instance ? strchr(instance + 1, '#') : nullptr;
+			if (!tail || instance - pnp - 1 <= 0 || instance - pnp - 1 >= (ptrdiff_t)sizeof(result.PnpId)) continue;
+			*instance++ = 0; *tail = 0; pnp++;
+			if (!result.PnpId[0]) strcpy_s(result.PnpId, pnp);
+			if (!strcmp(result.From, "Windows")) continue;	// Windows 11 24H2 said it: no registry needed
+			char key[96];
+			int setting = -1;
+			if (MonitorStoreKey(pnp, instance, key, sizeof(key))) setting = MonitorStoreSetting(key);
+			if (setting < 0) {
+				// No exact entry: the one entry whose name starts with the PnP id, if there is exactly one
+				HKEY store = nullptr;
+				int matches = 0;
+				if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\MonitorDataStore", 0, KEY_READ, &store) == ERROR_SUCCESS) {
+					char name[256];
+					for (DWORD k = 0; ; k++) {
+						DWORD nameLength = sizeof(name);
+						if (RegEnumKeyExA(store, k, name, &nameLength, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+						if (!_strnicmp(name, pnp, strlen(pnp)) && ++matches == 1) strcpy_s(key, name);
+					}
+					RegCloseKey(store);
+				}
+				if (matches == 1) setting = MonitorStoreSetting(key);
+			}
+			if (setting >= 0) {
+				result.Setting = (std::max)(result.Setting, setting);
+				result.From = "registry";
+				if (!result.Key[0]) strcpy_s(result.Key, key);
+			}
+		}
+		return result;
+	}
+
+	inline const char* OnOff(int value) { return value > 0 ? "on" : value == 0 ? "off" : "not found"; }
+
 	// At plugin load, before the game makes its window and swap chain: which monitors Windows has in HDR mode (Render.cpp's
-	// HdrOutputNoteDesktop, called from NVSEPlugin_Load).
+	// HdrOutputNoteDesktop, called from NVSEPlugin_Load). Only with HDR output enabled.
 	inline void NoteDesktop() {
+		if (!TheSettingManager->GetSettingI("Shaders.HDR.Main", "Enabled")) return;
 		int hdr; float maxNits;
 		ReadMonitors(nullptr, hdr, maxNits);
-		Logger::Log("UNOFFICIAL HDR output: at load, before the game's window, %u monitor(s) in HDR mode (Windows HDR %s)", (unsigned)S.SeenHdr.size(), S.SeenHdr.empty() ? "off" : "on");
+		const WindowsHdr windows = ReadWindowsSetting(nullptr);
+		Logger::Log("UNOFFICIAL HDR output: at load, before the game's window, %u monitor(s) in HDR mode; Windows HDR setting %s (%s), advanced colour %s",
+			(unsigned)S.SeenHdr.size(), OnOff(windows.Setting), windows.From, OnOff(windows.Active));
 	}
 
 	// Windows' HDR switch for the monitor showing the game window.
 	inline void CheckDisplay(IDirect3DDevice9* Device) {
 		D3DDEVICE_CREATION_PARAMETERS cp = {};
 		HMONITOR monitor = nullptr;
-		if (SUCCEEDED(Device->GetCreationParameters(&cp)) && cp.hFocusWindow) monitor = MonitorFromWindow(cp.hFocusWindow, MONITOR_DEFAULTTONEAREST);
-		int hdr; float maxNits;
-		ReadMonitors(monitor, hdr, maxNits);
-		if (!hdr && monitor && SeenHdr(monitor)) {
-			static bool told = false;
-			if (!told) { told = true; Logger::Log("UNOFFICIAL HDR output: the display reports SDR mode now, but it was in HDR mode earlier in this run (the game's own fullscreen picture switches it): HDR stays on"); }
-			hdr = 1;
+		if (SUCCEEDED(Device->GetCreationParameters(&cp))) {
+			if (cp.hFocusWindow) monitor = MonitorFromWindow(cp.hFocusWindow, MONITOR_DEFAULTTONEAREST);
+			IDirect3D9* d3d = nullptr;
+			if (!monitor && SUCCEEDED(Device->GetDirect3D(&d3d)) && d3d) { monitor = d3d->GetAdapterMonitor(cp.AdapterOrdinal); d3d->Release(); }
 		}
+		int current; float maxNits;
+		ReadMonitors(monitor, current, maxNits);
+		WindowsHdr windows = monitor ? ReadWindowsSetting(monitor) : WindowsHdr();
+		if (monitor != S.LastMonitor) { S.LastMonitor = monitor; S.LastSetting = -1; S.SupportedSeen = false; }
+		if (windows.Setting >= 0) S.LastSetting = windows.Setting;
+		else if (S.LastSetting >= 0) { windows.Setting = S.LastSetting; windows.From = "last reading"; }	// a failed read keeps the last answer
+		if (windows.Supported > 0) S.SupportedSeen = true;
+		const bool seen = monitor && SeenHdr(monitor);
+		const bool now = current || windows.Mode > 0;
+		int hdr;
+		if (windows.Disabled > 0 || (windows.Supported == 0 && !S.SupportedSeen)) hdr = 0;	// Windows cannot run HDR on it now (policy, link, mode)
+		else if (windows.Setting >= 0) hdr = windows.Setting > 0 || now ? 1 : 0;	// the setting decides (an HDR reading of the current mode also counts)
+		else hdr = now || seen ? 1 : 0;
+		if (current && (S.Refused || S.SwapSdr)) S.RetryNow = true;	// e.g. alt-tabbed: the desktop is in HDR, the surface may offer it now
 		if (maxNits <= 0.0f) maxNits = S.DisplayMaxNits;
-		if (hdr != S.DisplayHdr) Logger::Log("UNOFFICIAL HDR output: display %s (Windows HDR %s), display peak %.0f nits", hdr ? "in HDR mode" : "in SDR mode", hdr ? "on" : "off", maxNits);
+		char text[256];
+		sprintf_s(text, "Windows HDR %s for the game's display %s (setting %s from %s%s%s, now in %s mode, advanced colour %s, supported %s%s, HDR seen earlier %s), peak %.0f nits",
+			hdr ? "on" : "off", windows.PnpId[0] ? windows.PnpId : "(unknown)", OnOff(windows.Setting), windows.From, windows.Key[0] ? " " : "", windows.Key,
+			now ? "HDR" : "SDR", OnOff(windows.Active), OnOff(windows.Supported), windows.Disabled > 0 ? ", DISABLED by Windows" : "", seen ? "yes" : "no", maxNits);
+		if (strcmp(text, S.LastCheck)) { strcpy_s(S.LastCheck, text); Logger::Log("UNOFFICIAL HDR output: %s", text); }
 		S.DisplayHdr = hdr;
 		S.DisplayMaxNits = maxNits;
 	}
@@ -134,6 +331,8 @@ namespace HdrOutput {
 		}
 		S.Active = false;
 		S.Applied = {};
+		S.SwapSdr = false;
+		S.SwapSdrRetries = 0;
 	}
 
 	// Every rendered frame, before NVR's post chain (Render.cpp): reads the settings, keeps the fork's mode in step.
@@ -149,21 +348,42 @@ namespace HdrOutput {
 				DxvkCompute::Extension()->QueryInterface(__uuidof(ID3D9NvrExtHdr), (void**)&S.Hdr);
 		}
 		if (!S.Hdr) { Reason("Enabled, but this d3d9.dll has no HDR output (needs NVR DXVK with extension 1.5-hdr): SDR as before"); return; }
-		if (S.DisplayHdr < 0 || S.Frame % 600 == 0) CheckDisplay(Device);
+		// The fork's view (its surface formats and the EDID; the fork logs the formats when they change), once before the display check
+		if (!S.InfoRead) {
+			S.InfoRead = true;
+			S.Hdr->GetHdrInfo(&S.Info);
+			Logger::Log("UNOFFICIAL HDR output: the fork's surface offers HDR10 %s, scRGB %s; EDID peak %.0f nits", S.Info.SupportsHdr10 ? "yes" : "no", S.Info.SupportsScRgb ? "yes" : "no", S.Info.DisplayMaxNits);
+		}
+		const bool check = S.DisplayHdr < 0 || S.Frame % 600 == 0;
+		if (check) CheckDisplay(Device);
 		if (!S.DisplayHdr && !Setting("IgnoreDisplayCheck")) {
 			if (S.Active) SetOff();
 			Reason("Enabled, but Windows HDR is off for this display: SDR as before (turn HDR on in Windows' display settings)");
 			return;
 		}
 
-		// The fork's view (EDID; DXVK parses it on every call, so once per session)
-		static NVR_EXT_HDR_INFO info = {};
-		static bool infoRead = false;
-		if (!infoRead) {
-			infoRead = true;
-			S.Hdr->GetHdrInfo(&info);
-			Logger::Log("UNOFFICIAL HDR output: the fork's surface offers HDR10 %s, scRGB %s; EDID peak %.0f nits", info.SupportsHdr10 ? "yes" : "no", info.SupportsScRgb ? "yes" : "no", info.DisplayMaxNits);
+		// UNOFFICIAL 2026-10-29: while on, the fork says at each check whether its swap chain really is HDR (ActiveMode is OFF when
+		// the driver gave it an SDR format; the fork then shows the SDR picture as before and logs it)
+		if (check && S.Active) {
+			NVR_EXT_HDR_INFO now = {};
+			if (SUCCEEDED(S.Hdr->GetHdrInfo(&now))) {
+				S.SwapSdr = now.ActiveMode == NVR_EXT_HDR_OFF;
+				if (S.SwapSdr) Reason("on, but the fork's swap chain is SDR (the driver did not give it an HDR format; DXVK's log says which): SDR picture");
+				else if (!strncmp(S.LastReason, "on, but", 7) || !strncmp(S.LastReason, "asked", 5)) Reason("on: the fork's swap chain is HDR");
+			}
 		}
+		if (S.Active && S.SwapSdr && (S.RetryNow || (check && S.SwapSdrRetries < 3))) {
+			// The same settings again: the fork rebuilds its swap chain once more (the display may be back in HDR now)
+			if (!S.RetryNow) S.SwapSdrRetries++;
+			S.RetryNow = false;
+			S.SwapSdr = false;
+			S.LastAttempt = S.Frame;
+			S.Hdr->SetHdrOutput(&S.Applied);
+			char text[160];
+			sprintf_s(text, "asked the fork again for %s (its swap chain was SDR), attempt %u", S.Applied.Mode == NVR_EXT_HDR_SCRGB ? "scRGB" : "HDR10", S.SwapSdrRetries);
+			Reason(text);
+		}
+		const NVR_EXT_HDR_INFO& info = S.Info;
 		NVR_EXT_HDR_OUTPUT out = {};
 		out.Mode = TheSettingManager->GetSettingI("Shaders.HDR.Main", "Mode") == 2 ? NVR_EXT_HDR_SCRGB : NVR_EXT_HDR_HDR10;
 		out.PaperWhiteNits = std::clamp(SettingF("PaperWhiteNits"), 80.0f, 1000.0f);
@@ -175,14 +395,29 @@ namespace HdrOutput {
 		out.Flags = (Setting("ShowHudMask") ? NVR_EXT_HDR_FLAG_SHOW_HUD_MASK : 0) | (Setting("Gamma22") ? NVR_EXT_HDR_FLAG_GAMMA22 : 0);
 
 		if (!S.Active || memcmp(&out, &S.Applied, sizeof(out))) {
-			if (S.Refused && !memcmp(&out, &S.Applied, sizeof(out))) return;
+			const bool same = !memcmp(&out, &S.Applied, sizeof(out));
+			if (S.Refused) {
+				// UNOFFICIAL 2026-10-29: a refused mode is asked again with the display check (6 times) and whenever the display
+				// reads HDR (alt-tabbed); changed settings at most every 30 frames (a slider being dragged)
+				if (same) {
+					const bool tick = check && S.RefusedRetries < 6;
+					if (!tick && !S.RetryNow) return;
+					if (tick) S.RefusedRetries++;
+				}
+				else if (S.Frame - S.LastAttempt < 30) return;
+				else S.RefusedRetries = 0;
+			}
+			S.RetryNow = false;
+			S.LastAttempt = S.Frame;
 			S.Applied = out;
 			const HRESULT hr = S.Hdr->SetHdrOutput(&out);
 			S.Refused = FAILED(hr);
 			S.Active = SUCCEEDED(hr);
+			if (S.Refused) S.Hdr->GetHdrInfo(&S.Info);	// the fork logs the surface formats again if they changed
 			char text[160];
 			if (S.Active) sprintf_s(text, "on: %s, paper white %.0f nits, peak %.0f nits%s", out.Mode == NVR_EXT_HDR_SCRGB ? "scRGB" : "HDR10", out.PaperWhiteNits, out.PeakNits, S.DisplayHdr ? "" : " (display check ignored: Windows HDR is off)");
-			else sprintf_s(text, "the fork refused %s (%08lX): SDR as before", out.Mode == NVR_EXT_HDR_SCRGB ? "scRGB" : "HDR10", hr);
+			else sprintf_s(text, "the fork refused %s (%08lX), attempt %u, display now in %s mode: SDR as before%s", out.Mode == NVR_EXT_HDR_SCRGB ? "scRGB" : "HDR10", hr,
+				S.RefusedRetries + 1, strstr(S.LastCheck, "now in HDR") ? "HDR" : "SDR", S.RefusedRetries >= 6 ? " (no more timed attempts; alt-tab to try again)" : "");
 			Reason(text);
 		}
 	}
