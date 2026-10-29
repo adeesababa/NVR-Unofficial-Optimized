@@ -17,6 +17,4 @@ namespace RtCoreClient {
 		(void)Device; (void)user; return false;
 #endif
 	}
-	// Per-instance materials (albedo) readable in the helper's pass (protocol v2, requested): not there yet.
-	inline bool HasMaterials() { return false; }
 }

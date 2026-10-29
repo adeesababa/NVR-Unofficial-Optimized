@@ -66,7 +66,7 @@ void ReflectionsEffect::UpdateSettings() {
 // direction and the ray (both RG32F: RayGen's targets 1 and 2, copied in) and the hits (RGBA16F, copied out into Rt.Hit).
 namespace {
 	ReflectionsEffect* RtEffect = nullptr;
-	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtShader = -1;
+	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
 	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout; };	// Rt/ReflectionsRT.comp's Pass block (std140)
 	RtPassConstants RtPending = {};
 	bool RtRecorded = false;
@@ -78,17 +78,18 @@ namespace {
 		RtImageDir = RtCore::AddImage("NVR RT reflections direction", RtWidth(), RtHeight(), NVR_EXT_SHARED_RG32F);
 		RtImageRay = RtCore::AddImage("NVR RT reflections ray", RtWidth(), RtHeight(), NVR_EXT_SHARED_RG32F);
 		RtImageHit = RtCore::AddImage("NVR RT reflections hit", RtWidth(), RtHeight(), NVR_EXT_SHARED_RGBA16F);
+		RtImageShade = RtCore::AddImage("NVR RT reflections shade", RtWidth(), RtHeight(), NVR_EXT_SHARED_RGBA16F);
 	}
 	// Recorded at the late exchange (RtCoreClient::Exchange from RtTrace), after RayGen drew Rt.Dir and Rt.Ray.
 	void RtUserRecord(IDirect3DDevice9* Device) {
 		RtRecorded = false;
-		if (!RtEffect || RtImageDir < 0 || RtImageRay < 0 || RtImageHit < 0 || RtShader < 0) return;
+		if (!RtEffect || RtImageDir < 0 || RtImageRay < 0 || RtImageHit < 0 || RtImageShade < 0 || RtShader < 0) return;
 		const ReflectionsEffect::RtImagesStruct& rt = RtEffect->Rt;
-		if (!rt.Dir || !rt.Ray || !rt.HitSurface) return;
+		if (!rt.Dir || !rt.Ray || !rt.HitSurface || !rt.ShadeSurface) return;
 		if (!RtCore::CopyIn(RtImageDir, rt.Dir) || !RtCore::CopyIn(RtImageRay, rt.Ray)) return;
-		const int images[3] = { RtImageDir, RtImageRay, RtImageHit };
-		if (!RtCore::AddPass(RtShader, images, 3, 0x4, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
-		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface);
+		const int images[4] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade };
+		if (!RtCore::AddPass(RtShader, images, 4, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
+		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface) && RtCore::CopyOut(RtImageShade, rt.ShadeSurface);
 	}
 	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
 }
@@ -113,11 +114,12 @@ float ReflectionsEffect::RtSunAmount() const {
 
 // The four half-resolution RT images, made the first time RT runs (no memory spent when it never does). Any failure: RT off for the session.
 bool ReflectionsEffect::RtImages() {
-	if (Rt.Hit) return true;
+	if (Rt.Shade) return true;
 	IDirect3DDevice9* device = TheRenderManager->device;
-	struct { IDirect3DTexture9** texture; IDirect3DSurface9** surface; D3DFORMAT format; } images[4] = {
+	struct { IDirect3DTexture9** texture; IDirect3DSurface9** surface; D3DFORMAT format; } images[5] = {
 		{ &Rt.March, &Rt.MarchSurface, D3DFMT_A16B16G16R16F }, { &Rt.Dir, &Rt.DirSurface, D3DFMT_G32R32F },
-		{ &Rt.Ray, &Rt.RaySurface, D3DFMT_G32R32F }, { &Rt.Hit, &Rt.HitSurface, D3DFMT_A16B16G16R16F } };
+		{ &Rt.Ray, &Rt.RaySurface, D3DFMT_G32R32F }, { &Rt.Hit, &Rt.HitSurface, D3DFMT_A16B16G16R16F },
+		{ &Rt.Shade, &Rt.ShadeSurface, D3DFMT_A16B16G16R16F } };
 	for (auto& i : images)
 		if (FAILED(device->CreateTexture(RtWidth(), RtHeight(), 1, D3DUSAGE_RENDERTARGET, i.format, D3DPOOL_DEFAULT, i.texture, NULL)) ||
 			FAILED((*i.texture)->GetSurfaceLevel(0, i.surface))) {
@@ -614,10 +616,10 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		if (rtPass) {
 			// UNOFFICIAL 2026-10-28: the same bindings + RtConstants + RayGen's outputs and the helper's hits (both passes declare all).
 			static const char* const rtNames[2] = { "ReflectionsRayGen", "ReflectionsRTResolve" };
-			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 5];
+			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 6];
 			memcpy(bindings, ReflBindings, sizeof(ReflBindings));
 			bindings[_countof(ReflBindings)] = ReflRtUniformBinding;
-			for (UINT i = 0; i < 4; i++) bindings[_countof(ReflBindings) + 1 + i] = { 1, 17 + i, NVR_EXT_BIND_SAMPLED_IMAGE, ReflTextureCount + i, NVR_EXT_VIEW_2D, FALSE, 0 };
+			for (UINT i = 0; i < 5; i++) bindings[_countof(ReflBindings) + 1 + i] = { 1, 17 + i, NVR_EXT_BIND_SAMPLED_IMAGE, ReflTextureCount + i, NVR_EXT_VIEW_2D, FALSE, 0 };
 			if (DxvkCompute::HasSpirv(rtNames[techniqueIndex - 8]))
 				pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(rtNames[techniqueIndex - 8], bindings, _countof(bindings), sizeof(ReflPush), true,
 					techniqueIndex == 8 ? 3 : 1, NVR_EXT_BLEND_NONE, false);	// a refusal must not turn the other Vulkan passes off
@@ -706,7 +708,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		ReflUploaded = uniforms;
 	}
 
-	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 5] = {};
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 6] = {};
 	for (UINT i = 0; i < ReflTextureCount; i++) {
 		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 	}
@@ -726,7 +728,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		const ShaderConstants& sc = TheShaderManager->ShaderConst;
 		ReflRtUniforms rtu = {};
 		rtu.rt = D3DXVECTOR4(rtRays ? 1.0f : 0.0f, Settings.RtMaxRoughness, Settings.RtDistance, (float)Settings.RtDebugView);
-		rtu.rt2 = D3DXVECTOR4(Settings.RtScreenTolerance, Settings.RtEstimate, RtSunAmount(), RtCoreClient::HasMaterials() ? 1.0f : 0.0f);
+		rtu.rt2 = D3DXVECTOR4(Settings.RtScreenTolerance, Settings.RtEstimate, RtSunAmount(), 0.0f);
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
@@ -737,8 +739,8 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		}
 		resources[resourceCount].Slot = RtUniformSlot; resources[resourceCount].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[resourceCount].pResource = rtBuffer;
 		resourceCount++;
-		IDirect3DBaseTexture9* rtImages[4] = { Rt.March, Rt.Dir, Rt.Ray, Rt.Hit };
-		for (UINT i = 0; i < 4; i++) {
+		IDirect3DBaseTexture9* rtImages[5] = { Rt.March, Rt.Dir, Rt.Ray, Rt.Hit, Rt.Shade };
+		for (UINT i = 0; i < 5; i++) {
 			if (!rtImages[i]) return false;
 			resources[resourceCount].Slot = ReflTextureCount + i; resources[resourceCount].Type = NVR_EXT_BIND_SAMPLED_IMAGE;
 			resources[resourceCount].pResource = techniqueIndex == 8 ? depth : rtImages[i];

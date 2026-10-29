@@ -114,14 +114,14 @@ DXVK sees them only as that draw's descriptors. So the tiers are:
 |---|---|---|
 | 0 Screen at the hit | the depth buffer + the lit picture (in game) | **done**: exact where the hit is visible; the common case of SSR misses on screen |
 | 1 Cube toward the hit | the existing surroundings cube | **done** for out-of-view hits; parallax-free (centred near the camera), 64 px, a little behind in time |
-| 2 Estimate | sun direction/colour, cube's blurriest mip, the helper's shadow ray | **done**: grey 0.4 albedo, normal guessed as facing the ray. Right brightness order, wrong colour |
-| 3 Per-draw albedo | the core keeps per BLAS instance the average colour of the draw's stage-0 texture (its 1x1 mip, read once when the BLAS is made), a buffer the helper pass reads by custom index | **requested**; the helper would write it into a second output, Resolve already has the switch (`rt2.w`) |
-| 4 Hit normal | the triangle's three positions: the helper owns the vertex buffers it built the BLAS from, so the normal is a buffer lookup (or `VK_KHR_ray_tracing_position_fetch`) | **requested**; easy in the helper, since it has the geometry |
+| 2 Estimate | sun direction/colour, cube's blurriest mip, the helper's shadow ray | **done**: lights tiers 3-4 (grey 0.4 / facing the ray where the records lack data) |
+| 3 Per-draw albedo | protocol v2 record per instance (binding 10): the draw's diffuse texture average (smallest mip, read once per texture by RtCore) | **done 2026-10-29** in `Rt/ReflectionsRT.comp` (second output `shade`); not yet seen in game (every ray misses) |
+| 4 Hit normal | protocol v2 geometry data (binding 11): the triangle's positions + indices, times the instance's object-to-scene 3x3 | **done 2026-10-29**; the sun shadow ray now leaves the hit along that normal; not yet seen in game |
 | 5 Textured albedo | per instance the diffuse texture and the UV stream, shared into the helper (or a per-draw texture atlas) | later; most of the "full shading" gap, and costly in shared memory |
 | 6 Lamps at the hit | NVR's lamp lists (tiled lamps / ShadowsInteriors' lamp array) passed to the helper + a shadow ray per lamp | later; indoors the estimate's ambient (cube) carries the lamps' light roughly until then |
 | 7 The game's own shading at the hit | the draw's pixel shader re-run with its constants at a ray hit | **no**: not from a ray query in D3D9-through-Vulkan, and not across a process boundary, without replacing every game material (what RTX Remix does) |
 
-So: on-screen hits are exact; off-screen hits are as good as the cube; hidden hits are a plausibly lit grey until tiers 3-4 land,
+So: on-screen hits are exact; off-screen hits are as good as the cube; hidden hits are their draw's average colour on their own triangle normal (tiers 3-4, built but not yet seen in game),
 and approximate (no texture detail, no lamps beyond the ambient) until tiers 5-6.
 
 ## Water

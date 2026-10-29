@@ -19,6 +19,8 @@ void main() {
     if (ray.x <= 0.0) { o_color = vec4(0.0); return; }   // RayGen: nothing reflects here
     vec4 march = texelFetch(sampler2D(t_rtMarch, POINT_S), texel, 0);
     vec4 hitData = texelFetch(sampler2D(t_rtHit, POINT_S), texel, 0);
+    vec4 shade = texelFetch(sampler2D(t_rtShade, POINT_S), texel, 0);
+    uint hitFlags = uint(hitData.y + 0.5);
     vec3 worldR = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), texel, 0).xy);
     bool rayCast = ray.y > 1.5;
     float roughness = ray.y - (rayCast ? 2.0 : 0.0);
@@ -38,7 +40,7 @@ void main() {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
-            rtInstance = hitData.y;   // the custom index: 1 land, 0 object
+            rtInstance = float(hitFlags);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
             vec3 hitW = surfaceW + worldR * hitData.x;
             vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
             vec2 at = ToScreen(hitV);
@@ -50,7 +52,8 @@ void main() {
                 vec4 env = !inView && CubeOn > 0.0 ? EnvAlong(normalize(hitW), roughness) : vec4(0.0);
                 rtCubeShare = missing * env.a;
                 rtGuessShare = missing - rtCubeShare;
-                sum += env.rgb * rtCubeShare + RtShadeHit(worldR, hitData.z) * rtGuessShare;
+                vec3 hitNormal = (hitFlags & 4u) != 0u ? OctDecode(hitData.zw) : -worldR;
+                sum += env.rgb * rtCubeShare + RtShadeHit(hitNormal, shade.rgb, shade.a) * rtGuessShare;
             }
             confidence += missing;
         }

@@ -16,11 +16,12 @@ layout(set = 1, binding = 17) uniform texture2D t_rtMarch;    // RayGen out 0: t
 layout(set = 1, binding = 18) uniform texture2D t_rtDir;      // RayGen out 1: the reflected direction (world axes), octahedral (xy)
 layout(set = 1, binding = 19) uniform texture2D t_rtRay;      // RayGen out 2: x the surface's view z (0: nothing reflects), y roughness (+2: a ray)
 layout(set = 1, binding = 20) uniform texture2D t_rtHit;      // the helper: x hit distance (-1 no ray, 0 nothing within Distance),
-                                                              // y custom index (1 land, 0 object), z sun visible at the hit (0..1), w front face
+                                                              // y flags (1 land, 2 albedo known, 4 normal known, 8 glow map), zw the hit's normal (octahedral)
+layout(set = 1, binding = 21) uniform texture2D t_rtShade;    // the helper: rgb the hit draw's albedo (linear), a sun visible at the hit (0..1)
 
 layout(set = 2, binding = 1, std140) uniform RtConstants {
     vec4 rt;    // x 1 = on, y MaxRoughness, z Distance (game units), w DebugView
-    vec4 rt2;   // x screen match tolerance (share of the depth), y the estimate's brightness, z sun amount (0 night / indoors), w 1 = per-instance materials
+    vec4 rt2;   // x screen match tolerance (share of the depth), y the estimate's brightness, z sun amount (0 night / indoors), w unused
     vec4 sunDir;    // world, toward the sun (TESR_SunDirection)
     vec4 sunColor;  // TESR_SunColor (gamma)
 } rtc;
@@ -47,14 +48,13 @@ vec3 OctDecode(vec2 e) {
 // How much RT counts on a surface of this roughness: 1 up to 75 % of MaxRoughness, 0 at it.
 float RtFade(float roughness) { return 1.0 - smoothstep(0.75 * RtMaxRoughness, RtMaxRoughness, roughness); }
 
-// The cheap shading of a hit neither the screen nor the cube can show (FORK-RT-REFLECTIONS.md "Hit shading"): a grey surface facing the
-// ray, lit by the surroundings cube's blurriest mip round it (the light the place has) and, outdoors by day, the sun as far as the
-// helper's shadow ray saw it. The surface's own colour and normal need the RT core's per-instance records (requested; rt2.w).
-const float RtGuessAlbedo = 0.4;   // as GridAlbedo: desert ground, plaster
-vec3 RtShadeHit(vec3 dir, float sunVisible) {
-    vec3 normal = -dir;
+// The shading of a hit neither the screen nor the cube can show (FORK-RT-REFLECTIONS.md "Hit shading", tiers 2-4): the hit draw's
+// average diffuse colour (protocol v2 records; 0.4 grey when unknown) on the hit triangle's own normal (facing the ray when unknown),
+// lit by the surroundings cube's blurriest mip round that normal (the light the place has) and, outdoors by day, the sun as far as
+// the helper's shadow ray from the hit saw it. No texture detail and no lamps of their own (tiers 5-6).
+vec3 RtShadeHit(vec3 normal, vec3 albedo, float sunVisible) {
     vec3 light = CubeOn > 0.0 ? EnvAlong(normal, 1.0).rgb : SkyAlong(vec3(0.0, 0.0, 1.0)) * 0.5;
     float sunAmount = rtc.rt2.z;
     if (sunAmount > 0.0) light += linearize(rtc.sunColor.rgb) * saturate(dot(normal, normalize(rtc.sunDir.xyz))) * sunAmount * sunVisible;
-    return vec3(RtGuessAlbedo) * light * rtc.rt2.y;
+    return albedo * light * rtc.rt2.y;
 }

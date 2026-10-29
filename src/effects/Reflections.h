@@ -134,6 +134,7 @@ public:	// (the RT core user in Reflections.cpp reads the images)
 		IDirect3DTexture9* Dir = nullptr;	IDirect3DSurface9* DirSurface = nullptr;
 		IDirect3DTexture9* Ray = nullptr;	IDirect3DSurface9* RaySurface = nullptr;
 		IDirect3DTexture9* Hit = nullptr;	IDirect3DSurface9* HitSurface = nullptr;	// written by the helper (shared back by the RT core)
+		IDirect3DTexture9* Shade = nullptr;	IDirect3DSurface9* ShadeSurface = nullptr;	// the same: the hit's albedo and sun visibility
 	};
 	RtImagesStruct		Rt;
 	void				RtRegister();		// its RT core user (ShaderManager, once, before the core's first frame)
