@@ -45,7 +45,8 @@ namespace RtLampShadows {
 	inline bool LampsThisFrame = false;
 
 	// The camera of the frame the newest result was traced for (Record) and whether it exists
-	struct TracedCamera { D3DXMATRIX view; D3DXVECTOR3 location; float p11, p22, farZ; bool valid; };
+	struct TracedCamera { D3DXMATRIX view; D3DXVECTOR3 location;	// location: the traced frame's eye in world space
+		 float p11, p22, farZ; bool valid; };
 	inline TracedCamera Traced = {};
 	inline TracedCamera Pending = {};
 
@@ -117,7 +118,8 @@ namespace RtLampShadows {
 		const D3DXMATRIX& v = Traced.view;
 		const D3DXVECTOR3 right(v._11, v._21, v._31), up(v._12, v._22, v._32), forward(v._13, v._23, v._33);
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
-		// A camera-relative point of this frame, seen from the traced frame's eye (its CameraLocation)
+		// A camera-relative point of this frame, seen from the traced frame's eye (that frame's CameraPosition: the eye is the scene's
+		// origin, RtCore::Eye; 2026-10-29: Pointers::Generic::CameraLocation reads ~0 in game, which put the eye at the world origin)
 		const D3DXVECTOR3 d(camera.x - Traced.location.x, camera.y - Traced.location.y, camera.z - Traced.location.z);
 		const float rows[3][3] = { { right.x, up.x, forward.x }, { right.y, up.y, forward.y }, { right.z, up.z, forward.z } };
 		for (int i = 0; i < 3; i++) {
@@ -209,9 +211,9 @@ namespace RtLampShadows {
 		c.forward[0] = view._13; c.forward[1] = view._23; c.forward[2] = view._33; c.forward[3] = cameraData->y;
 		c.right[0] = view._11 / proj._11; c.right[1] = view._21 / proj._11; c.right[2] = view._31 / proj._11;
 		c.up[0] = view._12 / proj._22; c.up[1] = view._22 / proj._22; c.up[2] = view._32 / proj._22;
-		const NiPoint3* location = Pointers::Generic::CameraLocation;
+		const D3DXVECTOR3 eye = RtCore::Eye();	// the eye in scene space (0, 0, 0: the scene is camera-relative)
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
-		c.origin[0] = location->x - camera.x; c.origin[1] = location->y - camera.y; c.origin[2] = location->z - camera.z;
+		c.origin[0] = eye.x; c.origin[1] = eye.y; c.origin[2] = eye.z;
 		c.origin[3] = 4095.0f / log2f((std::max)(cameraData->y, 2.0f));
 		static UInt32 frame = 0;
 		frame++;
@@ -242,7 +244,7 @@ namespace RtLampShadows {
 		if (!RtCore::AddPass(shader, images, 3, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 		if (!RtCore::CopyOut(imageResult, ResultSurface)) return;
 		// The next frame's draws reproject into this frame
-		Traced = { view, D3DXVECTOR3(location->x, location->y, location->z), proj._11, proj._22, cameraData->y, true };
+		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
 		if (FramesTraced++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
 	}

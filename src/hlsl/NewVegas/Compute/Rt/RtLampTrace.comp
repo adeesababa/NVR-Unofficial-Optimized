@@ -21,7 +21,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 forward;       // xyz camera forward (scene space), w farZ (the depth buffer holds view z / farZ)
 	vec4 right;         // xyz camera right / projection[0][0]
 	vec4 up;            // xyz camera up / projection[1][1]
-	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition, ~0), w 4095 / log2(farZ)
+	vec4 origin;        // xyz the view origin in scene space (RtCore::Eye, 0), w 4095 / log2(farZ)
 	vec4 params;        // x rays per lamp (1-8), y StartOffset (units), z LampStop (units), w noise offset (0..1)
 	vec4 params2;       // x LampModelDistance (0 = one segment), y far cull mask, z near cull mask, w lamp count (0-9)
 	vec4 lamps[9];      // xyz the lamp (scene space), w its reach (units; 0 = no lamp in this slot)
