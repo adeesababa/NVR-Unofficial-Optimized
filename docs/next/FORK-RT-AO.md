@@ -192,6 +192,9 @@ accumulate (below): both are temporal + edge-aware spatial already.
   stand-in when [Main.Main.RayTracing] AlphaTested is off and there is no atlas). Needs fork patch 0029 when AlphaTested is on.
 - Queued: rt-gi-3 (lucky22, rt-gi-1 list, fork-0029) and rt-ao-5 (og-goodsprings, trees, AlphaTested on via
   bench/deep-roadmap/rtao/run-toml-igpu-alpha.toml).
+- **rt-ao-5 (10-29 17:53 og-goodsprings slot C, AlphaTested on, fork-0029, DLL 59DC7BCA):** ran clean (684 instances, 234 geometries,
+  816k triangles; RT AO 4 rays: core line 6.0-6.4 ms). Foliage NOT verified: rt-sun-core's own rtsun-11 at the same spot found the core
+  takes only ~5 alpha-tested meshes a frame (the cause is the core's; counters coming). My rays' alpha test waits for that.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
