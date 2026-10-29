@@ -85,6 +85,19 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   world translation); the sun pass uses it. Sent to rt-reflections, rt-ao-sky and rt-lamp-shadows (their origins used the same
   formula). Verification: rtsun-5 (rtsun-3's four headings + DebugView 6).
 
+### rtsun-5 (run 20261029-044643-slotC, after the Eye() fix; startup fix f8662fff/f6480bfd in)
+- **Rays hit.** DebugView 6 (camera rays) draws the scene where the screen has it: car, house, fence, windmill, rocks, at the right
+  depth. DebugView 4: the house and fence cast traced shadows on the ground; the faces seen here face away from the sun (the
+  view looks toward it) and stay white, as designed (the light term already darkens them).
+- **No land in the scene:** the ground and the hills are white in DebugView 6, so terrain casts no traced shadow yet. rtsun-6 logs
+  why AddGeometry leaves land out (counts by reason).
+- `player.setangle z` did not turn the third-person view (all four headings show one picture): rtsun-6 moves the sun instead.
+- Cost at 1280x720 on the iGPU: "Ray tracing (copies + helper + waits)" p50 2.49-2.55 ms (rays now hit and the helper does
+  real traversal; it was ~1.35 ms while every ray missed at once), helper GPU 3.8 ms avg incl. the first frame's builds,
+  passes 1.50 ms, scene 0.13 ms; 644 instances, 200 geometries, 782k triangles.
+- rt-reflections confirms on their side (Ultra-Luxe, 20261029-043724-slotA): camera rays hit every reflecting surface except
+  actors and leaves.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
