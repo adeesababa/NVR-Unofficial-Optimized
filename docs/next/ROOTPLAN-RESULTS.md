@@ -57,3 +57,17 @@ Combined branch: **claude/rootplan-combo** (worktree H:\_NVR-efflamps, bench jun
   near 11 casters, middle 35, far 216, LOD 943 every 4th frame): a static/moving cascade cache cannot save more than that.
   (claude/sun-cache cb15b648 adds a 'still casters' count to SunCascadeStats; it reads 0 unless SunCascadeLeanDraws is on.)
 - A2: the player's CharacterShadowMap exists (P82 v4); per-NPC maps not built.
+
+## To try it (over the installed claude/hdr-latch 73b55860; not installed by these sessions)
+Copy from the combo tree (H:\_NVR-efflamps):
+- `build\optimized\NewVegasReloaded.dll` (+ `.pdb`) -> `<game>\Data\nvse\Plugins\`
+- `resource\NewVegasReloaded.dll.defaults.toml` -> next to the DLL (the new keys' defaults: ObjectMotion, LightCommonLamps, PoolLamps,
+  PoolDrawsPerFrame)
+- under `src\hlsl\NewVegas\` -> the same path under `<game>\Data\Shaders\NewVegasReloaded\`:
+  `Effects\TAA.fx.hlsl`, `Effects\AmbientLight.fx.hlsl`,
+  `Compute\TAAResolve.spv`, `Compute\TAADebug.spv`, `Compute\TAAOutput.spv`, `Compute\FSRPrep.spv`, `Compute\FSRUpPrep.spv`,
+  `Compute\AmbientLightAccumulate.spv`,
+  `Shaders\ObjectTemplate.hlsl`, `Shaders\Includes\ManyLightsDirect.hlsl`, `Shaders\Includes\LightCommon.hlsl` (new)
+- If a shader change seems not to take, clear `Shaders\NewVegasReloaded\Shaders\Cache\`.
+Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` (live), `[Shaders.ShadowsInteriors.Forward] PoolLamps = 64`
+(live; Vault 21 / Lucky 38), `[Main.Main.Misc] LightCommonLamps = true` (restart; only with ManyLampsOnePass on).
