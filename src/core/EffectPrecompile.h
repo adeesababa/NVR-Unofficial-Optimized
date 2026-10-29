@@ -6,6 +6,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "EffectCompiler47.h"
 
 namespace EffectPrecompile {
 
@@ -42,13 +43,22 @@ namespace EffectPrecompile {
 			return;
 		}
 		if (errors) { errors->Release(); errors = nullptr; }
-		if (!ShaderProgram::CheckPreprocessResult(job->Preprocessed.c_str(), source) || !ShaderProgram::FileExists(job->Compiled.c_str())) {
+		if (!EffectCompiler47::CacheFresh(job->Preprocessed.c_str(), source) || !ShaderProgram::FileExists(job->Compiled.c_str())) {
 			ID3DXEffectCompiler* compiler = nullptr;
 			ID3DXBuffer* binary = nullptr;
-			if (SUCCEEDED(D3DXCreateEffectCompiler((const char*)source->GetBufferPointer(), source->GetBufferSize(), NULL, NULL, NULL, &compiler, &errors)) && compiler) {
+			ID3DXBuffer* newErrors = nullptr;
+			if (EffectCompiler47::Compile(source, job->Source.c_str(), &binary, &newErrors)) {
+				const std::string portable = EffectCompiler47::CacheText(source);
+				if (WriteFile(job->Compiled, binary->GetBufferPointer(), binary->GetBufferSize()))
+					WriteFile(job->Preprocessed, portable.data(), portable.size());
+				CompiledCount++;
+				binary->Release();
+				binary = nullptr;
+			}
+			else if (SUCCEEDED(D3DXCreateEffectCompiler((const char*)source->GetBufferPointer(), source->GetBufferSize(), NULL, NULL, NULL, &compiler, &errors)) && compiler) {
 				if (errors) { errors->Release(); errors = nullptr; }
 				if (SUCCEEDED(compiler->CompileEffect(NULL, &binary, &errors)) && binary) {
-					const std::string portable = ShaderProgram::PortableSource(source);
+					const std::string portable = EffectCompiler47::CacheText(source);
 					if (WriteFile(job->Compiled, binary->GetBufferPointer(), binary->GetBufferSize()))
 						WriteFile(job->Preprocessed, portable.data(), portable.size());
 					CompiledCount++;
@@ -57,6 +67,7 @@ namespace EffectPrecompile {
 			}
 			if (binary) binary->Release();
 			if (errors) errors->Release();
+			if (newErrors) newErrors->Release();
 		}
 		source->Release();
 	}
@@ -75,6 +86,7 @@ namespace EffectPrecompile {
 		Started = true;
 		if (!TheSettingManager->GetSettingI("Main.Main.Performance", "ParallelShaderCompile")) return;
 		StartTime = (double)GetTickCount64();
+		EffectCompiler47::ReadSetting();
 		D3DXMACRO macros[8] = {};
 		EffectRecord::BuildMacros(macros);
 		CreateDirectoryA(EffectsPath "Cache\\", NULL);

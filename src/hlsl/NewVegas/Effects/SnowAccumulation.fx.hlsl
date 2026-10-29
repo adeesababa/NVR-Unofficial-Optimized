@@ -618,19 +618,17 @@ float GetOrthoAverage(float4 worldPos, float orthoRadius) {
 }
 
 float SA5_PointLight(float4 worldPos, float4 LightPos, float3 normal, float3 eyeDir) {
-    float radius = LightPos.w;
-    if (radius <= 0.0f) return 0.0f;
+    float used    = LightPos.w > 0.0f ? 1.0f : 0.0f;
+    float radius  = max(LightPos.w, 1e-4f);
 
     float3 L      = LightPos.xyz - worldPos.xyz;
     float distSq  = dot(L, L);
-    float radiusSq = radius * radius;
-    if (distSq >= radiusSq) return 0.0f;
 
     float invLen  = rsqrt(max(distSq, 1e-6f));
     float distNorm = (distSq * invLen) / radius;
     float s       = distNorm * distNorm;
     float atten   = saturate((1.0f - s) / (1.0f + s));
-    if (atten <= 0.001f) return 0.0f;
+    atten         = atten > 0.001f ? atten * used : 0.0f;
 
     float3 lightDir = L * invLen;
     float  diffuse  = saturate(dot(lightDir, normal));
@@ -871,13 +869,11 @@ float4 SA5_Snow(VSOUT IN, uniform bool persist) : COLOR0 {
 
     shadow.g = 1.0f;
     for (int i = 0; i < 12; i++) {
-        if (TESR_ShadowLightPosition[i].w > 0.0f)
-            snowColor.rgb += SA5_PointLight(worldPos, TESR_ShadowLightPosition[i], surfaceNormal, eyeDirection)
+        snowColor.rgb += SA5_PointLight(worldPos, TESR_ShadowLightPosition[i], surfaceNormal, eyeDirection)
                            * linearize(float4(TESR_LightColor[i].rgb * TESR_LightColor[i].a, 1.0f)).rgb
                            * 0.5f * shadow.g;
 
-        if (TESR_LightPosition[i].w > 0.0f)
-            snowColor.rgb += SA5_PointLight(worldPos, TESR_LightPosition[i], surfaceNormal, eyeDirection)
+        snowColor.rgb += SA5_PointLight(worldPos, TESR_LightPosition[i], surfaceNormal, eyeDirection)
                            * linearize(float4(TESR_LightColor[12 + i].rgb * TESR_LightColor[12 + i].a, 1.0f)).rgb
                            * 0.5f * shadow.g;
     }
