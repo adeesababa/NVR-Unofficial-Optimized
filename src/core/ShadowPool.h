@@ -13,7 +13,10 @@
 //     slot (the last one, ShadowCubeMapsMax - 1, never a live slot while the pool is on: LightPoints stays below it) for the draw;
 //   - published after the live slots (PointShadowForward::PublishPool), with the same fill / invisible light rules and the same filter,
 //     so an object binds each of its lamps' shadows the same way, whichever kind holds it.
-// People cast no shadow from pool lamps (their shadows come from the live slots' lamps, as before). Off (0): nothing is made or drawn.
+// People cast no shadow from pool lamps (their shadows come from the live slots' lamps, as before) unless PoolPeopleLamps (0 = none): that
+// many pool lamps a frame with people in their reach (nearest first) get them drawn too, the way the live slots do it (RedrawActorsOnly:
+// the still cube map copied into a live one, then only the people drawn onto it: CubeLayer::MovingOnto, through the same spare slot),
+// and that live cube map is published instead of the still one. Off (0): nothing is made or drawn.
 #include <d3d9.h>
 #include <unordered_map>
 #include <vector>
@@ -33,14 +36,16 @@ namespace ShadowPool {
 		double since = 0.0;			// when it was first published (FadeIn)
 	};
 	inline std::vector<Cube> Cubes;
+	inline std::vector<Cube> People;	// PoolPeopleLamps' live cube maps (only texture / faces used), handed out in order each frame
 	inline std::unordered_map<const ShadowSceneLight*, int> ByLight;
 	inline std::vector<ShadowSceneLight*> Candidates;	// this frame's lamps past the live slots, in ranking order
 	inline UINT MadeSize = 0;
 	inline bool Failed = false;
 	inline UInt32 Frame = 0;
-	inline unsigned StatFrames = 0, StatPublished = 0, StatDrawn = 0, StatWaiting = 0;
+	inline unsigned StatFrames = 0, StatPublished = 0, StatDrawn = 0, StatWaiting = 0, StatPeople = 0;
 
 	inline int Wanted() { return (std::max)(0, (std::min)(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolLamps"), (int)ShadowPoolMax)); }
+	inline int PeopleWanted() { return (std::max)(0, (std::min)(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolPeopleLamps"), 16)); }
 	inline int Budget() { const int b = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolDrawsPerFrame"); return b > 0 ? (std::min)(b, 32) : 4; }
 
 	// ShaderManager::GetNearbyLights: at its start, and for each shadow-casting lamp the live slots had no room for.
@@ -53,6 +58,11 @@ namespace ShadowPool {
 			if (c.texture) { c.texture->Release(); c.texture = nullptr; }
 		}
 		Cubes.clear();
+		for (Cube& c : People) {
+			for (IDirect3DSurface9*& f : c.faces) if (f) { f->Release(); f = nullptr; }
+			if (c.texture) { c.texture->Release(); c.texture = nullptr; }
+		}
+		People.clear();
 		ByLight.clear();
 		MadeSize = 0;
 	}
@@ -64,6 +74,16 @@ namespace ShadowPool {
 		}
 		for (int j = 0; j < 6; j++) c.texture->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &c.faces[j]);
 		return true;
+	}
+
+	// PoolPeopleLamps' live cube map number i (made on first use; nullptr when it cannot be made).
+	inline Cube* PeopleCube(int i, UINT size) {
+		while ((int)People.size() <= i) {
+			Cube c;
+			if (!MakeCube(c, size)) return nullptr;
+			People.push_back(c);
+		}
+		return &People[i];
 	}
 
 	// The pool entry for a lamp: its own, a new one, or the least recently used one (not used this frame). -1: none to be had.
