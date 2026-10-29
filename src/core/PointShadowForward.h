@@ -489,7 +489,10 @@ namespace PointShadowForward {
 					const float dx = g->x - p.x, dy = g->y - p.y, dz = g->z - p.z;
 					stop = sqrtf(dx * dx + dy * dy + dz * dz) + g->radius + 2.0f;
 				}
-				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop };
+				// The per-pixel ranking's intensity (luminance x dimmer) and the game's radius
+				const float intensity = source ? (0.2126f * source->Diff.r + 0.7152f * source->Diff.g + 0.0722f * source->Diff.b) * source->Dimmer : 1.0f;
+				const float gameRadius = source ? source->Spec.r : Slots[s].radius;
+				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop, intensity, gameRadius };
 			}
 			RtLampShadows::Submit(traced, SlotCount);
 		}
@@ -589,7 +592,6 @@ namespace PointShadowForward {
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
 					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
-					if (!force) RtLampShadows::NoteUse(Slots[s].slot);	// which lamps the screen uses: the next frame traces those
 					matched++;
 					break;
 				}
