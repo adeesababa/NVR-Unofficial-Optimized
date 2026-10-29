@@ -144,6 +144,36 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   AmbientLight (open item).
 - Next: rt-ao-4 (og-desert, land now in the scene via rt-sun-core 28ea9e77, build 1852AA82): the occlusion view at 1 / 4 / 16 rays.
 
+## Strand 2026-10-29 afternoon: AO -> shared denoiser -> GI (branch claude/rt-ao-gi from claude/rt-test-merge af12c7e7)
+### Step 1, rays hit (verified, numbers)
+Share of on-screen surface pixels whose raw RT visibility (RT DebugView 1, through AmbientLight's occlusion view) is below open (< 0.95):
+| run | scene | rays hitting | rays starting inside (DebugView 3 black) |
+|---|---|---|---|
+| run 1 (10-28, before the Eye() fix) | lucky22 | ~0 % | n/a (everything read open) |
+| run 2 (10-29 04:28) | lucky22 | 53 % | 0.2 % of pixels below half |
+| run 5 (10-29 05:54, land in the scene) | og-desert | 47 % | none on surfaces |
+The every-ray-misses bug is gone in all three test views (raw, inside, input). Land: run 5 had the loaded cells' land (28ea9e77); og-lake
+style spots with LOD-only ground get it from ecf5defe (in this branch's base).
+
+### Step 2, shared denoiser
+Asked rt-sun-core (10-29 ~16:10) for its API. Until it lands, AO keeps AmbientLight's blurs + Accumulate and GI keeps ComputeGI's
+accumulate (below): both are temporal + edge-aware spatial already.
+
+### Step 3, one-bounce RT GI (built 92a5792d, DLL F3A8C42C; bench rt-gi-1 queued in lucky22 + og-desert)
+- `[Shaders.AmbientOcclusion.RT] GI` (off), `GIDistance` 1500, `GIStrength` 1.0, DebugView 6 = the bounce light alone. AmbientLight only.
+- RtAOTrace.comp: one cosine ray per half-resolution pixel and frame (its own noise, decorrelated from the AO rays), closest hit, up to
+  GIDistance. At the hit: albedo from the core's per-instance record (the draw's diffuse texture averaged; grey 0.5 if unknown), the
+  normal from the hit triangle (core v2 geometry data, to the scene by the instance transform, turned to the ray), lit by the sun (N.L
+  and a shadow ray; outdoors while the cascades' fade is below 1), the ambient (x (1 + n.z) / 2) and the 8 lamps nearest the eye
+  (ShaderManager's shadow-slot and tracked lamps, quadratic falloff to their reach, no shadow ray). Output albedo x E (the pixel's
+  irradiance estimate with cosine sampling), clamped to 4; misses give 0 (the sky's light is the game's ambient already). Second
+  shared image NVR RT gi (RGBA16F) -> NVR_RTGIRaw.
+- AmbientLight: the RT estimate writes the bounce into its rgb (as ComputeGI's GI pass does), sets giDrawn, so ComputeGI's
+  accumulate (temporal: reprojection, depth test, neighbour clamp) and its apply (x the surface colour x TESR_AmbientLightData.z =
+  GIStrength) take it. ComputeGI on = its screen search wins (A/B).
+- Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
+  probe cache (next, for cost) once the plain version's look and cost are measured.
+
 ## Resumed 2026-10-29 (main session, on the user's word)
 - The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
   100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.
