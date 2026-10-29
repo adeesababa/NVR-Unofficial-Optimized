@@ -17,6 +17,43 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
+Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
+- **Works end to end on the iGPU** (9800X3D RDNA2, 2 CUs, 720p): the RT core's 64-bit helper traces the 9 lamps the visible draws
+  used most last frame (per pixel, 1-8 rays over the lamp's disc, two segments so lamp models / glass never shadow their own light);
+  the forward lamp shaders read the result next frame, reprojected, and use their cube map where the traced frame did not see the
+  point. Off by default; off = byte-identical shaders; no ray tracing on the GTX 1070 (the core stays off, the shaders keep the cube
+  maps).
+- **Correctness:** clean A/B in Lucky 38 and Vault 21 (cube-a = cube-b, rt1-a = rt1-b to 0.0-0.1 %); the exact coverage view reads
+  the traced value on 44 % (Lucky 38, Vault 21) and 52 % (saloon) of pixels, depth mismatch 0.1-0.4 %, nothing off screen; skin
+  included. Traced shadows fall where they should (under tables and chairs in Vault 21). No lamp shadows itself: noskip,
+  LampStop 24 / 48 and the per-lamp stop change nothing in Lucky 38; the mask hook classes ~5 % of pieces as lamp glass / models.
+  No ceiling garbage seen (the ceilings are lit or shadowed as the cube maps, coverage clean there).
+- **Cost per frame, helper GPU incl. copies and waits (iGPU, 720p):**
+
+  | scene | lamps traced | rays | ms |
+  |---|---|---|---|
+  | any | 0 | - | 0 (core idles) |
+  | Lucky 38 | 4 | 1 | 15.7 |
+  | Lucky 38 | 9 | 1 | 23-26 |
+  | Lucky 38 | 9 | 4 (soft) | 90-94 |
+  | Vault 21 lobby | 9 | 1 | 16.5 (4 lamps: 16.2: four lamps reach most pixels) |
+  | saloon | 9 | 1 | 11-20 |
+
+  About 2.5-3 ms per traced lamp per ray on this 2-CU iGPU. A 40-CU RDNA2 or an RTX card: estimate 15-30x faster (unmeasured).
+- **Open:** (1) Lucky 38's stair-base stripe is shadowed traced but lit by the cube map; not self-shadowing (tested); likely a blocker
+  the cube map does not draw (one-sided surface or an excluded object kind) -- unresolved, the lamp is not identified yet;
+  (2) people are not in the RT scene (ActorsFromCubeMaps keeps their shadows via the cube maps); (3) soft shadows are noise at
+  1 ray (no denoise; TAA or more rays); (4) save26 / save27 (GS bar / Vault 21) cannot run on the slim bench slots: Vault 21 was
+  reached by moveto; (5) the saloon's third-person camera settles differently at the trace's frame rate, so its cube-vs-traced
+  numbers are confounded; (6) cube maps are still drawn for traced lamps (the saving to take next); (7) the debug compare view
+  still sends encoded values through the lighting (coverage is exact, compare is indicative only).
+
+### Vault 21 rerun with the screen-driven lamp choice (2026-10-29 07:30, run 20261029-073053-slotA, rtlamp-4b, PASS; DLL B1BD417C)
+- Coverage 43.8 % green (was 0 %), red 0.1 %, blue 0 %: the traced lamps are now the ones lighting the view; traced shadows under
+  the table and chairs. rt1 vs cube 6.2 % > 2/255 (0.42 % > 16), mean -0.02; A/B clean. Cost 16.5 ms (9 lamps), 16.2 (4 lamps),
+  noskip 13.2. Lucky 38 tint pair 8.2 % / -0.27 (the stripe as before).
+
 ### Vault 21 lobby + Lucky 38 lamp tint (2026-10-29 06:56, run 20261029-065640-slotA, rtlamp-4, 15 shots, PASS; DLL 7AE67874)
 - **Vault 21 (447 lights): traced = cube to 0.1 %, coverage 0 % green.** No draw on screen used a traced lamp: the lamps lighting
   this view held cube slots above 8, and the trace took cube slots 0-8 whatever the screen showed (its cost fell to ~3 ms, the
