@@ -46,7 +46,7 @@ namespace ShadowPool {
 
 	inline int Wanted() { return (std::max)(0, (std::min)(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolLamps"), (int)ShadowPoolMax)); }
 	inline int PeopleWanted() { return (std::max)(0, (std::min)(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolPeopleLamps"), 16)); }
-	inline int Budget() { const int b = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolDrawsPerFrame"); return b > 0 ? (std::min)(b, 32) : 4; }
+	inline int Budget() { const int b = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "PoolDrawsPerFrame"); return b > 0 ? (std::min)(b, 32) : 2; }
 
 	// ShaderManager::GetNearbyLights: at its start, and for each shadow-casting lamp the live slots had no room for.
 	inline void BeginRanking() { Candidates.clear(); }
