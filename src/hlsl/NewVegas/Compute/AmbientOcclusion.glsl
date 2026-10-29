@@ -28,6 +28,10 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraData;               // TESR_CameraData: x near, y far
     vec4 aoLayout;                 // NVR_AOLayout: xy the AO extent / full extent, zw 1 / the AO target's dimensions
     vec4 skyLayout;                // the sky pass: xy 1 / its target's dimensions (FrameVS's uv there), z NVR_SkySmooth.x
+    // UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; read only by the RT passes, the others end above)
+    mat4 rtReproject;              // this frame's view space -> last frame's clip space (BounceLightMath.h), as stored
+    vec4 rtTemporal;               // x last frame's share (0: no history), y pixels of motion that halve it, z frame number (0-1023),
+                                   // w [Shaders.AmbientOcclusion.RT] DebugView
 } cb;
 
 // Per pass (24 bytes).

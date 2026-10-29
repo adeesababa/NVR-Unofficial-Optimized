@@ -1,0 +1,131 @@
+#version 460
+// UNOFFICIAL 2026-10-28 (NVR DXVK fork, hybrid RT item 2; docs/next/FORK-RT-AO.md) [Shaders.AmbientOcclusion.RT]: the trace pass for
+// ambient occlusion and sky visibility. Runs in the RT helper (NvrRtHelper.exe, 64-bit: Windows' 32-bit Vulkan drivers have no ray
+// queries; docs/next/FORK-RT-CORE.md), not in the game: the helper binds the scene (set 0 binding 0), these constants (1) and the
+// pass's shared images (2 in, 3 out). NVR (core/RtAmbient.h, effects/AmbientOcclusion.cpp RtRecord) fills the input and copies the
+// output back at the core's point of the frame (RtCore::Frame), before the AO and sky passes. One thread per half-resolution texel.
+// Input  (binding 2, RG32F, from RtAOInput.frag): x view distance (world units, 0 = nothing / sky), y the world normal (OctEncode, Pack2).
+// Output (binding 3, RGBA16F): x AO visibility (cosine-weighted, 1 open, before any strength), y sky visibility (1 open), z 'covered'
+// (straight up blocked), w DebugView 3's value (0: a ray began inside something; else 0.25 + 0.75 x the mean hit distance / Distance).
+// NVR's passes turn these into AmbientLight's / AmbientOcclusion's estimate and Skylighting's sky factor (their strength settings).
+// Compile: glslangValidator -V --target-env vulkan1.2 -o RtAOTrace.spv RtAOTrace.comp
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;   // the core's: world minus CameraPosition, z up
+layout(set = 0, binding = 1, std140) uniform Constants {
+    mat4 viewToWorld;   // NVR's view space -> scene directions (rows right, up, forward of the view; as stored, cb.M * v)
+    vec4 projection;    // x 1 / P00, y 1 / P11, zw the trace grid's size in texels
+    vec4 origin;        // xyz the view origin in scene space (RtCore::Eye(), 0), w the frame number (0-1023)
+    vec4 ao;            // x distance, y rays (0: no AO rays), z 1 = move the noise each frame (a history averages it), w the input check
+                        // (DebugView 4: x = view distance / 2000; 5: x = the normal's up component * 0.5 + 0.5; 0 = off)
+    vec4 sky;           // x distance, y rays (0, 8 or 16; 0: no sky rays), zw unused
+} cb;
+layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
+
+// ---- AmbientLight.glsl's ----
+vec2 Unpack2(float p) { float high = floor(p / 4096.0); return vec2(high, p - high * 4096.0) / 4095.0; }
+vec3 OctDecode(vec2 e) {
+    e = e * 2.0 - 1.0;
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = clamp(-n.z, 0.0, 1.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+// Interleaved gradient noise (Jimenez 2014): the per-texel rotation without a noise texture in the helper.
+float Ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// A direction round n, cosine-weighted (Malley: a point on the unit disc lifted to the hemisphere), from u in [0, 1)^2.
+vec3 CosineDirection(vec3 n, vec2 u) {
+    vec3 t = normalize(abs(n.z) < 0.999 ? cross(n, vec3(0.0, 0.0, 1.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+    vec3 b = cross(n, t);
+    float r = sqrt(u.x);
+    float phi = 6.2831853 * u.y;
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(1.0 - u.x, 0.0)));
+}
+
+// The i-th point of the R2 sequence (Roberts 2018): even cover of the square for any count, so 1-16 rays stay stratified.
+vec2 R2(float i) { return fract(i * vec2(0.7548777, 0.5698403)); }
+
+// One ray from p (relative to the view origin) along d: x the hit distance (-1: nothing within tMax), y 1 = a back face. The core's
+// scene is opaque static geometry (land and objects, both faces; no actors, no alpha-tested). anyHit: the first hit found, else the closest.
+vec2 Trace(vec3 p, vec3 d, float tMin, float tMax, bool anyHit) {
+    rayQueryEXT q;
+    uint flags = gl_RayFlagsOpaqueEXT | (anyHit ? gl_RayFlagsTerminateOnFirstHitEXT : 0u);
+    rayQueryInitializeEXT(q, scene, flags, 0xFFu, p + cb.origin.xyz, tMin, d, tMax);
+    while (rayQueryProceedEXT(q)) {}
+    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) return vec2(-1.0, 0.0);
+    return vec2(rayQueryGetIntersectionTEXT(q, true), rayQueryGetIntersectionFrontFaceEXT(q, true) ? 0.0 : 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
+    vec4 input_ = imageLoad(inputImage, texel);
+    float viewZ = input_.x;
+    if (!(viewZ > 0.0)) { imageStore(outputImage, texel, vec4(cb.ao.w > 3.5 ? 0.0 : 1.0, 1.0, 0.0, 1.0)); return; }
+    vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
+    vec3 view = vec3((uv.x * 2.0 - 1.0) * cb.projection.x, (1.0 - uv.y * 2.0) * cb.projection.y, 1.0) * viewZ;
+    vec3 p = (cb.viewToWorld * vec4(view, 0.0)).xyz;
+    vec3 n = OctDecode(Unpack2(input_.y));
+    // The start lifted off the surface: the depth (24 bits, half resolution) and the scene's triangles disagree more far away.
+    float bias = 0.75 + viewZ * 0.003;
+
+    // AO: closest hit; a hit counts in full to half the distance, nothing at the end (no hard edge). A back face right at the start is
+    // a ray that began inside something (depth error, tessellated bumps the scene does not have): open, and counted for DebugView 3.
+    float aoVisibility = 1.0, debugValue = 1.0;
+    int rays = int(cb.ao.y + 0.5);
+    if (rays > 0) {
+        float frame = cb.ao.z > 0.5 ? cb.origin.w : 0.0;
+        vec2 noise = fract(vec2(Ign(vec2(texel)), Ign(vec2(texel) + 17.0)) + frame * vec2(0.618034, 0.754878));
+        vec3 start = p + n * bias;
+        float reach = cb.ao.x, occlusion = 0.0, inside = 0.0, meanHit = 0.0;
+        for (int i = 0; i < rays; i++) {
+            vec3 d = CosineDirection(n, fract(noise + R2(float(i))));
+            vec2 hit = Trace(start, d, 0.05 * bias, reach, false);
+            if (hit.x < 0.0) { meanHit += 1.0; continue; }
+            if (hit.y > 0.5 && hit.x < 4.0 * bias) { inside += 1.0; meanHit += 1.0; continue; }
+            occlusion += 1.0 - smoothstep(0.5 * reach, reach, hit.x);
+            meanHit += hit.x / reach;
+        }
+        aoVisibility = 1.0 - occlusion / float(rays);
+        debugValue = inside > 0.0 ? 0.0 : 0.25 + 0.75 * meanHit / float(rays);
+    }
+
+    // Sky: fixed directions, straight up + one ring at 60 degrees up (8) and with 16 a ring at 30 (the ortho version's rings), each
+    // weighed by its cosine to n; open if nothing within the distance. Turned by a 4 x 4 per-texel interleave that never changes with
+    // the frame: nothing flickers when standing still.
+    float skyVisibility = 1.0, covered = 0.0;
+    int skyRays = int(cb.sky.y + 0.5);
+    if (skyRays > 0) {
+        vec3 start = p + n * (bias + 8.0);
+        float reach = cb.sky.x;
+        vec2 cell = vec2(texel & 3);
+        float turn = (cell.x * 4.0 + cell.y) * (3.14159265 / 4.0 / 16.0);
+        covered = Trace(start, vec3(0.0, 0.0, 1.0), 0.0, reach, true).x >= 0.0 ? 1.0 : 0.0;
+        float total = 0.034 * clamp(n.z, 0.0, 1.0);
+        float open = total * (1.0 - covered);
+        int rings = skyRays > 8 ? 2 : 1;
+        for (int k = 0; k < rings; k++) {
+            float c = k == 0 ? 0.5 : 0.8660254;     // cos(elevation): 60, then 30 degrees up
+            float s = k == 0 ? 0.8660254 : 0.5;
+            float ringWeight = k == 0 ? 0.0324 : 0.0884;
+            for (int i = 0; i < 8; i++) {
+                float a = turn + (float(i) + 0.5 * float(k)) * (3.14159265 / 4.0);
+                vec3 d = vec3(cos(a) * c, sin(a) * c, s);
+                float w = ringWeight * clamp(dot(d, n), 0.0, 1.0);
+                if (w <= 0.0) continue;
+                total += w;
+                if (Trace(start, d, 0.0, reach, true).x < 0.0) open += w;
+            }
+        }
+        skyVisibility = total > 1.0e-5 ? open / total : 1.0;
+    }
+    if (cb.ao.w > 3.5 && cb.ao.w < 4.5) aoVisibility = clamp(viewZ / 2000.0, 0.0, 1.0);
+    if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
+    imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
+}

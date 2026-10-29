@@ -4,6 +4,7 @@
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
+#include "../core/RtAmbient.h"	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -44,6 +45,10 @@ void AmbientLightEffect::UpdateSettings() {
 	giQuality = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIQuality"), 0, 2);
 	giThinOcclusion = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIThinOcclusion") != 0;
 	giTest = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGITest"), 0, 2);
+	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT] (core/RtAmbient.h): its DebugView 1 (the raw RT visibility) and 3 (rays
+	// that began inside something) come out through Estimate's occlusion, so they show through this effect's view 1 (the occlusion alone).
+	RtAmbient::UpdateSettings();
+	if (RtAmbient::Current.Enabled && RtAmbient::Current.DebugView != 0 && RtAmbient::Current.DebugView != 2) Constants.Data2.w = 1.0f;
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -736,6 +741,7 @@ namespace {
 		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
 		{ "AmbientLightGIAccumulate", 4,  0, 0 },
 		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
+		{ "AmbientLightEstimateRT",   2,  0, 0 },	// UNOFFICIAL 2026-10-28 (fork RT): prep, the traced values (AmbientOcclusionEffect::RtRaw)
 	};
 	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
 		D3DXVECTOR4	frame;
@@ -1144,7 +1150,20 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					}
 					else {
 						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), giLightTexture };	// (the 3rd: ComputeGI's)
-						if (giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
+						// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]: the occlusion from the RT helper's rays
+						// (AmbientLightEstimateRT.frag; core/RtAmbient.h), the blurs and Accumulate after it as after Estimate (the denoiser).
+						// ComputeGI keeps the screen search (its light needs it). Variant = the RT DebugView.
+						static bool rtChecked = false, rtFile = false;
+						if (!rtChecked) { rtChecked = true; rtFile = DxvkCompute::HasSpirv("AmbientLightEstimateRT"); }
+						AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+						IDirect3DTexture9* rtRaw = !giLightReady && rtFile && ao && RtAmbient::Ready() ? ao->RtRaw() : nullptr;
+						if (rtRaw) {
+							static GpuTimer rtTimer("  Ambient light RT estimate (half)");
+							GpuProfileScope rtGpu(rtTimer, Device);
+							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtRaw };
+							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView, reduced);
+						}
+						if (!drawn && giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
 						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);	// the first 2
 					}
 				}

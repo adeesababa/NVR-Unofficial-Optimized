@@ -47,6 +47,12 @@ public:
 	// constants are kept up (UpdateSkyConstants, also called by ShaderManager while this effect is off), this effect's sky pass runs just
 	// before AmbientLight (ShaderManager) and AmbientLight's Apply takes the sky target's factor.
 	void UpdateSkyConstants();
+	// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h, RtCore.h): this effect is the RT core's AO user.
+	// RtRegister once before the core's first frame (ShaderManager, with the RT sun's); RtRecord at the core's point of the frame; RtRaw:
+	// this frame's traced AO / sky values (AmbientLight's RT estimate reads them too), or null.
+	static void RtRegister();
+	void RtRecord(IDirect3DDevice9* Device);
+	IDirect3DTexture9* RtRaw();
 	static bool SkyHostedByAmbientLight();
 	static D3DXVECTOR2 SkyTakeComposite();	// LightCap for VolumetricFog's composites (Includes/SkyTake.hlsl): x the cap's scale, y no limit
 
@@ -80,4 +86,20 @@ private:
 	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* const* Textures,
 				IDirect3DSurface9* const* Surfaces, const D3DXVECTOR4& Layout, bool GTAOEstimate, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SkyVis);
 	bool	ExtSkyVisibility(IDirect3DSurface9* Target, const D3DSURFACE_DESC& Desc, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
+	// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): the RT estimate (into the AO target 1), its
+	// temporal pass (target 1 + last frame's history -> target 0 + this frame's history) and the RT sky pass. The history pair is made
+	// at the AO target's size the first time it is needed (again when that size changes).
+	ExtPass				extEstimateRT, extTemporalRT, extSkyRT, extInputRT;
+	ExtUniformBuffer	extRtUniforms;
+	IDirect3DTexture9*	rtInputTexture = nullptr;	// NVR_RTAOInput (half, G32R32F): what the helper's trace starts from
+	IDirect3DSurface9*	rtInputSurface = nullptr;
+	IDirect3DTexture9*	rtRawTexture = nullptr;		// NVR_RTAORaw (half, A16B16G16R16F): the trace's result
+	IDirect3DSurface9*	rtRawSurface = nullptr;
+	UINT				rtWidth = 0, rtHeight = 0;
+	IDirect3DTexture9*	rtHistoryTexture[2] = {};
+	IDirect3DSurface9*	rtHistorySurface[2] = {};
+	UINT				rtHistoryWidth = 0, rtHistoryHeight = 0;
+	int					rtHistoryIndex = 0;
+	bool	ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTexture9* const* Textures, IDirect3DSurface9* const* Surfaces, const D3DSURFACE_DESC& Target);
+	bool	ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
 };
