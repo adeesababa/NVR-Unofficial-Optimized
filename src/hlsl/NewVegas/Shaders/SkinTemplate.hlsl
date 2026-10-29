@@ -578,6 +578,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     PS_OUTPUT OUT;
     OUT.color = color;
+    #if INTERIOR_SHADOWS && POINTS > 0 && POINT_SHADOW_RT
+        [branch] if (NVR_PointShadowRT.x > 2.5f) OUT.color.rgb = PointShadowRtCoverage(ptWorldPos);	// UNOFFICIAL 2026-10-29 RT coverage view
+    #endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
     OUT.scatter = float4(specularShare, length(worldPos));
     #if defined(DIFFUSE)

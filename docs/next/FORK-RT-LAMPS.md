@@ -17,6 +17,20 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### Coverage run 2026-10-29 03:35 (rtlamp-2-saloon16, run 20261029-033543-slotA, 7 shots, PASS)
+- **The lookup works for the world:** the coverage view showed the traced value used (green) on walls, floor, tables and stools,
+  no red (depth matches at both tolerances 0.02 and 0.2: identical), a little blue (0.3 %, off the traced frame's screen). So the
+  reprojection, the depth code and the result texture on s15 are right. The depth-input lead was wrong for my pass.
+- Yesterday's "no difference" explained: this view has few visible lamp shadows, and every ray misses (core bug), so traced =
+  lit everywhere = the cube maps' picture wherever they have no shadow (rt1 vs cube: 1.0 % of pixels > 2/255, below the cube-vs-cube
+  noise of 6.5 %). The compare view (DebugView 1) is green-tinted wherever the cube maps shade = expected with all-miss rays.
+- **Caveat found:** the debug views sent their classes through the lighting as encoded shadow values, and other lighting maths
+  distorted them (the compare view brightened red 1.38x, green 2.3x: impossible for a visibility). The character showed BLUE (off
+  screen) in that version, which is not trustworthy. Fixed (shaders only): DebugView 2 now writes its colour as the pixel's
+  output in ObjectTemplate and SkinTemplate (first traced light of the draw; grey = none traced). Next run gives exact percentages,
+  the character included.
+- Next run waits for rt-sun-core's ray fix (batched: coverage + rtlamp-1 lists in the same launches).
+
 ## PAUSED HERE (2026-10-28 ~15:15, on the user's word via the main session: "pause rt research and dev for now")
 Branch `claude/rt-lamp-shadows-d97675` @ this commit (merged with `claude/rt-sun-core-aa6d6d` d71ecf96). Nothing installed, nothing
 pushed, no bench tickets left. Test tree link: `work\NVR-rtlamp` (2026-10-03 work root) -> this worktree; DLL in `build\optimized`.

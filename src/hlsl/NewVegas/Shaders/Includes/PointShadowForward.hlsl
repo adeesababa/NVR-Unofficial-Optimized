@@ -302,6 +302,23 @@ float PointShadowTraced(float slot, float3 worldPos) {
     return (shifted - 16.0f * floor(shifted / 16.0f)) / 15.0f;
 }
 
+// UNOFFICIAL 2026-10-29 RT coverage view (NVR_PointShadowRT.x 3, [Shaders.ShadowsInteriors.RT] DebugView 2): the colour the object and
+// skin shaders write INSTEAD of their lighting (ObjectTemplate.hlsl, SkinTemplate.hlsl), for the first of the draw's lights that has a
+// traced slot: GREEN = its traced value is used (brightness = how lit), BLUE = off the traced frame's screen or behind its camera,
+// RED = the traced frame saw another depth there (brighter = further off), GREY = no light of this draw is traced. Exact per pixel
+// (an earlier version sent the classes through the lighting as encoded shadow values, which other lighting maths then distorted).
+float3 PointShadowRtCoverage(float3 worldPos) {
+    float slot = NVR_PointShadowRTSlot[0].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].y;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].z;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].w;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].y;
+    [branch] if (slot < 0.0f) return 0.25f;
+    float traced = PointShadowTraced(slot, worldPos);
+    return traced >= 0.0f ? float3(0.0f, 0.2f + 0.8f * traced, 0.0f) : traced > -1.5f ? float3(0.0f, 0.0f, 1.0f) : float3(0.3f + 0.7f * (-2.0f - traced), 0.0f, 0.0f);
+}
+
 // The compare view (NVR_PointShadowRT.x 2): both answers packed into the factor PointShadowFactor decodes, the traced and the cube
 // map's lit share in 16 steps each (where nothing was traced, the cube map's for both).
 float PointShadowDone(float cubeLit, float rayLit, float fade) {
@@ -339,8 +356,6 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     float rayLit = -1.0f;
     [branch] if (NVR_PointShadowRT.x > 0.0f && rtSlot >= 0.0f) {
         rayLit = PointShadowTraced(rtSlot, worldPos);
-        // Coverage view (x 3, DebugView 2): 100 + 1 off screen, + 2..3 depth mismatch (+ the error), + 4..5 traced (+ the value)
-        [branch] if (NVR_PointShadowRT.x > 2.5f) return 100.0f + (rayLit >= 0.0f ? 4.0f + rayLit : -rayLit);
         [branch] if (NVR_PointShadowRT.x < 1.5f && rayLit >= 0.0f && NVR_PointShadowRT.w < 0.5f) return lerp(1.0f, rayLit, NVR_PointShadowParams.x * abs(fade));
     }
 #endif
@@ -526,12 +541,6 @@ float3 PointShadowFactor(float shadow, float4 tint) {
 #if POINT_SHADOW_RT
     // RT compare view (PointShadowDone): white where both are lit, black where both are blocked, RED where only the traced result
     // has a blocker, GREEN where only the cube map does (light the rays let through: a leak, or a cube-map artifact the rays fix).
-    [branch] if (shadow > 99.5f) {
-        // RT coverage view: GREEN = the traced value is used (its brightness), BLUE = off the traced frame's screen, RED = the
-        // traced frame saw another depth there (brighter = further off)
-        float c = shadow - 100.0f;
-        return c > 3.5f ? float3(0.0f, 0.15f + 0.85f * (c - 4.0f), 0.0f) : c > 1.5f ? float3(0.3f + 0.7f * (c - 2.0f), 0.0f, 0.0f) : float3(0.0f, 0.0f, 1.0f);
-    }
     [branch] if (shadow > 1.5f) {
         float e = shadow - 2.0f;
         float cubeSteps = floor(e / 16.0f);
