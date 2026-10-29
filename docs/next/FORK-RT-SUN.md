@@ -127,6 +127,17 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
 - Verdict for the brief: the RT core works on the iGPU; RT sun shadows match the cascades for every caster the scene holds, with
   no acne near; casters it does not hold yet are listed below. Mode 0 keeps those through the cascades, so Mode 0 is safe to try.
 
+### rtsun-8 / 9 / 10 (og-lake + og-goodsprings, 12:00): land where the loaded cells hold none
+- rt-reflections met no land at og-lake with 28ea9e77. rtsun-8 (20261029-060044-slotC): every loaded cell's land node there holds
+  only empty quad nodes (land subtree: 2700 nodes, 0 geometry in 60 exchanges; fade alpha was not it, cc1f9b31): the ground on
+  screen is LOD terrain, which the scene never walked.
+- rtsun-9 (18d27859, LOD land walked always, as the cascades do): og-lake's ground hits; but at og-goodsprings LOD quads stand
+  above the full land and cast false shadows (black slabs on the road, the house front) and cost +1 ms.
+- rtsun-10 (ecf5defe): **LOD land only as a fallback**, in frames where the loaded cells gave no land geometry. og-lake: LOD land
+  240 taken, ground hits; og-goodsprings: full land 2160, LOD 0, the slabs gone, RT shadows follow the cascades (trailer on the
+  ground, the porch roof shading the house front at noon). "Ray tracing" p50 3.55-3.65 ms at both spots (720p, iGPU).
+- Open: a frame with SOME cells' land loaded and others empty takes no LOD for the empty ones (no land there until they load).
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
@@ -156,6 +167,8 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   the GPU (the skin shader's output) per frame.
 - **Soft shadows:** one hard ray per pixel. Mode 0 softens through the cascades' PCF + contact blur; Mode 1 is hard. Next: a cone
   of rays over the sun's disc + a small denoise.
+- **Partly loaded land** (rtsun-10): LOD land is used only when no loaded cell has land geometry; mixed frames leave the empty
+  cells without ground in the scene until their land loads.
 - **Far-land speckle** (rtsun-7): raise NormalBiasPerUnit for land (or use the land's geometric normal from the hit-free
   reconstruction) beyond ~3000 units.
 - **RenderScale / FSR:** the trace assumes the world fills the screen at full size; RenderScale's rect frames are not handled
