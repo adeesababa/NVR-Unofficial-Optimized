@@ -583,6 +583,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     PS_OUTPUT OUT;
     OUT.color = color;
+    #if INTERIOR_SHADOWS && POINTS > 0 && POINT_SHADOW_RT
+        [branch] if (NVR_PointShadowRT.x > 2.5f) OUT.color.rgb = PointShadowRtCoverage(ptWorldPos);	// UNOFFICIAL 2026-10-29 RT coverage view
+    #endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 #if CAPTURED_NORMALS_ON
     // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal after skinning, before the normal map (the added lamp passes: none)

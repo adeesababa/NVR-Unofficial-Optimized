@@ -1542,6 +1542,16 @@ PS_OUTPUT main(PS_INPUT IN) {
             OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
         #endif
     }
+    #if POINT_SHADOW_RT
+        // UNOFFICIAL 2026-10-29 RT coverage view (PointShadowForward.hlsl PointShadowRtCoverage); the added passes add nothing
+        [branch] if (NVR_PointShadowRT.x > 2.5f) {
+            #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
+                OUT.color.rgb = 0.0f;
+            #else
+                OUT.color.rgb = PointShadowRtCoverage(ptWorldPos);
+            #endif
+        }
+    #endif
 #endif
 
     #if defined(DIFFUSE)
@@ -1935,6 +1945,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if INTERIOR_SHADOWS
         // UNOFFICIAL DebugView 3 (PointShadowForward.hlsl PointShadowTrace).
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
+        #if POINT_SHADOW_RT
+            [branch] if (NVR_PointShadowRT.x > 2.5f) OUT.color.rgb = PointShadowRtCoverage(ptWorldPos);	// UNOFFICIAL 2026-10-29 RT coverage view
+        #endif
     #endif
     OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
 #if CAPTURED_NORMALS_ON

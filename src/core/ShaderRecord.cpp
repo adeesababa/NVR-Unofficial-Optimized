@@ -168,6 +168,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		AppendDefine("POINT_SHADOW_TEXEL", "1");
 	else if (TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness") > 0.0f)
 		AppendDefine("POINT_SHADOW_MAG", "1");
+	// UNOFFICIAL 2026-10-28 RT lamp shadows (core/RtLampShadows.h): only when on at startup AND NVR DXVK can trace, so that otherwise
+	// the define list and the shaders are exactly what they were.
+	if (RtLampShadows::CompiledIn)
+		AppendDefine("POINT_SHADOW_RT", "1");
 
 	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env-map pass read the live surroundings cube only when
 	// compiled in, which is when either setting is above 0 at startup, so that otherwise those shaders are exactly what they were.

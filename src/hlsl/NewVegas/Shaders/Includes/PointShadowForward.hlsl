@@ -100,12 +100,42 @@ float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardenin
                                                   // LampSize (or InvisibleLightSize) may give, per unit of the direction's major
                                                   // axis (MaxSoftness); 0 with contact hardening alone
 
+// UNOFFICIAL 2026-10-28 POINT_SHADOW_RT ([Shaders.ShadowsInteriors.RT] Enabled at startup, on NVR DXVK with the RT core: ShaderRecord::
+// BuildDefines; docs/next/FORK-RT-LAMPS.md): each lamp's shadow read from a traced result instead of its cube map. The RT core's 64-bit
+// helper (32-bit Windows Vulkan drivers have no ray tracing) traces up to 9 shadowed lamps per pixel from a frame's depth
+// (Compute/Rt/RtLampTrace.comp; core/RtLampShadows.cpp) and NVR copies the result into NVR_RtLampVis (G32R32F): 4-bit visibility for
+// lamp slots 0-5 in r, 6-8 in g's low 12 bits, a 12-bit log code of the view depth above them. The next frame's points reproject into
+// that frame (NVR_RtLampReproject) and take the traced value where the depth there is their own; elsewhere (hidden in that frame, off
+// its screen, a slot past MaxLamps) the cube map as before.
+// The cube path stays in the shader, for the A/B (c215.x 0) and the compare view. 0: as before, byte for byte.
+#ifndef POINT_SHADOW_RT
+    #define POINT_SHADOW_RT 0
+#endif
+
+#if POINT_SHADOW_RT
+row_major float4x4 NVR_RtLampReproject : register(c206); // camera-relative position (this frame) -> the traced frame's clip space
+                                                // (w = its view depth); c206-c209 are the character shadow map's outdoors only
+float4 NVR_PointShadowRT      : register(c215); // x: 0 = the cube maps (as without RT), 1 = the traced result, 2 = the compare view
+                                                // (both; see PointShadowFactor); y: depth tolerance (share of the view depth); z:
+                                                // log2(farZ) / 4095 (the depth code's unit); w: 1 = the darker of traced and cube map
+                                                // (the RT scene has no people yet: their shadows come from the cube maps)
+float4 NVR_PointShadowRTSlot[2] : register(c216); // the draw's lights 0-3 and 4-5: their slot 0-17 in the traced result, -1 = cube
+sampler2D NVR_RtLampVis : register(s15);          // point / clamp, set by the DLL (PointShadowForward::Bind; no sampler_state:
+                                                // the POINT variants define POINT, and raw shader compiles ignore it anyway)
+                                                // on s15, the sixth lamp's cube map's: every other sampler is taken in some variant
+                                                // (s9 the sun atlas, s10 the live cube). So with RT the sixth light of a draw (rare: the
+                                                // six-lamp OPT passes) has no cube map: traced where it can be, else lit; DebugView 3
+                                                // (which reads the focus lamp's cube on s15) shows grey
+#endif
+
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
 samplerCUBE NVR_PointShadowCube2 : register(s12);
 samplerCUBE NVR_PointShadowCube3 : register(s13);
 samplerCUBE NVR_PointShadowCube4 : register(s14);
+#if !POINT_SHADOW_RT
 samplerCUBE NVR_PointShadowCube5 : register(s15);
+#endif
 
 // How much a blocker at the stored distance (distance / radius) shadows: [Shaders.ShadowsInteriors.Main] NearFade, less
 // within that many world units of the lamp, nothing at the lamp itself. A real lamp is no point: a blocker that close to
@@ -252,17 +282,83 @@ float PointShadowTexel(samplerCUBE cube, float3 dir, float major, float s, float
 }
 #endif
 
+#if POINT_SHADOW_RT
+// UNOFFICIAL 2026-10-28 RT lamp shadows: how much of the lamp in traced slot `slot` (0-8) reaches this point (1 lit, 0 blocked), or
+// negative when the traced frame did not see this point: -1 off its screen or behind its camera, -2 - error (up to -3) another depth
+// there (the sky, something in front). The caller then takes the cube map.
+// Point sampled: the channels hold packed integers (exact below 2^24; dividing by powers of 2 keeps them exact).
+float PointShadowTraced(float slot, float3 worldPos) {
+    float4 clip = mul(float4(worldPos, 1.0f), NVR_RtLampReproject);
+    [branch] if (!(clip.w > 1.0f)) return -1.0f;
+    float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
+    [branch] if (any(abs(uv - 0.5f) > 0.5f)) return -1.0f;
+    float2 traced = tex2Dlod(NVR_RtLampVis, float4(uv, 0.0f, 0.0f)).xy;
+    float depthCode = floor(traced.y / 4096.0f);
+    float depthError = abs(exp2(depthCode * NVR_PointShadowRT.z) - clip.w) / clip.w;
+    [branch] if (!(depthError <= NVR_PointShadowRT.y)) return -2.0f - saturate(depthError);  // -2..-3: the depth did not match
+    float high = slot > 5.5f;
+    float value = high ? traced.y - 4096.0f * depthCode : traced.x;
+    float shifted = floor(value / exp2(4.0f * (slot - 6.0f * high)));
+    return (shifted - 16.0f * floor(shifted / 16.0f)) / 15.0f;
+}
+
+// UNOFFICIAL 2026-10-29 RT coverage view (NVR_PointShadowRT.x 3, [Shaders.ShadowsInteriors.RT] DebugView 2): the colour the object and
+// skin shaders write INSTEAD of their lighting (ObjectTemplate.hlsl, SkinTemplate.hlsl), for the first of the draw's lights that has a
+// traced slot: GREEN = its traced value is used (brightness = how lit), BLUE = off the traced frame's screen or behind its camera,
+// RED = the traced frame saw another depth there (brighter = further off), GREY = no light of this draw is traced. Exact per pixel
+// (an earlier version sent the classes through the lighting as encoded shadow values, which other lighting maths then distorted).
+float3 PointShadowRtCoverage(float3 worldPos) {
+    float slot = NVR_PointShadowRTSlot[0].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].y;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].z;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[0].w;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].x;
+    slot = slot >= 0.0f ? slot : NVR_PointShadowRTSlot[1].y;
+    [branch] if (slot < 0.0f) return 0.25f;
+    float traced = PointShadowTraced(slot, worldPos);
+    return traced >= 0.0f ? float3(0.0f, 0.2f + 0.8f * traced, 0.0f) : traced > -1.5f ? float3(0.0f, 0.0f, 1.0f) : float3(0.3f + 0.7f * (-2.0f - traced), 0.0f, 0.0f);
+}
+
+// The compare view (NVR_PointShadowRT.x 2): both answers packed into the factor PointShadowFactor decodes, the traced and the cube
+// map's lit share in 16 steps each (where nothing was traced, the cube map's for both).
+float PointShadowDone(float cubeLit, float rayLit, float fade) {
+    [branch] if (NVR_PointShadowRT.x > 1.5f)
+        return 2.0f + round(saturate(rayLit < 0.0f ? cubeLit : rayLit) * 15.0f) + 16.0f * round(saturate(cubeLit) * 15.0f);
+    // c215.w: people's shadows from the cube maps (the darker of the two where something was traced)
+    return lerp(1.0f, rayLit >= 0.0f ? min(cubeLit, rayLit) : cubeLit, NVR_PointShadowParams.x * abs(fade));
+}
+#define POINT_SHADOW_EARLY_LIT PointShadowDone(1.0f, rayLit, fade)
+#define POINT_SHADOW_RT_PARAM , float rtSlot
+#define POINT_SHADOW_RT_ARG(bit) , bit
+#define POINT_SHADOW_DONE(lit) PointShadowDone(lit, rayLit, fade)
+#else
+#define POINT_SHADOW_EARLY_LIT 1.0f
+#define POINT_SHADOW_RT_PARAM
+#define POINT_SHADOW_RT_ARG(bit)
+#define POINT_SHADOW_DONE(lit) lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade))
+#endif
+
 // 1 lit, 0 fully shadowed (before strength). worldPos: camera-relative (GetShadowWorldPos in the VS). normal: the
 // camera-facing geometric normal where the shader has one (GetShadowGeometricNormal), else 0. att: this light's
 // attenuation here; 0 (out of reach, or no valid world position) skips the lookup. texCUBElod only, so it is legal
 // inside the dynamic branches.
-float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPos, float3 normal, float att) {
+float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPos, float3 normal, float att POINT_SHADOW_RT_PARAM) {
     // First the test on the constant alone (the same for the whole draw, so nearly free): a light without a cube map,
     // every light outdoors and every light while the feature is off end here.
     [branch] if (!(light.w > 0.0f)) return 1.0f;
     float3 toPixel = worldPos - light.xyz;
     float len = length(toPixel);
     [branch] if (!(att > 0.0f) || !(len * light.w < 1.0f)) return 1.0f;   // beyond the cube map: nothing recorded
+#if POINT_SHADOW_RT
+    // RT lamp shadows: the traced result instead of the cube map (x 1), or both for the compare view (x 2). Same reach as the cube
+    // map. Where the traced frame did not see this point, the cube map (and in the compare view both agree there: it shows the traced
+    // area only).
+    float rayLit = -1.0f;
+    [branch] if (NVR_PointShadowRT.x > 0.0f && rtSlot >= 0.0f) {
+        rayLit = PointShadowTraced(rtSlot, worldPos);
+        [branch] if (NVR_PointShadowRT.x < 1.5f && rayLit >= 0.0f && NVR_PointShadowRT.w < 0.5f) return lerp(1.0f, rayLit, NVR_PointShadowParams.x * abs(fade));
+    }
+#endif
 
     // Normal offset: a cube texel's world size grows with the distance, so does the push off the surface.
     float3 p = toPixel + normal * (NVR_PointShadowParams.z * len);
@@ -317,7 +413,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             float4 isBlocker = (float4)(search <= threshold) * (float4)(search > 0.0f);
             float centreBlocker = (float)(centre <= threshold) * (float)(centre > 0.0f);
             float blockers = dot(isBlocker, 1.0f) + centreBlocker;
-            [branch] if (!(blockers > 0.0f)) return 1.0f;
+            [branch] if (!(blockers > 0.0f)) return POINT_SHADOW_EARLY_LIT;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
             float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
             float size = fade < 0.0f ? NVR_PointShadowDebug.z : NVR_PointShadowSoft.z;
@@ -435,13 +531,25 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
 #endif
     }
-    return lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade));
+    return POINT_SHADOW_DONE(lit);
 }
 
 // What light k's colour is multiplied by: its shadow, or in the debug views (NVR_PointShadowDebug.x, the same for the
 // whole draw, so one cheap branch) 1: blocked light drawn in the lamp's colour instead of removed, 2: the lamp's lit
 // area tinted in its colour. Lamps without a shadow have white, so the views leave them as they are.
 float3 PointShadowFactor(float shadow, float4 tint) {
+#if POINT_SHADOW_RT
+    // RT compare view (PointShadowDone): white where both are lit, black where both are blocked, RED where only the traced result
+    // has a blocker, GREEN where only the cube map does (light the rays let through: a leak, or a cube-map artifact the rays fix).
+    [branch] if (shadow > 1.5f) {
+        float e = shadow - 2.0f;
+        float cubeSteps = floor(e / 16.0f);
+        float ray = (e - 16.0f * cubeSteps) / 15.0f;
+        float cubeLit = cubeSteps / 15.0f;
+        float both = min(ray, cubeLit);
+        return float3(both + max(cubeLit - ray, 0.0f), both + max(ray - cubeLit, 0.0f), both);
+    }
+#endif
     float3 factor = shadow;
     [branch] if (NVR_PointShadowDebug.x > 0.0f) {
         factor = NVR_PointShadowDebug.x < 1.5f ? shadow + (1.0f - shadow) * tint.rgb
@@ -460,6 +568,9 @@ float3 PointShadowFactor(float shadow, float4 tint) {
 // 40% when the lamp is not one of the draw's lights. Dark blue: beyond the cube's reach. Orange: no lamp data reached the
 // draw. Grey: the vertex shader gave no position.
 float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
+#if POINT_SHADOW_RT
+    return 0.5f;    // (RT builds: the focus lamp's cube map has no sampler, see NVR_RtLampVis)
+#else
     float4 light = NVR_PointShadowFocus;
     [branch] if (!(valid > 0.0f)) return 0.5f;
     [branch] if (!(light.w > 0.0f)) return float3(1.0f, 0.45f, 0.0f);
@@ -475,15 +586,27 @@ float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
         color = float3(blocked, saturate(stored * 2.5f), saturate(d * 2.5f)) * checker;
     }
     return NVR_PointShadowDebug.z < 0.0f ? color * 0.4f : color;
+#endif
 }
 
 // One function per light index of the draw: ps_3_0 cannot index samplers at run time.
-float PointShadow0(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube0, NVR_PointShadowLight[0], NVR_PointShadowTint[0].w, worldPos, normal, att); }
-float PointShadow1(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube1, NVR_PointShadowLight[1], NVR_PointShadowTint[1].w, worldPos, normal, att); }
-float PointShadow2(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube2, NVR_PointShadowLight[2], NVR_PointShadowTint[2].w, worldPos, normal, att); }
-float PointShadow3(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube3, NVR_PointShadowLight[3], NVR_PointShadowTint[3].w, worldPos, normal, att); }
-float PointShadow4(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube4, NVR_PointShadowLight[4], NVR_PointShadowTint[4].w, worldPos, normal, att); }
-float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube5, NVR_PointShadowLight[5], NVR_PointShadowTint[5].w, worldPos, normal, att); }
+float PointShadow0(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube0, NVR_PointShadowLight[0], NVR_PointShadowTint[0].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].x)); }
+float PointShadow1(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube1, NVR_PointShadowLight[1], NVR_PointShadowTint[1].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].y)); }
+float PointShadow2(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube2, NVR_PointShadowLight[2], NVR_PointShadowTint[2].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].z)); }
+float PointShadow3(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube3, NVR_PointShadowLight[3], NVR_PointShadowTint[3].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[0].w)); }
+float PointShadow4(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube4, NVR_PointShadowLight[4], NVR_PointShadowTint[4].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[1].x)); }
+#if POINT_SHADOW_RT
+// RT builds: the sixth light has no cube map (NVR_RtLampVis took s15): the traced result where there is one, else lit.
+float PointShadow5(float3 worldPos, float3 normal, float att) {
+    float4 light = NVR_PointShadowLight[5];
+    [branch] if (!(light.w > 0.0f) || !(att > 0.0f) || !(NVR_PointShadowRT.x > 0.0f) || NVR_PointShadowRTSlot[1].y < 0.0f) return 1.0f;
+    [branch] if (!(length(worldPos - light.xyz) * light.w < 1.0f)) return 1.0f;
+    float traced = PointShadowTraced(NVR_PointShadowRTSlot[1].y, worldPos);
+    return traced < 0.0f ? 1.0f : lerp(1.0f, traced, NVR_PointShadowParams.x * abs(NVR_PointShadowTint[5].w));
+}
+#else
+float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube5, NVR_PointShadowLight[5], NVR_PointShadowTint[5].w, worldPos, normal, att POINT_SHADOW_RT_ARG(NVR_PointShadowRTSlot[1].y)); }
+#endif
 
 // The object shader looks every light's shadow up once, inside one branch on NVR_PointShadowParams.x (0 outdoors and
 // whenever the feature is idle, so a draw without shadows pays for that one skipped branch), into float3 ptShadow0..5
