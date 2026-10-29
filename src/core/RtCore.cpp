@@ -664,6 +664,8 @@ namespace {
 }
 
 void RtCore::AddUser(const User& user) { TheCore.users.push_back(user); }
+D3DXVECTOR3 RtCore::Eye() { return D3DXVECTOR3(0.0f, 0.0f, 0.0f); }
+
 void RtCore::SetMaskHook(UInt32 (*Hook)(NiGeometry*, bool)) { MaskHook = Hook; }
 
 int RtCore::AddImage(const char* Name, UINT Width, UINT Height, NVR_EXT_SHARED_FORMAT Format) {

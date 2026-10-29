@@ -59,6 +59,10 @@ public:
 	// outputs are recorded (ready for any pass recorded after this call).
 	static bool			Exchange(IDirect3DDevice9* Device, const User& user);
 #define NVR_RTCORE_EXCHANGE 1
+	// The eye in scene space. The scene is world minus TheRenderManager->CameraPosition, the NiCamera's world translation (the eye), so
+	// this is (0, 0, 0). Use it for every ray origin from the camera: Pointers::Generic::CameraLocation is NOT the eye (it read ~0
+	// in the game while the eye was 71000 units away: every ray started outside the scene, FORK-RT-SUN.md rtsun-4).
+	static D3DXVECTOR3	Eye();
 	static bool			Running();							// the helper is ready (users trace from the frame after it got ready)
 	static const char*	StatusText();
 	static const NvrRtShared* Helper();						// the helper's counters (null when not running)

@@ -14,7 +14,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 forward;       // xyz camera forward (scene space), w farZ (the depth buffer holds view z / farZ)
 	vec4 right;         // xyz camera right / projection[0][0]
 	vec4 up;            // xyz camera up / projection[1][1]
-	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition, ~0), w unused
+	vec4 origin;        // xyz the eye in scene space (RtCore::Eye(): 0), w unused
 	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up
 	vec4 bias;          // x normal offset (units), y normal offset per unit of view distance, z start offset along the ray, w ray length
 	vec4 range;         // x RT range (view distance), y fade length, z cull mask, w debug (1: hit distance / 4096 instead of visibility,

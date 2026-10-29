@@ -97,10 +97,8 @@ namespace {
 		c.forward[0] = view._13; c.forward[1] = view._23; c.forward[2] = view._33; c.forward[3] = cameraData->y;
 		c.right[0] = view._11 / proj._11; c.right[1] = view._21 / proj._11; c.right[2] = view._31 / proj._11;
 		c.up[0] = view._12 / proj._22; c.up[1] = view._22 / proj._22; c.up[2] = view._32 / proj._22;
-		const NiPoint3* location = Pointers::Generic::CameraLocation;
-		c.origin[0] = location->x - TheRenderManager->CameraPosition.x;
-		c.origin[1] = location->y - TheRenderManager->CameraPosition.y;
-		c.origin[2] = location->z - TheRenderManager->CameraPosition.z;
+		const D3DXVECTOR3 eye = RtCore::Eye();	// the scene is relative to the eye (not Pointers::Generic::CameraLocation)
+		c.origin[0] = eye.x; c.origin[1] = eye.y; c.origin[2] = eye.z;
 		const D3DXVECTOR4& sun = shadows->Constants.SmoothedSunDir;	// toward the sun, as the cascades use it
 		c.sun[0] = sun.x; c.sun[1] = sun.y; c.sun[2] = sun.z;
 		c.sun[3] = shadows->Constants.ShadowFade.x < 1.0f ? 1.0f : 0.0f;
