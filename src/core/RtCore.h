@@ -76,6 +76,6 @@ public:
 	static bool			AlphaTested();
 	static int			AlphaAtlasImage();					// the alpha atlas' image index (-1: none)
 	// UNOFFICIAL 2026-10-29 (rt-lamp-shadows): true while the scene holds the posed skinned actors ([Main.Main.RayTracing] Actors +
-	// fork patch 0030; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
+	// fork patch 0033; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
 	static bool			Actors();
 };
