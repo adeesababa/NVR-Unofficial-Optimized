@@ -1216,6 +1216,9 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 			}
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
+			// UNOFFICIAL 2026-10-29 ObjectMotion: Accumulate's TESR_ObjectMotionBuffer shares s8 with the grid passes' NVR_GridWave, which may
+			// still be bound there from RenderGrid: its own texture, explicitly (null when not made: TESR_ObjectMotionData.x is 0 then)
+			if (p == 4) Device->SetTexture(8, ObjectMotion::Data.x > 0.0f ? (IDirect3DBaseTexture9*)ObjectMotion::Texture : nullptr);
 			else if (applyLike) Device->SetTexture(11, occlusionHistory[writeIndex]);
 			if (p == 7 && skyTexture) {	// UNOFFICIAL 2026-10-20 (skyamb): the sky target for Apply (NVR_ALSkyVis)
 				Device->SetTexture(10, skyTexture);

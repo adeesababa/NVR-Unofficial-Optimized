@@ -5,6 +5,7 @@
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz)
 #include "../core/ShaderCounters.h"	// UNOFFICIAL 2026-10-26 debugging tools (the Hi-Z trace's counters)
+#include "../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion (Temporal's motion input)
 #include "../core/PixelInspector.h"
 
 void ReflectionsEffect::UpdateSettings() {
@@ -285,6 +286,9 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		pass(temporal ? Textures.TraceSurface : Textures.TempSurface, 1);
 	}
 	if (temporal) {
+		// UNOFFICIAL 2026-10-29 ObjectMotion: its buffer on stage 11 for Temporal only (the ortho map's stage; the trace above has read it,
+		// and the composite's SetCT binds the ortho map again). TemporalPS reads it while TESR_ObjectMotionData.x is 1.
+		if (ObjectMotion::Data.x > 0.0f && ObjectMotion::Texture) SetPassTexture(11, ObjectMotion::Texture);
 		pass(Textures.TempSurface, 3);
 		Device->StretchRect(Textures.TempSurface, NULL, Textures.HistorySurface, NULL, D3DTEXF_NONE);
 	}
@@ -516,7 +520,9 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	switch (techniqueIndex) {
 		case 1: textures[4] = textures[6] = depth; break;	// Trace -> Trace (Temporal on) or Temp
 		case 2: textures[4] = depth; break;					// Blur X -> Trace
-		case 3: textures[6] = depth; break;					// Temporal -> Temp
+		case 3: textures[6] = depth;						// Temporal -> Temp
+			if (ObjectMotion::Ready()) textures[11] = ObjectMotion::Texture;	// UNOFFICIAL 2026-10-29 ObjectMotion (push.pass 2 below)
+			break;
 		case 4: textures[5] = depth; break;					// Blur Y -> Buffer
 		case 5: textures[9] = textures[8]; break;			// Capture -> a face of the new capture cube
 		case 6: textures[10] = textures[9]; break;			// Filter -> a face of the reflection cube
@@ -574,6 +580,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	ReflPush push = {};
 	push.cube = Constants.Cube;
 	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound
+	if (techniqueIndex == 3 && ObjectMotion::Ready()) push.pass = 2;	// UNOFFICIAL 2026-10-29 ObjectMotion: Temporal reads its buffer on t_ortho
 
 	if (techniqueIndex == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));

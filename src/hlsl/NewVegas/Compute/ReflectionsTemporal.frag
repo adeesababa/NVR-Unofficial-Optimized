@@ -19,6 +19,8 @@ void main() {
     }
 
     vec3 world = toWorld(uv) * depth;
+    // UNOFFICIAL 2026-10-29 ObjectMotion (the HLSL's): pass 2 = t_ortho holds TESR_ObjectMotionBuffer (Reflections.cpp ExtRender, technique 3)
+    if (pc.pass == 2u) world -= textureLod(sampler2D(t_ortho, POINT_S), uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy), 0.0).xyz;
     vec4 clip = cb.reproject * vec4(world, 1.0);
     float w = max(clip.w, 0.001);
     vec2 last = vec2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
