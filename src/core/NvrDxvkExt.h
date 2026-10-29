@@ -1041,9 +1041,17 @@ struct NVR_EXT_RT_GEOMETRY_DESC {
   IDirect3DIndexBuffer9*      pIndexBuffer;     // null: non-indexed ranges; 16 or 32 bit from the buffer's format
   UINT                        RangeCount;       // 1..NVR_EXT_RT_MAX_RANGES
   const NVR_EXT_RT_RANGE*     pRanges;
-  UINT                        Flags;            // reserved, 0 (1.8: every geometry is opaque, no any-hit; alpha testing is later work)
+  UINT                        Flags;            // 0, or NVR_EXT_RT_TEXCOORD_FLAGS(...): also stage the texcoords (1.8-rt-uv, below)
   const char*                 pDebugName;
 };
+
+/** UNOFFICIAL 2026-10-29 (1.8-rt-uv, alpha-tested casters): NVR_EXT_RT_GEOMETRY_DESC::Flags asks StageGeometry to write each vertex's
+ *  texture coordinate as a float2 array right after the triangle list (2 x VertexCount more texels: MeasureGeometry's Texels says so;
+ *  a fork without this ignores Flags and reports 3 x (vertices + triangles)). The texcoord is in the position's stream at
+ *  PositionOffset + Delta bytes (Delta = texcoord element offset - position element offset, -512..511), float2 or half2. */
+#define NVR_EXT_RT_GEOMETRY_TEXCOORD       0x1u
+#define NVR_EXT_RT_GEOMETRY_TEXCOORD_HALF2  0x2u
+#define NVR_EXT_RT_TEXCOORD_FLAGS(Delta, Half2)   (NVR_EXT_RT_GEOMETRY_TEXCOORD | ((Half2) ? NVR_EXT_RT_GEOMETRY_TEXCOORD_HALF2 : 0u) | ((((UINT)(INT)(Delta)) & 0x3FFu) << 8))
 
 /** Instance flags (VkGeometryInstanceFlagBitsKHR's values). */
 enum NVR_EXT_RT_INSTANCE_FLAGS {
