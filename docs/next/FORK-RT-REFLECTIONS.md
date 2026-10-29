@@ -201,6 +201,24 @@ for the whole list.
   (indoors the sun ray is skipped). The rough rule (rays scale with compute units) gives about 0.5-1 ms on a mid-range RT card at
   1080p. That is an estimate, not measured.
 
+
+### 2026-10-29 05:08 iGPU, scene lucky22 (Lucky 38 casino floor, MaterialAware tiles + metal), slot A, all 12 shots
+
+The run is `bench/autotest/20261029-050819-slotA`, with the shots in `H:\_NVR-autotest-shots\20261029-050819-slotA`. Same build and settings.
+- **Alignment** (shot 02): green over the floor, walls, rails, tables and ceiling. Red ("nothing hit") on a few columns at the
+  left and the potted palm at the right: objects the core's scene leaves out. The palm has alpha-tested leaves. The columns are
+  probably references the gather skips (it honours `NotCastShadows`, right for sun shadows and wrong for reflections). Requested
+  from rt-sun-core: a gather flag so reflections get every opaque static, cast-shadows or not.
+- **The reflection alone** (DebugView 1, shots 09 vs 10): RT adds reflection over the floor, with 15.5 % of pixels > 2/255,
+  mean +0.63 (brighter: rays the march lost now find the room). **Final picture** (shots 04 vs 05): 0.24 % of pixels > 2/255 against a
+  noise floor of 0.08 %, mean -0.02 (slightly darker). Where a ray now meets the room, the bright surroundings cube or sky
+  fallback no longer leaks in. That is the "no leaks" effect, and the floor reads a little less washed out.
+- **Cost:** `Reflections trace (half)` 4.5 ms SSR only -> 13.65 ms RT (+9 ms); exchange wait 7.5 ms; helper passes 6.41 ms, scene
+  rebuild 0.40 ms (2677 instances, 279k triangles), response 1.65 ms.
+
+**Summary of the two interiors:** RT fills SSR's gaps and blocks the fallback's leaks, with no wrong colours seen. It costs +6-9 ms at
+720p on the 2-CU iGPU; the helper's ray passes are most of it.
+
 ### 2026-10-28 12:47 SplitTest, GTX 1070, scene luxe (Ultra-Luxe floor), fork d3d9 nvr-dxvk-zresolve, slot A
 
 Run `bench/autotest/20261028-124747-slotA`, shots `H:\_NVR-autotest-shots\20261028-124747-slotA`; list `rtrefl-split`, toml
