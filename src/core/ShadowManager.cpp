@@ -2656,7 +2656,6 @@ void ShadowManager::RenderShadowMaps() {
 				QueryPerformanceCounter(&counter);
 				const double nowSeconds = (double)counter.QuadPart / (double)frequency.QuadPart;
 				int budget = ShadowPool::Budget();
-				int peopleLeft = ShadowPool::PeopleWanted(), peopleUsed = 0;	// PoolPeopleLamps
 				static GpuTimer poolTimer("  Cube pool static layer (per frame)", 480);
 				GpuProfileScope gpuPool(poolTimer, Device);
 				for (ShadowSceneLight* light : ShadowPool::Candidates) {
@@ -2687,43 +2686,16 @@ void ShadowManager::RenderShadowMaps() {
 					}
 					if (cube.since <= 0.0) cube.since = nowSeconds;
 					cube.used = ShadowPool::Frame;
-					// PoolPeopleLamps: people in this lamp's reach drawn onto a copy of its still cube map (RedrawActorsOnly's MovingOnto, through
-					// the spare slot's live and still entries), published instead of the still one.
-					IDirect3DCubeTexture9* published = cube.texture;
-					if (peopleLeft > 0 && light->kGeometryList.start && Shadows->EnsureCubeMap(spare)) {
-						UInt64 casterHash = 0; bool stillOnly = true;
-						PointShadowCasterState(light, casterHash, stillOnly);
-						ShadowPool::Cube* live = stillOnly ? nullptr : ShadowPool::PeopleCube(peopleUsed, Shadows->CubeMapSizeCreated);
-						if (live) {
-							peopleLeft--;
-							IDirect3DCubeTexture9*& stillTex = Shadows->Textures.ShadowCubeMapStaticTexture[spare];
-							IDirect3DSurface9** stillFaces = Shadows->Textures.ShadowCubeMapStaticSurface[spare];
-							IDirect3DCubeTexture9*& liveTex = Shadows->Textures.ShadowCubeMapTexture[spare];
-							IDirect3DSurface9** liveFaces = Shadows->Textures.ShadowCubeMapSurface[spare];
-							auto swapIn = [&]() {
-								std::swap(stillTex, cube.texture); std::swap(liveTex, live->texture);
-								for (int f = 0; f < 6; f++) { std::swap(stillFaces[f], cube.faces[f]); std::swap(liveFaces[f], live->faces[f]); }
-							};
-							swapIn();
-							ForgetLiveFaces(spare);	// (its face records are for whatever went through the spare slot last)
-							ShadowSceneLight* one[ShadowCubeMapsMax] = {};
-							one[spare] = light;
-							const bool drawn = RenderShadowCubeMap(one, spare, CubeLayer::MovingOnto);
-							ForgetLiveFaces(spare);
-							swapIn();	// (back)
-							if (drawn) { published = live->texture; peopleUsed++; if (GpuTimer::Enabled) ShadowPool::StatPeople++; }
-						}
-					}
-					poolEntries[poolCount++] = { light, D3DXVECTOR3(cube.x, cube.y, cube.z), cube.radius, published, ShadowCubeMapsMax + index, cube.since };
+					poolEntries[poolCount++] = { light, D3DXVECTOR3(cube.x, cube.y, cube.z), cube.radius, cube.texture, ShadowCubeMapsMax + index, cube.since };
 				}
 				if (GpuTimer::Enabled) {
 					ShadowPool::StatPublished += poolCount;
 					if (++ShadowPool::StatFrames >= 240) {
 						const float f = 1.0f / ShadowPool::StatFrames;
-						Logger::Log("SHADOW POOL per frame: %.1f lamps past the live slots, %.1f with their static cube map, %.2f drawn, %.2f waiting for a draw, %.2f with people drawn on; %u cube maps (%u x %u) + %u for people",
-							(float)ShadowPool::Candidates.size(), ShadowPool::StatPublished * f, ShadowPool::StatDrawn * f, ShadowPool::StatWaiting * f, ShadowPool::StatPeople * f,
-							(unsigned)ShadowPool::Cubes.size(), ShadowPool::MadeSize, ShadowPool::MadeSize, (unsigned)ShadowPool::People.size());
-						ShadowPool::StatFrames = ShadowPool::StatPublished = ShadowPool::StatDrawn = ShadowPool::StatWaiting = ShadowPool::StatPeople = 0;
+						Logger::Log("SHADOW POOL per frame: %.1f lamps past the live slots, %.1f with their static cube map, %.2f drawn, %.2f waiting for a draw; %u cube maps (%u x %u)",
+							(float)ShadowPool::Candidates.size(), ShadowPool::StatPublished * f, ShadowPool::StatDrawn * f, ShadowPool::StatWaiting * f,
+							(unsigned)ShadowPool::Cubes.size(), ShadowPool::MadeSize, ShadowPool::MadeSize);
+						ShadowPool::StatFrames = ShadowPool::StatPublished = ShadowPool::StatDrawn = ShadowPool::StatWaiting = 0;
 					}
 				}
 			}
