@@ -477,6 +477,26 @@ namespace CapturedNormals {
 		if (CheckThisFrame && Drawn) {	// the self-check's second half: templates drew, so something must be written
 			const int n = CountWritten(d);
 			if (n >= 0) CheckResult(n > 0, "after the main list", n);
+			// UNOFFICIAL 2026-10-29 MaterialBuffer: what it holds on these frames too (64 x 64 point copy): written texels by class, and the
+			// thickness / roughness ranges seen (a log line only; nothing is switched off by it)
+			D3DLOCKED_RECT r = {};
+			if (MaterialDrawn && MaterialSurface && CheckTarget && SUCCEEDED(d->StretchRect(MaterialSurface, NULL, CheckTarget, NULL, D3DTEXF_POINT)) &&
+				SUCCEEDED(d->GetRenderTargetData(CheckTarget, CheckCopy)) && SUCCEEDED(CheckCopy->LockRect(&r, NULL, D3DLOCK_READONLY))) {
+				int byClass[7] = {}; float thickMax = 0.0f, roughMin = 2.0f, roughMax = -2.0f;
+				for (int y = 0; y < 64; y++) {
+					const D3DXFLOAT16* row = (const D3DXFLOAT16*)((const char*)r.pBits + y * r.Pitch);
+					for (int x = 0; x < 64; x++) {
+						float v[4]; D3DXFloat16To32Array(v, row + x * 4, 4);
+						if (v[3] < 0.5f) continue;
+						byClass[(std::min)((std::max)((int)(v[0] + 0.5f), 0), 6)]++;
+						thickMax = (std::max)(thickMax, v[1]);
+						if (v[2] >= 0.0f) { roughMin = (std::min)(roughMin, v[2]); roughMax = (std::max)(roughMax, v[2]); }
+					}
+				}
+				CheckCopy->UnlockRect();
+				Logger::Log("MaterialBuffer: self-check at captured frame %u: texels by class 0:%d object:%d gear:%d cloth:%d land:%d plant:%d other:%d of 4096; largest thickness %.0f; roughness %.2f-%.2f",
+					LiveFrames, byClass[0], byClass[1], byClass[2], byClass[3], byClass[4], byClass[5], byClass[6], thickMax, roughMin, roughMax);
+			}
 		}
 		CheckThisFrame = false;
 		Data.x = Drawn && !Failed ? 1.0f : 0.0f;
