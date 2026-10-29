@@ -85,3 +85,14 @@ Copy from the combo tree (H:\_NVR-efflamps):
 - If a shader change seems not to take, clear `Shaders\NewVegasReloaded\Shaders\Cache\`.
 Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` (live), `[Shaders.ShadowsInteriors.Forward] PoolLamps = 64`
 (live; Vault 21 / Lucky 38), `[Main.Main.Misc] LightCommonLamps = true` (restart; only with ManyLampsOnePass on).
+
+## Main session's step 1 (2026-10-29 evening): D for Reflections + clouds, the denoiser API
+- Reflections' temporal pass (Effects/Reflections.fx.hlsl TemporalPS, Compute/ReflectionsTemporal.frag) subtracts the surface's own world
+  move before reprojecting: D3D9 on stage 11 for that pass only (the ortho map's stage; the pass never reads it), Vulkan as texture 11
+  with push.pass 2. Run 20261029-190324-slotB (Ultra-Luxe floor): Reflections 0.31 ms, no errors, on = off to noise (0.04%).
+- AmbientLight's D3D9 Accumulate now binds the motion buffer on s8 itself (the grid passes' NVR_GridWave shares s8 and could still be
+  bound: a bug of the first version, D3D9 path only).
+- VolumetricClouds: nothing to do (its history reprojects a sky direction; moving things are never in the cloud buffer).
+- Compute/ObjectMotion.glsl: the contract + ObjectMotionBack() for new readers (sent to rt-sun-core for its shared denoiser).
+- Cost fix (561532b1): moves under 0.05 units count as still. Ultra-Luxe crowd 151 -> 13-19 moved geometries a frame, GPU 0.40 -> 0.027 ms
+  (run 20261029-190742-slotA).
