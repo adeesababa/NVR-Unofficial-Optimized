@@ -381,7 +381,7 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 // NVR_RTAORaw (AO visibility, sky visibility, covered, DebugView 3's value). RtRaw: that texture if it was traced this frame, else null
 // (the callers keep NVR's own passes).
 namespace {
-	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtShader = -1;
+	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtShader = -1;
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -395,6 +395,7 @@ namespace {
 		RtImageIn = RtCore::AddImage("NVR RT ao input", w, h, NVR_EXT_SHARED_RG32F);
 		RtImageOut = RtCore::AddImage("NVR RT ao", w, h, NVR_EXT_SHARED_RGBA16F);
 		RtImageGI = RtCore::AddImage("NVR RT gi", w, h, NVR_EXT_SHARED_RGBA16F);	// (rt-ao-gi) the bounce light; written every trace
+		RtImageLight = RtCore::AddImage("NVR RT gi frame light", w, h, NVR_EXT_SHARED_RGBA16F);	// (GI v2) the lit frame, for on-screen hits
 		// (2026-10-29) RtAOTrace.comp binds the core's alpha atlas (binding 5) for the alpha-tested casters; with AlphaTested off there is no
 		// atlas and no such instance (the shader never reads it): this small image stands in so the binding is always an R16F image.
 		if (RtCore::AlphaAtlasImage() < 0) RtImageAlphaStandIn = RtCore::AddImage("NVR RT ao alpha stand-in", 256, 256, NVR_EXT_SHARED_R16F);
@@ -452,7 +453,8 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const UINT width = RtReduced(TheRenderManager->width), height = RtReduced(TheRenderManager->height);
 	if (!rtInputTexture || rtWidth != width || rtHeight != height) {
 		DxvkCompute::Drop(rtInputSurface); DxvkCompute::Drop(rtInputTexture); DxvkCompute::Drop(rtRawSurface); DxvkCompute::Drop(rtRawTexture);
-		DxvkCompute::Drop(rtGISurface); DxvkCompute::Drop(rtGITexture);
+		DxvkCompute::Drop(rtGISurface); DxvkCompute::Drop(rtGITexture); DxvkCompute::Drop(rtLightSurface); DxvkCompute::Drop(rtLightTexture);
+		TheTextureManager->InitTexture("NVR_RTGIFrameLight", &rtLightTexture, &rtLightSurface, width, height, D3DFMT_A16B16G16R16F);	// (GI v2)
 		TheTextureManager->InitTexture("NVR_RTGIRaw", &rtGITexture, &rtGISurface, width, height, D3DFMT_A16B16G16R16F);	// (rt-ao-gi)
 		TheTextureManager->InitTexture("NVR_RTAOInput", &rtInputTexture, &rtInputSurface, width, height, D3DFMT_G32R32F);
 		TheTextureManager->InitTexture("NVR_RTAORaw", &rtRawTexture, &rtRawSurface, width, height, D3DFMT_A16B16G16R16F);
@@ -462,7 +464,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	MakePipelineRT(extInputRT, "RtAOInput", 2, 1);
-	if (!rtInputTexture || !rtRawTexture || !rtGITexture || !depth || !normals || !extInputRT.Pipeline) return;
+	if (!rtInputTexture || !rtRawTexture || !rtGITexture || !rtLightTexture || !depth || !normals || !extInputRT.Pipeline) return;
 	const D3DXVECTOR4 layout(1.0f, 1.0f, 1.0f / width, 1.0f / height);
 	static GpuTimer inputTimer("  AO RT input (half)");
 	{
@@ -513,12 +515,21 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
 		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
+		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, 0.0f, 0.0f);
+		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
+		// trace grid: on-screen bounce hits take their light from it (RtAOTrace.comp ScreenLight).
+		IDirect3DSurface9* frame = nullptr;
+		if (SUCCEEDED(Device->GetRenderTarget(0, &frame)) && frame) {
+			Device->StretchRect(frame, nullptr, rtLightSurface, nullptr, D3DTEXF_LINEAR);
+			frame->Release();
+		}
 	}
 	const int alphaAtlas = RtCore::AlphaAtlasImage() >= 0 ? RtCore::AlphaAtlasImage() : RtImageAlphaStandIn;
 	if (alphaAtlas < 0) return;
-	const int images[4] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas };
-	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||
-		!RtCore::AddPass(RtShader, images, 4, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+	if (RtImageLight < 0) return;
+	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
+	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
+		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;

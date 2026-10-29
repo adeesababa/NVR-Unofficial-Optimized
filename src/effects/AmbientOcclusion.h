@@ -98,6 +98,8 @@ private:
 	IDirect3DSurface9*	rtRawSurface = nullptr;
 	IDirect3DTexture9*	rtGITexture = nullptr;		// (rt-ao-gi) NVR_RTGIRaw (half, A16B16G16R16F): the bounce light
 	IDirect3DSurface9*	rtGISurface = nullptr;
+	IDirect3DTexture9*	rtLightTexture = nullptr;	// (GI v2) NVR_RTGIFrameLight (half, A16B16G16R16F): the lit frame for on-screen bounce hits
+	IDirect3DSurface9*	rtLightSurface = nullptr;
 	UINT				rtWidth = 0, rtHeight = 0;
 	IDirect3DTexture9*	rtHistoryTexture[2] = {};
 	IDirect3DSurface9*	rtHistorySurface[2] = {};

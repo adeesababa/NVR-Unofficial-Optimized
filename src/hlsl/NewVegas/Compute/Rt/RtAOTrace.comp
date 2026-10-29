@@ -35,11 +35,13 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 ambient;       // rgb the ambient (sky) light from above
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
+    vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), zw unused
 } cb;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
 layout(set = 0, binding = 5, r16f) uniform readonly image2D alphaAtlas;   // the core's alpha atlas (RtCore::AlphaAtlasImage), or a stand-in
+layout(set = 0, binding = 6, rgba16f) uniform readonly image2D frameLight; // (GI v2) the game's lit frame at the trace grid's size (as rendered: gamma)
 
 // The core's protocol v2 hit data (FORK-RT-CORE.md): per-instance records and the geometry (positions float3 + triangle lists, as words).
 struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
@@ -110,6 +112,22 @@ bool Visible(vec3 from, vec3 dir, float tMax) {
     return rayQueryGetIntersectionTypeEXT(s, true) != gl_RayQueryCommittedIntersectionTriangleEXT;
 }
 
+// (GI v2, 2026-10-29) The light a hit really sends, where the screen saw it: the hit back into the view (the inverse of viewToWorld's
+// rotation), and if it lands on screen in front of the camera with the input's view distance there within the tolerance (the same
+// surface, not something in front of it), the game's lit frame there, linear. Exactly what ComputeGI's GI pass takes as a tap's light,
+// so the units match it (the analytic light, v1, came out ~29x ComputeGI's in Lucky 38). Returns rgb, a 1 = found.
+vec4 ScreenLight(vec3 hit) {
+    vec3 v = transpose(mat3(cb.viewToWorld)) * hit;
+    if (v.z < 1.0) return vec4(0.0);
+    vec2 uv = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) return vec4(0.0);
+    ivec2 texel = ivec2(uv * cb.projection.zw);
+    float seen = imageLoad(inputImage, texel).x;
+    if (!(seen > 0.0) || abs(seen - v.z) > max(cb.gi2.y * v.z, 8.0)) return vec4(0.0);
+    vec3 c = max(imageLoad(frameLight, texel).rgb, vec3(0.0));
+    return vec4(pow(c, vec3(2.2)), 1.0);
+}
+
 vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     rayQueryEXT q;
     rayQueryInitializeEXT(q, scene, 0u, RT_CULL, start + cb.origin.xyz, tMin, d, cb.gi.x);
@@ -129,6 +147,8 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     if (dot(n, d) > 0.0) n = -n;
     vec3 albedo = (r.flags & 0x10u) != 0u ? clamp(r.albedo.rgb, 0.0, 1.0) : vec3(0.5);
     vec3 hit = start + d * t;
+    vec4 seen = ScreenLight(hit);
+    if (seen.a > 0.5) return vec4(min(seen.rgb, vec3(4.0)), t / cb.gi.x);
     vec3 lift = hit + n * (1.0 + 0.002 * t);
     vec3 e = cb.ambient.rgb * (cb.gi.w * (0.5 + 0.5 * n.z));   // GIAmbient (default 0: the game's ambient is already the indirect light)
     float sunCos = dot(n, cb.sunDir.xyz);
@@ -166,7 +186,7 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
             if (Visible(lift, l / dist, max(dist - 16.0, 0.0))) e += lampLight[chosen] * (total / weights[chosen]);
         }
     }
-    return vec4(min(albedo * e, vec3(4.0)), t / cb.gi.x);
+    return vec4(min(albedo * e * cb.gi2.x, vec3(4.0)), t / cb.gi.x);
 }
 
 void main() {

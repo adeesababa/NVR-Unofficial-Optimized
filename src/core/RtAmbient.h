@@ -33,6 +33,7 @@ namespace RtAmbient {
 		bool	GI = false;
 		float	GIDistance = 1500.0f;	// [100-8000] GI ray length, world units
 		float	GIStrength = 1.0f;		// [0-4] the bounce light added (x the surface colour), as ComputeGIStrength
+		float	GIOffscreen = 0.1f;		// [0-1] (GI v2) the analytic light's scale for bounce hits the screen did not see
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
 	};
 	inline Settings Current;
@@ -50,6 +51,7 @@ namespace RtAmbient {
 		Current.GIDistance = std::clamp(TheSettingManager->GetSettingF(s, "GIDistance"), 100.0f, 8000.0f);
 		Current.GIStrength = std::clamp(TheSettingManager->GetSettingF(s, "GIStrength"), 0.0f, 4.0f);
 		Current.GIAmbient = std::clamp(TheSettingManager->GetSettingF(s, "GIAmbient"), 0.0f, 1.0f);
+		Current.GIOffscreen = std::clamp(TheSettingManager->GetSettingF(s, "GIOffscreen"), 0.0f, 1.0f);
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -68,6 +70,7 @@ namespace RtAmbient {
 		D3DXVECTOR4	ambient;		// rgb the ambient (sky) light, the upper hemisphere's
 		D3DXVECTOR4	lampPos[GILampsMax];	// xyz scene space, w reach
 		D3DXVECTOR4	lampColor[GILampsMax];	// rgb x dimmer
+		D3DXVECTOR4	gi2;			// (GI v2) x GIOffscreen, y the on-screen depth tolerance (share)
 	};
 	static_assert(sizeof(TraceConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
