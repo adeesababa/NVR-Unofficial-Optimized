@@ -148,6 +148,7 @@ namespace {
 		ID3D9NvrExtRt*			rt = nullptr;
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
+		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
 		std::vector<std::string> imageNames;
@@ -705,7 +706,9 @@ namespace {
 			s.WeightCount = (std::min)(e.weightCount, (UInt32)part.BonesPerVertex);
 			s.BonesPerVertex = (std::min)((UInt32)part.BonesPerVertex, (UInt32)4);
 			s.IndicesDelta = (INT)e.indexOffset - (INT)e.offset;
-			s.IndicesFormat = (NVR_EXT_RT_SKIN_INDICES)e.indexFormat;
+			// The game's skin shaders read the indices as blendIndices.zyxw * 765.01 (EnvTemplate.hlsl): a D3DCOLOR's swizzle undone, so
+			// bone k is byte k in memory whatever the declared type (rtsun-14: un-swizzling it again posed the multi-bone torso wrong)
+			s.IndicesFormat = NVR_EXT_RT_SKIN_INDICES_UBYTE4;
 			s.PaletteCount = part.Bones;
 			s.pPalette = palette.data();
 
@@ -915,6 +918,10 @@ namespace {
 			const bool actor = type == TESForm::FormType::kFormType_NPC || type == TESForm::FormType::kFormType_Creature ||
 				type == TESForm::FormType::kFormType_LeveledCreature;
 			if (actor && !(actorsOn && rtSkin)) continue;	// actors: [Main.Main.RayTracing] Actors + fork patch 0033
+			if (actor) {	// actors only near the camera ([Main.Main.RayTracing] ActorRadius): each is rebuilt every frame
+				const float dx = ref->pos.x - TheRenderManager->CameraPosition.x, dy = ref->pos.y - TheRenderManager->CameraPosition.y;
+				if (dx * dx + dy * dy > actorRadius * actorRadius) continue;
+			}
 			if ((TESObjectREFR*)Player == ref) continue;	// walked once, by Gather
 			Walk(ref->GetNode(), false);
 		}
@@ -923,6 +930,7 @@ namespace {
 	void Core::Gather() {
 		sceneFrame++;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
+		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		arenaUsed = 0;
 		waiting = 0;
 		atlasThisFrame = 0;
