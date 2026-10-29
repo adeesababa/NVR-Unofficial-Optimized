@@ -53,6 +53,8 @@ public:
 		bool	RtHitLamps;			// 2026-10-29: the 12 nearest scene lamps light the hits the screen cannot show (one shadow ray to the key lamp)
 		float	RtRoughReach;		// 2026-10-29: a ray's reach at roughness 1, as a share of Distance (0 = full reach)
 		float	RtRoughShare;		// 2026-10-29: above this roughness, 1 ray per 2x2 pixels a frame (0 = every pixel)
+		float	RtContactSharpness;	// 2026-10-29: the blur radius share at contact (1 = off: the blur as before)
+		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
 	};
 	SettingsStruct	Settings;
 
@@ -139,11 +141,13 @@ public:	// (the RT core user in Reflections.cpp reads the images)
 		IDirect3DTexture9* Ray = nullptr;	IDirect3DSurface9* RaySurface = nullptr;
 		IDirect3DTexture9* Hit = nullptr;	IDirect3DSurface9* HitSurface = nullptr;	// written by the helper (shared back by the RT core)
 		IDirect3DTexture9* Shade = nullptr;	IDirect3DSurface9* ShadeSurface = nullptr;	// the same: the hit's albedo and sun visibility
+		IDirect3DTexture9* Spread = nullptr;	IDirect3DSurface9* SpreadSurface = nullptr;	// Resolve: the hit-distance share for the blur (R16F)
 	};
 	RtImagesStruct		Rt;
 	void				RtRegister();		// its RT core user (ShaderManager, once, before the core's first frame)
 private:
 	bool				rtRays = false;		// this frame's RayGen casts rays (the helper is up; false in SplitTest)
+	bool				rtResolved = false;	// Resolve drew this frame (the blur passes read Rt.Spread)
 	bool				RtWanted() const;	// RT on, nothing failed, the RT core up (its helper alive, RT on that GPU)
 	bool				RtImages();			// makes Rt on first use
 	float				RtSunAmount() const;	// the sun's share for the hits (0 at night and indoors)

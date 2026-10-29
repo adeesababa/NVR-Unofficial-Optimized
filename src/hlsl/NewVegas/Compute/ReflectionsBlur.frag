@@ -4,6 +4,10 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 
+// UNOFFICIAL 2026-10-29 RT reflections: ReflectionsRTResolve's hit-distance share (0 contact .. 1 far), on frames RT ran (pc.cube.w =
+// the narrowest radius share, 0 = not this frame: the blur exactly as before).
+layout(set = 1, binding = 22) uniform texture2D t_rtSpread;
+
 vec4 Source(vec2 coord) {
     return pc.pass == 0u ? textureLod(sampler2D(t_temp, POINT_S), coord, 0.0) : textureLod(sampler2D(t_trace, POINT_S), coord, 0.0);
 }
@@ -21,6 +25,7 @@ void main() {
 
     // Wider on rough ground, narrow on wet ground, so puddles stay sharp.
     float radius = BlurRadius * saturate(0.5 + roughness * 2.0);
+    if (pc.cube.w > 0.0) radius *= mix(pc.cube.w, 1.0, textureLod(sampler2D(t_rtSpread, POINT_S), uv, 0.0).r);   // RT: sharp at contact
     float sigma = max(radius * 0.5, 0.5);
     float falloff = -0.5 / (sigma * sigma);
     float tolerance = depth * 0.03 + 4.0;

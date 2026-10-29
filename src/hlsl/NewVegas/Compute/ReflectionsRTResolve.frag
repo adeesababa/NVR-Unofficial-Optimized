@@ -11,11 +11,14 @@
 #include "Reflections.glsl"
 #include "ReflectionsRT.glsl"
 
+layout(location = 1) out vec4 o_spread;   // 2026-10-29: R16F, the hit's distance share (0 contact .. 1 far / unknown) for the blur passes
+
 void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 uv = (vpos + 0.5) * LowTexel;
     vec2 ray = texelFetch(sampler2D(t_rtRay, POINT_S), texel, 0).xy;
+    o_spread = vec4(1.0, 0.0, 0.0, 0.0);
     if (ray.x <= 0.0) { o_color = vec4(0.0); return; }   // RayGen: nothing reflects here
     vec4 march = texelFetch(sampler2D(t_rtMarch, POINT_S), texel, 0);
     vec4 hitData = texelFetch(sampler2D(t_rtHit, POINT_S), texel, 0);
@@ -59,6 +62,8 @@ void main() {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
+            // The hit's distance against the eye's (a reflection's blur grows with how far the reflected thing is from the surface).
+            o_spread = vec4(saturate(hitData.x / (hitData.x + ray.x * rtc.rt3.z)), 0.0, 0.0, 0.0);
             rtInstance = float(hitFlags & 15u);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
             vec3 hitW = borrowed ? borrowHitW : surfaceW + worldR * hitData.x;
             vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move

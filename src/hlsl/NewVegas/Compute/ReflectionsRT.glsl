@@ -24,7 +24,8 @@ layout(set = 2, binding = 1, std140) uniform RtConstants {
     vec4 rt2;   // x screen match tolerance (share of the depth), y the estimate's brightness, z sun amount (0 night / indoors), w the lamp count
     vec4 sunDir;    // world, toward the sun (TESR_SunDirection)
     vec4 sunColor;  // TESR_SunColor (gamma)
-    vec4 rt3;       // 2026-10-29: x 1 = VNDF-sampled rays (RtVndf), y RoughShare's roughness (above: 1 ray per 2x2 block a frame; 0 off), zw unused
+    vec4 rt3;       // 2026-10-29: x 1 = VNDF-sampled rays (RtVndf), y RoughShare's roughness (above: 1 ray per 2x2 block a frame; 0 off),
+                    // z ContactSpread (the eye-distance share at which a hit counts as 'far' for the blur), w unused
     vec4 lamps[24]; // 2026-10-29: the 12 nearest scene lamps: [2i] xyz camera-relative position, w reach; [2i + 1] rgb colour x dimmer (gamma)
 } rtc;
 

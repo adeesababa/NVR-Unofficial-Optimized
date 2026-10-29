@@ -63,6 +63,8 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtHitLamps = TheSettingManager->GetSettingI(rt, "HitLamps") != 0;
 	Settings.RtRoughReach = std::clamp(TheSettingManager->GetSettingF(rt, "RoughReach"), 0.0f, 0.99f);
 	Settings.RtRoughShare = std::clamp(TheSettingManager->GetSettingF(rt, "RoughShare"), 0.0f, 1.0f);	// 0 off
+	Settings.RtContactSharpness = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSharpness"), 0.05f, 1.0f);
+	Settings.RtContactSpread = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSpread"), 0.01f, 4.0f);
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -157,12 +159,12 @@ float ReflectionsEffect::RtSunAmount() const {
 
 // The four half-resolution RT images, made the first time RT runs (no memory spent when it never does). Any failure: RT off for the session.
 bool ReflectionsEffect::RtImages() {
-	if (Rt.Shade) return true;
+	if (Rt.Spread) return true;
 	IDirect3DDevice9* device = TheRenderManager->device;
-	struct { IDirect3DTexture9** texture; IDirect3DSurface9** surface; D3DFORMAT format; } images[5] = {
+	struct { IDirect3DTexture9** texture; IDirect3DSurface9** surface; D3DFORMAT format; } images[6] = {
 		{ &Rt.March, &Rt.MarchSurface, D3DFMT_A16B16G16R16F }, { &Rt.Dir, &Rt.DirSurface, D3DFMT_G32R32F },
 		{ &Rt.Ray, &Rt.RaySurface, D3DFMT_G32R32F }, { &Rt.Hit, &Rt.HitSurface, D3DFMT_A16B16G16R16F },
-		{ &Rt.Shade, &Rt.ShadeSurface, D3DFMT_A16B16G16R16F } };
+		{ &Rt.Shade, &Rt.ShadeSurface, D3DFMT_A16B16G16R16F }, { &Rt.Spread, &Rt.SpreadSurface, D3DFMT_R16F } };
 	for (auto& i : images)
 		if (FAILED(device->CreateTexture(RtWidth(), RtHeight(), 1, D3DUSAGE_RENDERTARGET, i.format, D3DPOOL_DEFAULT, i.texture, NULL)) ||
 			FAILED((*i.texture)->GetSurfaceLevel(0, i.surface))) {
@@ -181,6 +183,7 @@ bool ReflectionsEffect::RtImages() {
 // trace's target. False before anything is drawn into target: the caller draws the normal trace. (A helper that has nothing this
 // frame costs the RayGen pass, then the normal trace.)
 bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* target) {
+	rtResolved = false;
 	if (!RtWanted() || !RtImages()) return false;
 	// SplitTest (no helper): RayGen casts no ray, so Resolve must give the normal trace's picture exactly (the split checked on any GPU).
 	rtRays = RtCoreClient::Ready();
@@ -216,6 +219,7 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 	}
 	Device->SetRenderTarget(0, target);
 	if (!ExtRender(Device, target, target, 9, false, target)) return false;
+	rtResolved = true;	// UNOFFICIAL 2026-10-29: the blur passes read Rt.Spread this frame
 	if (++rtTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs with RT ([Shaders.Reflections.RT]%s).", rtRays ? "" : ", SplitTest: no rays");
 	return true;
 }
@@ -669,11 +673,19 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			for (UINT i = 0; i < 5; i++) bindings[_countof(ReflBindings) + 1 + i] = { 1, 17 + i, NVR_EXT_BIND_SAMPLED_IMAGE, ReflTextureCount + i, NVR_EXT_VIEW_2D, FALSE, 0 };
 			if (DxvkCompute::HasSpirv(rtNames[techniqueIndex - 8]))
 				pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(rtNames[techniqueIndex - 8], bindings, _countof(bindings), sizeof(ReflPush), true,
-					techniqueIndex == 8 ? 3 : 1, NVR_EXT_BLEND_NONE, false);	// a refusal must not turn the other Vulkan passes off
+					techniqueIndex == 8 ? 3 : 2, NVR_EXT_BLEND_NONE, false);	// a refusal must not turn the other Vulkan passes off (Resolve: + Rt.Spread)
 			if (!pass.Pipeline) {
 				rtTraceFailed = true;
 				Logger::Log("UNOFFICIAL Reflections: the RT pass %s could not be set up; the normal trace is used.", rtNames[techniqueIndex - 8]);
 			}
+		}
+		else if (techniqueIndex == 2 || techniqueIndex == 4) {
+			// UNOFFICIAL 2026-10-29: the blur passes also declare RT reflections' hit-distance share (set 1, binding 22, image slot 21;
+			// a placeholder and push cube.w 0 on frames without RT: the blur exactly as before).
+			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 1];
+			memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+			bindings[_countof(ReflBindings)] = { 1, 22, NVR_EXT_BIND_SAMPLED_IMAGE, ReflTextureCount + 5, NVR_EXT_VIEW_2D, FALSE, 0 };
+			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], bindings, _countof(bindings), sizeof(ReflPush), true);
 		}
 		else pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
 	}
@@ -779,7 +791,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
-		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, 0.0f, 0.0f);
+		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, Settings.RtContactSpread, 0.0f);
 		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {
@@ -800,12 +812,22 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	ReflPush push = {};
 	push.cube = Constants.Cube;
 	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound
+	if (techniqueIndex == 2 || techniqueIndex == 4) {
+		// UNOFFICIAL 2026-10-29 RT reflections: the hit-distance share (Resolve drew it this frame) and the narrowest radius share.
+		const bool spread = rtResolved && Rt.Spread && Settings.RtContactSharpness < 1.0f;
+		resources[resourceCount].Slot = ReflTextureCount + 5; resources[resourceCount].Type = NVR_EXT_BIND_SAMPLED_IMAGE;
+		resources[resourceCount].pResource = spread ? (IUnknown*)Rt.Spread : (IUnknown*)depth;
+		resourceCount++;
+		push.cube.w = spread ? Settings.RtContactSharpness : 0.0f;
+	}
 
 	if (techniqueIndex == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));
 	// (RayGen: its three targets, RtTrace's own; RenderTarget is the first.)
 	IDirect3DSurface9* rayGenTargets[3] = { Rt.MarchSurface, Rt.DirSurface, Rt.RaySurface };
+	IDirect3DSurface9* resolveTargets[2] = { RenderTarget, Rt.SpreadSurface };
 	const bool drawn = techniqueIndex == 8 ? ExtDrawTo(pass.Pipeline, rayGenTargets, 3, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad) :
+		techniqueIndex == 9 ? ExtDrawTo(pass.Pipeline, resolveTargets, 2, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad) :
 		ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
 	if (counters) HiZCounters.End();	// UNOFFICIAL 2026-10-26: queued for the non-waiting readback
 	return drawn;
