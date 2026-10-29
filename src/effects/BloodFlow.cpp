@@ -1093,12 +1093,24 @@ bool BloodFlowEffect::ShouldRender() {
 
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
 	UINT technique, bool clear, IDirect3DSurface9* source) {
+	if (TheBloodFluid().Settings.WaterGun) {	// (2026-10-29 WaterGun, test: why the fluid does not run, once each)
+		static bool l0 = false;
+		if (!l0) { l0 = true; Logger::Log("UNOFFICIAL WaterGun gate: BloodFlow Render called"); }
+		static bool l1 = false, l2 = false, l3 = false;
+		if (!Enabled && !l1) { l1 = true; Logger::Log("UNOFFICIAL WaterGun gate: BloodFlow effect not enabled"); }
+		if (Enabled && !Effect && !l2) { l2 = true; Logger::Log("UNOFFICIAL WaterGun gate: BloodFlow effect not loaded"); }
+		if (Enabled && Effect && !ShouldRender() && !l3) { l3 = true; Logger::Log("UNOFFICIAL WaterGun gate: ShouldRender false (fluid On %d)", TheBloodFluid().On()); }
+	}
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
 	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache, splatCache, splatFastCache, splatMaskCache, maskBakeCache;
 	D3DXHANDLE boxes = TechniqueHandle(techniqueCache, "BloodFlow");
 	D3DXHANDLE probe = TechniqueHandle(probeCache, "BloodFlowProbe");
 	D3DXHANDLE boundsTechnique = TechniqueHandle(boundsCache, "BloodFlowBounds");
-	if (!boxes || !probe || !boundsTechnique || !PathSurface[0] || !PathSurface[1] || !BoundsSurface) return;
+	if (!boxes || !probe || !boundsTechnique || !PathSurface[0] || !PathSurface[1] || !BoundsSurface) {
+		static bool l = false;
+		if (!l && TheBloodFluid().Settings.WaterGun) { l = true; Logger::Log("UNOFFICIAL WaterGun gate: BloodFlow techniques/surfaces missing (%d %d %d %d %d %d)", !!boxes, !!probe, !!boundsTechnique, !!PathSurface[0], !!PathSurface[1], !!BoundsSurface); }
+		return;
+	}
 	if (!Declaration) {
 		const D3DVERTEXELEMENT9 elements[] = {
 			{ 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },

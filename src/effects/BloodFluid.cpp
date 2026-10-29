@@ -376,7 +376,11 @@ void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forwar
 }
 
 bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDirect3DSurface9* Source, BloodFlowEffect* Owner) {
-	if (!On() || !Image || !Owner) return false;
+	if (!On() || !Image || !Owner) {
+		static bool l = false;
+		if (!l && Settings.WaterGun) { l = true; Logger::Log("UNOFFICIAL WaterGun gate: fluid Render: On %d image %d", On(), !!Image); }
+		return false;
+	}
 	const double now = TheFrameRateManager->Time;
 	double elapsed = LastTime < 0.0 ? 0.0 : now - LastTime;
 	LastTime = now;
@@ -397,7 +401,11 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	// TEST emitters: a throw from the camera at the view centre, a pool bleeding on the ground ahead.
 	const D3DXVECTOR4* viewConstant = Constant("TESR_ViewTransform");
 	const D3DXVECTOR4* projConstant = Constant("TESR_ProjectionTransform");
-	if (!viewConstant || !projConstant) return false;
+	if (!viewConstant || !projConstant) {
+		static bool l = false;
+		if (!l && Settings.WaterGun) { l = true; Logger::Log("UNOFFICIAL WaterGun gate: no view/projection constants"); }
+		return false;
+	}
 	const D3DXMATRIX& view = *(const D3DXMATRIX*)viewConstant;
 	const D3DXVECTOR3 forward(view._13, view._23, view._33), right(view._11, view._21, view._31), upv(view._12, view._22, view._32);
 	static UInt32 ThrowCount = 0;
