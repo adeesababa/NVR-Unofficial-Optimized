@@ -169,6 +169,20 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 16:58 noon again, rtrefl-4 (DLL 42db45eb: lamps, VNDF, RoughReach, the land self-hit skip, mask 0xEF)
+
+The run is `bench/autotest/20261029-165859-slotA`, all 11 shots. Noise floor (pad-a vs pad-b): 10.5 % (wet ground), top half 0.4 %.
+- **The self-hit skip works**: the amber blotches are gone (reflection alone, shot 08).
+- **This corrects the first noon reading below.** Much of the "ground reflects the bushes and hills" darkening there was this
+  artefact, not real occlusion. The desert bushes are alpha-tested, so they are not in the scene with `[Main.Main.RayTracing]
+  AlphaTested` off (the core's default), and the open wet ground really sees the sky. With the fix, RT vs SSR is 24 % of pixels,
+  **brighter** (+0.52/255): where a ray meets nothing, RT takes the sky without SSR's sky-visibility guess. What RT adds at a
+  desert spot like this is small until foliage is in the scene (AlphaTested on + an alpha test in this pass: next).
+- **VisibleNormals + RoughReach vs the earlier rays** (rt vs rt-old): 24 % of pixels, -0.52/255. The wet ground is near-mirror
+  (WetRoughness 0.08), so this is the reach and sampling change on the dry, rougher patches.
+- **HitLamps** (rt vs rt-nolamps): 10.8 % = noise. No lamps at noon outdoors, as expected; indoors next.
+- **MaxRoughness 0.8** (reflection alone, shots 08 vs 10): 9 % of pixels, +0.007: rougher ground now gets rays.
+
 ### 2026-10-29 16:27 OUTDOOR A/B AT A STILL SPOT: scene noon (NVRAutoTest8, desert by pylons, sun high), forced rain wetness, rain particles off
 
 Branch `claude/rt-refl-2` (from `claude/rt-test-merge` af12c7e7, DLL 429a8c6b, unchanged RT code). Run
