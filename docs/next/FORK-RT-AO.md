@@ -171,6 +171,18 @@ accumulate (below): both are temporal + edge-aware spatial already.
 - AmbientLight: the RT estimate writes the bounce into its rgb (as ComputeGI's GI pass does), sets giDrawn, so ComputeGI's
   accumulate (temporal: reprojection, depth test, neighbour clamp) and its apply (x the surface colour x TESR_AmbientLightData.z =
   GIStrength) take it. ComputeGI on = its screen search wins (A/B).
+- **rt-gi-1 (10-29 16:35 lucky22 slot A, 16:44 og-desert slot C; DLL F3A8C42C).** GI traced in both (Lucky 38: 8 lamps, indoors;
+  desert: sun up, 0 lamps). Lucky 38 held a still camera this time (al vs al-end: 0.2 % of pixels differ = noise), so it is a valid
+  same-spot A/B (the desert's light still changes between shots: not comparable). Same spot, mean picture level 0-255:
+  AmbientLight 31.5 -> RT AO 33.6 (+2.2, lighter on 24 %: less occlusion than AL's GTAO overall) -> RT AO + GI 41.9 (+8.3 on 74 % of
+  pixels = +25 %); GI x2 47.7; ComputeGI (screen) 31.9 (-1.7 vs RT AO). The RT bounce light alone (DebugView 6) was an even red-orange
+  wash over the whole room: nearly every bounce ray hits a wall or ceiling and returned albedo x the game's AMBIENT, i.e. a second
+  copy of the ambient light, which the game already uses for indirect light. Fix ac0598e2: GIAmbient (default 0) = only the sun and
+  the lamps bounce. Cost (core's "Ray tracing" line): Lucky 38 AO 4 rays + GI ~16 ms (AO alone ~9.5 ms earlier) on the iGPU; desert
+  ~4.8 ms (AO + GI, sun shadow rays). AmbientLight's GI accumulate 0.7-0.9 ms.
+- Cull mask 0xEF on every ray (ac0598e2): leaves out 0x10, the core's alpha-tested casters (claude/rt-sun-2, off by default), which
+  would otherwise block as solid cards. Testing their alpha (RtAlpha.glsl) for the AO and sky rays is the next foliage step.
+- rt-gi-2 (= rt-gi-1 list, DLL 315CD821, GIAmbient 0) queued in lucky22.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
