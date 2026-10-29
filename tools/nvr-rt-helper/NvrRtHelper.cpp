@@ -855,7 +855,8 @@ namespace {
 				g.geometry.triangles.indexData.deviceAddress = h.staging.address + ((VkDeviceSize)op.arenaTexel + 3ull * op.vertexCount) * 4;
 				VkAccelerationStructureBuildGeometryInfoKHR b = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
 				b.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-				b.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+				b.flags = (op.flags & NVR_RT_OP_FLAG_DYNAMIC) ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+					: VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;	// actors: rebuilt every frame
 				b.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 				b.geometryCount = 1;
 				b.pGeometries = &g;

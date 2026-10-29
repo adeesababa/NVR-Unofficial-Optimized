@@ -1172,3 +1172,49 @@ __CRT_UUID_DECL(ID3D9NvrExtRt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0
 __CRT_UUID_DECL(ID3D9NvrExtRtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x31);
 __CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x32);
 #endif
+
+/**
+ * UNOFFICIAL 2026-10-29 (1.8-rt-skin, patch 0030): skinned geometry (actors) for the ray tracing helper, found with
+ * QueryInterface(__uuidof(ID3D9NvrExtRtSkin)) (a fork without it answers E_NOINTERFACE). StageSkinnedGeometry is
+ * StageGeometry with the vertices posed: each position (float3 / float4) is blended from up to 4 bones of pPalette (3 x 4
+ * row-major matrices, p' = M (x, y, z, 1): straight into scene space) by the vertex's blend weights and indices, which sit
+ * in the position's stream at the given byte deltas. Texels and layout as StageGeometry (positions, then the triangle
+ * list; no texcoords). Stage it again every frame the actor moves; the palette is copied at the call.
+ */
+#define NVR_EXT_RT_SKIN_MAX_BONES 256u
+
+enum NVR_EXT_RT_SKIN_WEIGHTS {
+  NVR_EXT_RT_SKIN_WEIGHTS_FLOAT  = 0,   // WeightCount floats (FLOAT1..FLOAT4)
+  NVR_EXT_RT_SKIN_WEIGHTS_HALF   = 1,   // WeightCount halfs (FLOAT16_2 / FLOAT16_4)
+  NVR_EXT_RT_SKIN_WEIGHTS_UBYTE4N = 2,  // 4 bytes / 255
+};
+
+enum NVR_EXT_RT_SKIN_INDICES {
+  NVR_EXT_RT_SKIN_INDICES_UBYTE4  = 0,  // bytes 0..3 = bones 0..3
+  NVR_EXT_RT_SKIN_INDICES_D3DCOLOR = 1, // D3DCOLOR (stored b, g, r, a): bones 0..3 = r, g, b, a
+};
+
+struct NVR_EXT_RT_SKIN_DESC {
+  INT                         WeightsDelta;     // bytes from the position element to the blend weights (same stream)
+  NVR_EXT_RT_SKIN_WEIGHTS     WeightsFormat;
+  UINT                        WeightCount;      // weights stored (0..4); fewer than BonesPerVertex: the last bone gets 1 - their sum
+  UINT                        BonesPerVertex;   // 1..4
+  INT                         IndicesDelta;     // bytes from the position element to the blend indices (same stream)
+  NVR_EXT_RT_SKIN_INDICES     IndicesFormat;
+  UINT                        PaletteCount;     // 1..NVR_EXT_RT_SKIN_MAX_BONES
+  const FLOAT*                pPalette;         // PaletteCount x 12 floats (row-major 3 x 4)
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d333")
+ID3D9NvrExtRtSkin : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE StageSkinnedGeometry(
+    const NVR_EXT_RT_GEOMETRY_DESC*       pDesc,
+    const NVR_EXT_RT_SKIN_DESC*           pSkin,
+          ID3D9NvrExtSharedImage*         pArena,
+          UINT                            DstTexel,
+          NVR_EXT_RT_GEOMETRY_INFO*       pInfo) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtRtSkin,     0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x33);
+#endif
