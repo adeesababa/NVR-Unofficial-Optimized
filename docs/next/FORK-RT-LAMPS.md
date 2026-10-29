@@ -42,7 +42,7 @@
   39 ms (V21) vs 28 / 24 without actors: the skinned rebuilds ~+8 (L38) to +15 ms (V21) on the iGPU.
 - But V21's cube maps stayed 8.1 ms (7 people refreshes a frame): KeepCube refused any lamp whose last redraw was PARTIAL, and a
   people refresh with CubeFaceViewCull is always partial -> a loop that redrew them every frame (also in rtlamp-7/8 with
-  ActorsFromCubeMaps 0). Fixed (dbb?): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
+  ActorsFromCubeMaps 0). Fixed (d6d71721): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
 - rtlamp-11, LampRadius 32 / invisible 48, 1 ray, Jitter off: hard / soft1 / soft4 still differ on < 0.1 % of pixels: traced lamp
   shadows are a small part of these views and their penumbrae barely show. Filter v2: +14 ms (iGPU) and further from soft4 than
   soft1 (0.13 vs 0.05 %): stays off. Soft lamp shadows: LampRadius 4 + Jitter (TAA) is enough here; the filter is parked.
