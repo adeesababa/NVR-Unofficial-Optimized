@@ -181,6 +181,7 @@ namespace {
 		enum Skip { kSeen, kNoShader, kSkinned, kNotLighting, kFlags, kLeaf, kAlpha, kDescribe, kMeasure, kTaken, kSkipCount };
 		UInt32		skips[2][kSkipCount] = {};
 		UInt32		landCells[3] = {};		// cells walked, cells without a land node, land nodes culled (APP_CULLED)
+		UInt32		landWalk[5] = {};		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
 		float		radius = 8192.0f;
 		std::vector<NiAVObject*> stack;
@@ -623,12 +624,16 @@ namespace {
 			stack.pop_back();
 			// Land: no reach test (its nodes' world bounds are not usable: rtsun-6 met no land at all with it; the cascades' walk does not
 			// test land either). The loaded grid limits it (a few quads a cell).
+			if (land && object) { landWalk[0]++; if (object->m_flags & NiAVObject::NiFlags::APP_CULLED) landWalk[1]++; }
 			if (!object || (object->m_flags & NiAVObject::NiFlags::APP_CULLED) || (!land && !inReach(object))) continue;
 			if (object->IsGeometry()) { AddGeometry(static_cast<NiGeometry*>(object), land); continue; }
 			NiNode* node = object->IsNiNode();
 			if (!node) continue;
-			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) continue;	// faded out: not drawn
+			if (land) landWalk[2]++;
+			// Faded out: not drawn. Land ignores it, as the cascades' walk does (rt-reflections' og-lake run met no land with it).
+			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) { if (land) landWalk[3]++; else continue; }
 			if (node->IsKindOf<NiSwitchNode>()) {
+				if (land) landWalk[4]++;
 				NiSwitchNode* sw = static_cast<NiSwitchNode*>(node);
 				if (sw->m_iIndex >= 0 && sw->m_iIndex < node->m_children.end) stack.push_back(node->m_children.data[sw->m_iIndex]);
 				continue;
@@ -838,8 +843,9 @@ namespace {
 			if (n == 60)
 				for (int k = 0; k < 2; k++) {
 					const UInt32* m = c.skips[k];
-					char cells[128] = "";
-					if (k) sprintf_s(cells, "; cells walked %u, without a land node %u, land node culled %u", c.landCells[0], c.landCells[1], c.landCells[2]);
+					char cells[256] = "";
+					if (k) sprintf_s(cells, "; cells walked %u, without a land node %u, land node culled %u; land subtree: objects %u, culled %u, nodes %u, "
+						"faded %u, switch %u", c.landCells[0], c.landCells[1], c.landCells[2], c.landWalk[0], c.landWalk[1], c.landWalk[2], c.landWalk[3], c.landWalk[4]);
 					Logger::Log("RT CORE: %s geometry met (exchanges 1-60): %u, taken %u; left out: no shader/data %u, skinned %u, not a lighting shader %u, "
 						"decal/refraction %u, tree leaves %u, alpha %u, not described %u, refused by the fork %u%s", k ? "land" : "object", m[kSeen], m[kTaken],
 						m[kNoShader], m[kSkinned], m[kNotLighting], m[kFlags], m[kLeaf], m[kAlpha], m[kDescribe], m[kMeasure],
