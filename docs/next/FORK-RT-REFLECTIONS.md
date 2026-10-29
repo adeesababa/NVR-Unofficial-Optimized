@@ -169,6 +169,16 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 17:41 lucky22, rtrefl-4 (DLL 42db45eb), all 11 shots
+
+The run is `bench/autotest/20261029-174137-slotA`. Noise floor: 0.08 %.
+- **HitLamps** (rt vs rt-nolamps): 10.4 % of pixels, +0.33 brighter. The casino floor's reflection of what the camera cannot see
+  (the ceiling, the walls behind) now takes the red lanterns' light: a warmer red tint over the lower half, no blotches or odd
+  colours. **RT vs SSR**: 9.7 % (0.24 % before lamps, run 20261029-050819): in a lamp-lit room the lamps are most of what RT adds.
+- **VisibleNormals + RoughReach**: 4.65 %, -0.14.
+- **MaxRoughness 0.8**: 1.4 %, +0.16.
+- **Cost:** helper passes 8.9-11.2 ms (6.4 before), scene 0.6 ms, response 3.2-3.9 ms: the key-lamp shadow ray again (budget next).
+
 ### 2026-10-29 17:23 luxe, rtrefl-4 (DLL 42db45eb), all 11 shots
 
 The run is `bench/autotest/20261029-172327-slotA`. Noise floor (pad-a vs pad-b): 0.20 %.
