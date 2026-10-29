@@ -15,6 +15,7 @@
 // the draw's lights' traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
 
 #include <algorithm>
+#include "PointShadowSchedule.h"	// PointShadowSlotState (KeepCube)
 #include "LampFixtures.h"
 #include "DxvkCompute.h"
 #include "RtCore.h"
@@ -175,6 +176,22 @@ namespace RtLampShadows {
 		return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MapSlots && TracedMap[cubeSlot] >= 0 ? (float)TracedMap[cubeSlot] : -1.0f;
 	}
 
+	// UNOFFICIAL 2026-10-29 SkipTracedCubes ([Shaders.ShadowsInteriors.RT], on): the cost win. A lamp the trace covered last frame
+	// keeps the cube map it has (the fallback where the traced frame did not see a point) instead of redrawing it: no redraw for the
+	// schedule, moved casters or a moved light. Drawn as before when it has no cube map of its own yet (new lamp, new cell, another
+	// light in the slot, another radius, a partial one), and, with ActorsFromCubeMaps on, while people move near it (their shadows
+	// come from the cube map). ShadowManager's cube loop asks before drawing slot i.
+	inline UInt32 SkippedCubes = 0, SkippedCubesFrames = 0;
+	inline bool KeepCube(int slot, const PointShadowSlotState& last, const PointShadowSlotState& now) {
+		if (!CompiledIn || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;
+		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
+		if (!last.valid || last.partial || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
+			last.radius != now.radius) return false;
+		if (!now.staticCasters && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps")) return false;
+		SkippedCubes++;
+		return true;
+	}
+
 	// PointShadowForward::SetForPass: slots = the draw's lights' TracedSlot (-1 none).
 	inline void SetForPass(const float slots[6], bool force) {
 		if (!CompiledIn) return;
@@ -287,7 +304,9 @@ namespace RtLampShadows {
 			for (int i = 0; i < LampCount && used < 800; i++)
 				used += sprintf_s(text + used, sizeof(text) - used, " | %d: slot %d at %.0f %.0f %.0f reach %.0f stop %.0f", i, Lamps[i].slot,
 					Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, Lamps[i].reach, Lamps[i].stop);
-			Logger::Log("UNOFFICIAL RT lamp shadows: trace %u, %d lamps%s", FramesTraced, LampCount, LampCount ? text : "");
+			Logger::Log("UNOFFICIAL RT lamp shadows: trace %u, %d lamps, cube redraws skipped %u since the last line (SkipTracedCubes)%s",
+				FramesTraced, LampCount, SkippedCubes, LampCount ? text : "");
+			SkippedCubes = 0;
 		}
 		if (FramesTraced++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);

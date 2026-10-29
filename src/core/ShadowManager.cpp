@@ -2548,6 +2548,8 @@ void ShadowManager::RenderShadowMaps() {
 			}
 			if (GpuTimer::Enabled) statPresent++;
 			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
+			// UNOFFICIAL 2026-10-29 RT lamp shadows SkipTracedCubes: a traced lamp keeps its cube map (the fallback) instead of a redraw
+			if (why != PointShadowRedraw::None && !isExterior && RtLampShadows::KeepCube((int)i, slots[i], now)) continue;
 			if (why == PointShadowRedraw::None) {
 				if (GpuTimer::Enabled && now.staticCasters) statStaticReused++;
 				continue;
