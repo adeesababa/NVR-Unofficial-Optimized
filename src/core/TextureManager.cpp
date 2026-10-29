@@ -25,6 +25,7 @@ void TextureManager::Initialize() {
 	TheTextureManager->RegisterTexture("TESR_DepthBufferViewModel",(IDirect3DBaseTexture9**)&TheTextureManager->DepthTextureViewModel);
 	// UNOFFICIAL 2026-10-28 CapturedNormals (core/CapturedNormals.h): made on first use (empty until then: readers keep the depth-rebuilt normal)
 	TheTextureManager->RegisterTexture("TESR_CapturedNormalsBuffer", (IDirect3DBaseTexture9**)&CapturedNormals::Texture);
+	TheTextureManager->RegisterTexture("TESR_MaterialBuffer", (IDirect3DBaseTexture9**)&CapturedNormals::MaterialTexture);	// UNOFFICIAL 2026-10-29 MaterialBuffer
 	TheTextureManager->RegisterTexture("TESR_ObjectMotionBuffer", (IDirect3DBaseTexture9**)&ObjectMotion::Texture);	// UNOFFICIAL 2026-10-29 ObjectMotion (made on first use)
 
 	NvAPI_D3D9_RegisterResource(TheTextureManager->DepthTexture);

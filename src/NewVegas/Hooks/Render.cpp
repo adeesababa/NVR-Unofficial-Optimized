@@ -3008,7 +3008,31 @@ namespace LampCountStats {
 	}
 }
 
+// UNOFFICIAL 2026-10-29 MaterialBuffer (core/CapturedNormals.h, Includes/CapturedNormals.hlsl NVR_MaterialDraw c217): the drawn object's
+// material class and world bound radius for the templates' COLOR2. Class: 2 skinned (worn gear), 3 cloth / 5 plant by ClothWind's / PlantWind's
+// own per-texture verdicts (cached; nothing new decided), else 1. The land's shader writes 4 itself.
+static void MaterialForPass(void* Pass) {
+	if (!CapturedNormals::InSpan || !CapturedNormals::MaterialCompiled || !CapturedNormals::MaterialTexture) return;
+	NiGeometry* geometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
+	if (!geometry) return;
+	float materialClass = geometry->skinInstance ? 2.0f : 1.0f;
+	BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
+	if (property && property->IsLightingProperty()) {
+		NiSourceTexture** textures = ((BSShaderPPLightingProperty*)property)->ppTextures[0];
+		const NiSourceTexture* diffuse = textures ? *textures : nullptr;
+		if (diffuse) {
+			auto cloth = ClothWind::ByTexture.find(diffuse);
+			auto plant = PlantWind::ByTexture.find(diffuse);
+			if (cloth != ClothWind::ByTexture.end() && cloth->second.second) materialClass = 3.0f;
+			else if (plant != PlantWind::ByTexture.end() && plant->second.second) materialClass = 5.0f;
+		}
+	}
+	const float data[4] = { materialClass, geometry->m_kWorldBound ? geometry->m_kWorldBound->Radius : 0.0f, 0.0f, 0.0f };
+	TheRenderManager->device->SetPixelShaderConstantF(217, data, 1);
+}
+
 static void ForwardShadowsForPass(void* Pass) {
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) MaterialForPass(Pass);	// UNOFFICIAL 2026-10-29 MaterialBuffer
 	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
 	ManyLamps::ForPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the object's lamps in c37-c63
 	LampsInOnePass::GlowForPass((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsGlow: the glow map on s4

@@ -1578,7 +1578,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(ONLY_SPECULAR)
         OUT.capturedPad1 = 0.0f;
     #endif
-    OUT.capturedPad2 = 0.0f;
+    OUT.capturedPad2 = CapturedMaterialOut(roughness);	// UNOFFICIAL 2026-10-29 MaterialBuffer (0 without it)
     // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map. The added lamp and highlight passes write
     // none (they are masked off anyway); nor does the slot-tight six-lamp shader (the depth-rebuilt normal stays in use there).
     #if defined(DIFFUSE) || defined(ONLY_SPECULAR) || defined(NVR_SLOT_TIGHT)
@@ -1942,7 +1942,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
 #if CAPTURED_NORMALS_ON
     OUT.capturedPad1 = 0.0f;
-    OUT.capturedPad2 = 0.0f;
+    OUT.capturedPad2 = CapturedMaterialOut(roughness);	// UNOFFICIAL 2026-10-29 MaterialBuffer (0 without it)
     // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map (as in the LIGHTS < 4 variant)
     #if OBJECT_SMOOTH_NORMALS && !defined(NVR_SLOT_TIGHT)
         OUT.capturedNormal = CapturedNormalOut(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), SHADOW_WP_LOAD(IN));

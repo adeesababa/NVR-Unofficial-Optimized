@@ -41,6 +41,25 @@ namespace CapturedNormals {
 
 	inline void NoteWriter(IDirect3DPixelShader9* handle) { if (handle) Writers.insert(handle); }
 
+	// UNOFFICIAL 2026-10-29 MaterialBuffer ([Main.Main.Quality] MaterialBuffer, restart, with CapturedNormals; CAPTURED_NORMALS_ON 2; ROOT-ASSUMPTIONS-
+	// PLAN B2, format sent to the RT sessions): the same span, a second fp16 target on stage 2 (TESR_MaterialBuffer), written by the
+	// Object / Parallax / Terrain templates' spare COLOR2 (Includes/CapturedNormals.hlsl CapturedMaterialOut): r the material class, g the
+	// drawn object's bound radius (thickness), b roughness (-1 none), a 1. Stage 2 is taken only while it is free: the skin blur binds its own
+	// target there round skin draws (SkinScattering), and the skin templates are no material writers.
+	inline bool MaterialChecked = false, MaterialCompiled = false;
+	inline IDirect3DTexture9* MaterialTexture = nullptr;  inline IDirect3DSurface9* MaterialSurface = nullptr;  inline IDirect3DSurface9* MaterialMsaa = nullptr;
+	inline D3DXVECTOR4 MaterialData = { 0.0f, 0.0f, 0.0f, 0.0f };	// TESR_MaterialBufferData: x 1 = holds this frame's
+	inline std::unordered_set<IDirect3DPixelShader9*> MaterialWriters;
+	inline bool LastMaterialWriter = false, MaterialBound = false, MaterialDrawn = false;
+	inline UInt32 MaterialWrites = 0, MaterialBusy = 0;	// draws that wrote it; writer draws that found stage 2 taken
+	inline void NoteMaterialWriter(IDirect3DPixelShader9* handle) { if (handle) MaterialWriters.insert(handle); }
+	inline bool CompiledIn();
+	inline bool MaterialCompiledIn() {
+		if (!MaterialChecked) { MaterialChecked = true; MaterialCompiled = CompiledIn() && TheSettingManager->GetSettingI("Main.Main.Quality", "MaterialBuffer") != 0; }
+		return MaterialCompiled;
+	}
+	inline IDirect3DSurface9* MaterialDrawSurface() { return MaterialMsaa ? MaterialMsaa : MaterialSurface; }
+
 	// The self-check (main session, 2026-10-28: P31's MergedDepthNormals wrote two targets in one draw, and on native D3D9 the GTX 1070
 	// driver silently dropped that draw: the buffers stopped updating and every effect read stale data). On a few frames (the 60th, 300th
 	// and 1200th captured frame, then every 18,000th) the target is read back, shrunk to 64 x 64 texels: right after the clear it must hold
@@ -210,6 +229,9 @@ namespace CapturedNormals {
 		if (MsaaSurface) { MsaaSurface->Release(); MsaaSurface = nullptr; }
 		if (TextureSurface) { TextureSurface->Release(); TextureSurface = nullptr; }
 		if (Texture) { Texture->Release(); Texture = nullptr; }
+		if (MaterialMsaa) { MaterialMsaa->Release(); MaterialMsaa = nullptr; }
+		if (MaterialSurface) { MaterialSurface->Release(); MaterialSurface = nullptr; }
+		if (MaterialTexture) { MaterialTexture->Release(); MaterialTexture = nullptr; }
 		Made = {};
 	}
 
@@ -229,6 +251,19 @@ namespace CapturedNormals {
 		// MRT targets must share the scene's multisampling: a multisampled copy, resolved into the texture after the list.
 		if (ok && t.MultiSampleType != D3DMULTISAMPLE_NONE)
 			ok = SUCCEEDED(d->CreateRenderTarget(t.Width, t.Height, D3DFMT_A16B16G16R16F, t.MultiSampleType, t.MultiSampleQuality, FALSE, &MsaaSurface, NULL));
+		if (ok && MaterialCompiledIn()) {	// UNOFFICIAL 2026-10-29 MaterialBuffer: its target, alike (failing it leaves the normals working)
+			bool made = SUCCEEDED(d->CreateTexture(t.Width, t.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &MaterialTexture, NULL)) &&
+				SUCCEEDED(MaterialTexture->GetSurfaceLevel(0, &MaterialSurface));
+			if (made && t.MultiSampleType != D3DMULTISAMPLE_NONE)
+				made = SUCCEEDED(d->CreateRenderTarget(t.Width, t.Height, D3DFMT_A16B16G16R16F, t.MultiSampleType, t.MultiSampleQuality, FALSE, &MaterialMsaa, NULL));
+			if (!made) {
+				Logger::Log("[WARNING] MaterialBuffer: could not make its %ux%u target: off for the session (the captured normals keep working)", t.Width, t.Height);
+				if (MaterialMsaa) { MaterialMsaa->Release(); MaterialMsaa = nullptr; }
+				if (MaterialSurface) { MaterialSurface->Release(); MaterialSurface = nullptr; }
+				if (MaterialTexture) { MaterialTexture->Release(); MaterialTexture = nullptr; }
+				MaterialCompiled = false;
+			}
+		}
 		if (!ok) {
 			Logger::Log("[ERROR] CapturedNormals: could not make the %ux%u target (msaa %u); off for the session", t.Width, t.Height, (unsigned)t.MultiSampleType);
 			Release();
@@ -250,6 +285,13 @@ namespace CapturedNormals {
 	inline void Unbind(IDirect3DDevice9* d) {
 		D3DVIEWPORT9 vp; d->GetViewport(&vp);
 		d->SetRenderTarget(3, nullptr);
+		if (MaterialBound) {	// UNOFFICIAL 2026-10-29 MaterialBuffer: ours on stage 2 goes too
+			IDirect3DSurface9* rt2 = nullptr;
+			if (SUCCEEDED(d->GetRenderTarget(2, &rt2)) && rt2) rt2->Release();
+			if (rt2 && rt2 == MaterialDrawSurface()) d->SetRenderTarget(2, nullptr);
+			d->SetRenderState(D3DRS_COLORWRITEENABLE2, 0xF);
+			MaterialBound = false;
+		}
 		d->SetViewport(&vp);
 		d->SetRenderState(D3DRS_COLORWRITEENABLE3, 0xF);
 		Bound = false;
@@ -269,7 +311,7 @@ namespace CapturedNormals {
 		IDirect3DPixelShader9* ps = nullptr;
 		d->GetPixelShader(&ps);
 		if (ps) ps->Release();
-		if (ps != LastPS) { LastPS = ps; LastWriter = ps && Writers.count(ps) != 0; }
+		if (ps != LastPS) { LastPS = ps; LastWriter = ps && Writers.count(ps) != 0; LastMaterialWriter = ps && MaterialWriters.count(ps) != 0; }
 		bool write = LastWriter;
 		if (write) {
 			DWORD mask = 0xF, blend = FALSE, src = D3DBLEND_ONE, dst = D3DBLEND_ZERO;
@@ -288,6 +330,18 @@ namespace CapturedNormals {
 		else if (Bound) {
 			d->SetRenderState(D3DRS_COLORWRITEENABLE3, 0);
 			Masked++;
+		}
+		// UNOFFICIAL 2026-10-29 MaterialBuffer: stage 2 when it is free (or ours), for the material writers' opaque draws; masked otherwise
+		if (MaterialTexture && MaterialCompiled) {
+			IDirect3DSurface9* rt2 = nullptr;
+			if (SUCCEEDED(d->GetRenderTarget(2, &rt2)) && rt2) rt2->Release();
+			const bool ours = rt2 && rt2 == MaterialDrawSurface();
+			if (write && LastMaterialWriter) {
+				if (!rt2) { D3DVIEWPORT9 vp; d->GetViewport(&vp); d->SetRenderTarget(2, MaterialDrawSurface()); d->SetViewport(&vp); }
+				if (!rt2 || ours) { d->SetRenderState(D3DRS_COLORWRITEENABLE2, 0xF); MaterialBound = true; MaterialDrawn = true; MaterialWrites++; }
+				else MaterialBusy++;
+			}
+			else if (ours) d->SetRenderState(D3DRS_COLORWRITEENABLE2, 0);
 		}
 	}
 
@@ -311,7 +365,7 @@ namespace CapturedNormals {
 		if (InSpan) {	// D3D9's Clear clears every bound target; the next writing draw binds it again
 			IDirect3DSurface9* rt3 = nullptr;
 			if (SUCCEEDED(d->GetRenderTarget(3, &rt3)) && rt3) rt3->Release();
-			if (rt3 && rt3 == DrawSurface()) Unbind(d);
+			if ((rt3 && rt3 == DrawSurface()) || MaterialBound) Unbind(d);
 		}
 		return NextClear(d, count, rects, flags, color, z, stencil);
 	}
@@ -364,9 +418,13 @@ namespace CapturedNormals {
 			Logger::Log("CapturedNormals: on (%u template pixel shaders write the normal target)", (unsigned)Writers.size());
 		}
 		if (Live && ++Frames >= 600) {
-			Logger::Log("CapturedNormals: per frame %.1f draws wrote normals, %.1f masked, %.2f unbinds (other targets, clears); %u hook reinstalls so far",
-				Writes / (double)Frames, Masked / (double)Frames, Unbinds / (double)Frames, Reinstalls);
+			Logger::Log("CapturedNormals: per frame %.1f draws wrote normals, %.1f masked, %.2f unbinds (other targets, clears); %u hook reinstalls so far%s",
+				Writes / (double)Frames, Masked / (double)Frames, Unbinds / (double)Frames, Reinstalls, MaterialCompiled ? "" : " (MaterialBuffer off)");
+			if (MaterialCompiled)	// UNOFFICIAL 2026-10-29 MaterialBuffer
+				Logger::Log("MaterialBuffer: per frame %.1f draws wrote it, %.1f writer draws found stage 2 taken (the skin blur's); %u material writer shaders",
+					MaterialWrites / (double)Frames, MaterialBusy / (double)Frames, (unsigned)MaterialWriters.size());
 			Frames = Writes = Masked = Unbinds = 0;
+			MaterialWrites = MaterialBusy = 0;
 		}
 	}
 
@@ -390,6 +448,8 @@ namespace CapturedNormals {
 		EnsureHooked(d);	// (native D3D9 puts its own table entries back; see EnsureHooked)
 		SpanTarget = rt0;	// (holds the reference until EndSpan)
 		d->ColorFill(DrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// "nothing here": readers keep the depth-rebuilt normal
+		if (MaterialTexture && MaterialCompiled) d->ColorFill(MaterialDrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// UNOFFICIAL MaterialBuffer: class 0
+		MaterialDrawn = MaterialBound = false;
 		CheckThisFrame = IsCheckFrame(++LiveFrames);
 		if (CheckThisFrame) {	// the self-check's first half: the clear must have emptied it
 			if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
@@ -408,10 +468,12 @@ namespace CapturedNormals {
 		if (!InSpan) return;
 		IDirect3DSurface9* rt3 = nullptr;
 		if (SUCCEEDED(d->GetRenderTarget(3, &rt3)) && rt3) rt3->Release();
-		if (rt3 && rt3 == DrawSurface()) Unbind(d);
+		if ((rt3 && rt3 == DrawSurface()) || MaterialBound) Unbind(d);
 		InSpan = false;
 		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);	// the game's MSAA: resolved for the readers
+		if (MaterialMsaa && MaterialSurface) d->StretchRect(MaterialMsaa, NULL, MaterialSurface, NULL, D3DTEXF_NONE);	// UNOFFICIAL MaterialBuffer
+		MaterialData.x = MaterialDrawn && !Failed ? 1.0f : 0.0f;
 		if (CheckThisFrame && Drawn) {	// the self-check's second half: templates drew, so something must be written
 			const int n = CountWritten(d);
 			if (n >= 0) CheckResult(n > 0, "after the main list", n);

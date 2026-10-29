@@ -168,6 +168,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_SunAmount", &TheShaderManager->ShaderConst.SunAmount);
 	TheShaderManager->RegisterConstant("TESR_GameTime", &TheShaderManager->ShaderConst.GameTime);
 	TheShaderManager->RegisterConstant("TESR_CapturedNormalsData", &CapturedNormals::Data);	// UNOFFICIAL 2026-10-28 CapturedNormals
+	TheShaderManager->RegisterConstant("TESR_MaterialBufferData", &CapturedNormals::MaterialData);	// UNOFFICIAL 2026-10-29 MaterialBuffer
 	TheShaderManager->RegisterConstant("TESR_ObjectMotionData", &ObjectMotion::Data);	// UNOFFICIAL 2026-10-29 ObjectMotion
 	TheShaderManager->RegisterConstant("TESR_FogData", &TheShaderManager->ShaderConst.fogData);
 	TheShaderManager->RegisterConstant("TESR_FogDistance", &TheShaderManager->ShaderConst.fogDistance);
