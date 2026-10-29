@@ -35,6 +35,17 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Step 3, part 2: soft shadows + a lamp-aware filter (Filter, off; f65dbcce, DLL 1879B367; run rtlamp-9 19:12, PASS)
+- The shared RtDenoise (rt-sun-core) filters one value a pixel; this result is three lamps a pixel whose order differs between
+  neighbours, so it cannot go through it. RtLampFilter.comp, a second helper pass: each of the pixel's lamps averages the visibility
+  of the SAME cube slot among 5 x 5 taps (Step 2), depth and normal weighted.
+- rtlamp-9 (LampRadius 8, 1 ray, Jitter off): hard, soft 1 ray and soft 4 rays are the same picture (mean 0.04 / 255): at 8 units
+  the penumbrae are too small to see. The filter only changed thin silhouettes (rails, pipes) to brighter (0.2 % of pixels): the
+  depth slope came from a one-sided difference, huge at a silhouette, so background taps leaked in. Cost (iGPU, ms, trace + copies):
+  L38 hard 28.0, soft1 27.0, soft1 + filter 40.4, soft 4 rays 58.4; V21 24.2 / 24.1 / 37.7 / 52.3: the filter cost 13 ms.
+- v2 (f4cb4ec1, shader only): the smaller one-sided difference each way + an early out where the pixel and its 4 neighbours a step
+  away agree. Next run rtlamp-11: LampRadius 32 / invisible 48, where the soft edges show.
+
 ### Step 2: actors (merged claude/rt-sun-2 7fc7ffc2: [Main.Main.RayTracing] Actors, mask 0x20, fork patch 0030) -- built, NOT run
 - The lamp rays' masks (far 0xEF, near 0xE7) already keep 0x20, so posed people block lamp rays once the core has them.
 - New RtCore::Actors() (running + Actors on + the fork's 1.8-rt-skin): while true, ActorsFromCubeMaps is ignored, so people's
