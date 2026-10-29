@@ -17,6 +17,16 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### Saloon, full list (2026-10-29 05:15, run 20261029-051554-slotA, 17 shots, PASS) + next batch
+- Coverage (exact view): green 51.5 %, red 0.3 %, blue 0 %; the CHARACTER is green now: the skin shaders' lookup works (the
+  earlier "blue" was the old encoded view's distortion).
+- The third-person camera settles differently at the trace's ~5 fps than without it (its smoothing is frame-time based): cube-a =
+  cube-b and rt1-a = rt1-b (2.7 % / 2.6 %, TAA noise), but cube vs traced shows the room shifted. So cube-vs-traced numbers in this
+  scene are confounded (8.1 %); use Lucky 38 (first person) for the A/B, the saloon for coverage only.
+- save26 / save27 failed: slot A is slim (no such saves); now queued on slot C (full).
+- Built 67ee1a0d (DLL 7AE67874): per-lamp stop past the lamp's own glowing part + mask-hook log. Queued rtlamp-3-lucky22 (rt1 vs
+  noskip vs LampStop 24 / 48, A/B, coverage, cost) and the save26 / save27 lists.
+
 ### Lucky 38, full list (2026-10-29 04:54, run 20261029-045431-slotA, 16/16 shots, PASS; DLL 7CA65BE9)
 - **Clean A/B:** cube-a = cube-b and rt1-a = rt1-b to the pixel (0.0 %), so every difference below is the feature.
 - **Cost (iGPU 2 CUs, 720p; GPU PROFILE "Ray tracing (copies + helper + waits)" p50 per frame, matched to the shots):**
