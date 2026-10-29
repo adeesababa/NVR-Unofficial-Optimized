@@ -45,7 +45,9 @@
 - Cost, helper GPU incl. copies and waits (iGPU 2 CUs, 720p, 1 ray): Lucky 38 1 / 2 / 3 lamps a pixel = 19.4 / 25.8 / 31.3 ms; Vault 21
   17.6 / 23.8 / 24.4 ms. (v3: 9 fixed lamps for every pixel: 23-26 / 16.5 ms, with Vault 21's visible lamps mostly untraced.)
 - Cube maps (SkipTracedCubes): Lucky 38 1.75 ms (3.7 without RT); Vault 21 stays 8.1 ms although ~14 redraws a frame are skipped:
-  what else is in that timer there is open (people's "onto copy" layer? the static layers?).
+  answered from the run's log: Vault 21's 8.1 ms is 7.0 lamps a frame refreshing only their people ("Cube people onto copy",
+  ~1.05 ms a lamp; 89 moving pieces there vs 32 in Lucky 38). SkipTracedCubes must keep those while actors come from the cube maps
+  (ActorsFromCubeMaps: not in the traced scene yet), so that cost goes only with step 2 (actors in the TLAS).
 - Still to do in step 3: soft shadows without noise = the shared denoiser (rt-sun-core); true ReSTIR (reservoir reuse across pixels
   and frames) would only pay off with many more lamps per pixel than the forward lamp shaders can use (they shade 1-6 lamps each).
 
