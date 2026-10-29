@@ -63,7 +63,8 @@ namespace RtLampShadows {
 	inline TracedCamera Pending = {};
 
 	// Per draw
-	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view
+	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view, 4 one lamp (DebugView 3)
+	inline float DebugLamp = 0.0f;			// c217.z: DebugView 3's traced lamp index
 	inline int MaxLamps = 8;				// cube slots below min(this, 9) use the traced result
 	inline float Reproject[4][4] = {};		// c206-c209
 	inline float RtConstant[4] = {};		// c215
@@ -161,7 +162,8 @@ namespace RtLampShadows {
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
 		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
 		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
-		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : 1.0f;
+		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : debugView == 3 ? 4.0f : 1.0f;
+		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TracedSlots - 1);
 		RtConstant[0] = Mode;
 	}
 
@@ -178,7 +180,7 @@ namespace RtLampShadows {
 		memcpy(c[4], RtConstant, sizeof(RtConstant));
 		c[4][0] = Mode;
 		memcpy(c[5], slots, 4 * sizeof(float));
-		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = c[6][3] = -1.0f;
+		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = DebugLamp; c[6][3] = -1.0f;	// z: DebugView 3's lamp
 		if (force || !UploadedValid || memcmp(c, Uploaded, sizeof(c))) {
 			TheRenderManager->device->SetPixelShaderConstantF(206, &c[0][0], 4);
 			TheRenderManager->device->SetPixelShaderConstantF(215, &c[4][0], 3);
@@ -275,6 +277,14 @@ namespace RtLampShadows {
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
 		memcpy(TracedMap, PendingMap, sizeof(TracedMap));
+		// Which lamps were traced (index -> cube slot -> where): matches the LAMPSLOT lines of LogLamps; now and then
+		if ((FramesTraced % 600) == 1 && FramesTraced <= 6001) {
+			char text[900]; int used = 0;
+			for (int i = 0; i < LampCount && used < 800; i++)
+				used += sprintf_s(text + used, sizeof(text) - used, " | %d: slot %d at %.0f %.0f %.0f reach %.0f stop %.0f", i, Lamps[i].slot,
+					Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, Lamps[i].reach, Lamps[i].stop);
+			Logger::Log("UNOFFICIAL RT lamp shadows: trace %u, %d lamps%s", FramesTraced, LampCount, LampCount ? text : "");
+		}
 		if (FramesTraced++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
 	}
