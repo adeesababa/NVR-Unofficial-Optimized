@@ -45,7 +45,7 @@ void main() {
 		vec3 direction = normalize(p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0));
 		rayQueryEXT q;
 		const bool testAlpha = p.alpha.x > 0.5;
-		rayQueryInitializeEXT(q, scene, testAlpha ? 0u : gl_RayFlagsOpaqueEXT, testAlpha ? 0xFFu : 0xFBu, p.origin.xyz, 1.0, direction, 8192.0);
+		rayQueryInitializeEXT(q, scene, testAlpha ? 0u : gl_RayFlagsOpaqueEXT, testAlpha ? 0xFFu : 0xEFu, p.origin.xyz, 1.0, direction, 8192.0);
 		while (rayQueryProceedEXT(q))
 			if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
 				rtAlphaPass(rayQueryGetIntersectionInstanceIdEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false),
@@ -76,7 +76,7 @@ void main() {
 			// Alpha-tested casters (non-opaque, mask 0x04) come as candidates: their diffuse alpha decides (RtAlpha.glsl)
 			const bool testAlpha = p.alpha.x > 0.5;
 			rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | (testAlpha ? 0u : gl_RayFlagsOpaqueEXT),
-				uint(p.range.z) & (testAlpha ? 0xFFu : 0xFBu), start, 0.0, p.sun.xyz, p.bias.w);
+				uint(p.range.z) & (testAlpha ? 0xFFu : 0xEFu), start, 0.0, p.sun.xyz, p.bias.w);
 			while (rayQueryProceedEXT(q))
 				if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
 					rtAlphaPass(rayQueryGetIntersectionInstanceIdEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false),

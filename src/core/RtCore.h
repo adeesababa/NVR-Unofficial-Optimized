@@ -71,7 +71,7 @@ public:
 	static UInt32		Waiting();							// geometries not yet sent (the arena was full this frame)
 	static UInt32		Released();							// geometries released since start
 	// UNOFFICIAL 2026-10-29 alpha-tested casters ([Main.Main.RayTracing] AlphaTested, read at each helper start): true while the scene
-	// holds them (instance mask NVR_RT_MASK_ALPHA = 0x04, non-opaque: rays that do not test alpha must leave 0x04 out of their cull
+	// holds them (instance mask NVR_RT_MASK_ALPHA = 0x10, non-opaque: rays that do not test alpha must leave 0x10 out of their cull
 	// mask). A pass that tests them adds AlphaAtlasImage() to its images and includes Compute\Rt\RtAlpha.glsl (FORK-RT-CORE.md).
 	static bool			AlphaTested();
 	static int			AlphaAtlasImage();					// the alpha atlas' image index (-1: none)

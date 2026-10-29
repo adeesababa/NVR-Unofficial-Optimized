@@ -50,7 +50,7 @@
 // diffuse alpha is the alpha atlas' slot (flags >> 16) (RtCore::AlphaAtlasImage(): R16F 2048x2048, 64x64 texels a slot, 32 a row), and
 // a candidate hit counts where alpha >= ((flags >> 8) & 0xFF) / 255. src/hlsl/NewVegas/Compute/Rt/RtAlpha.glsl does it.
 #define NVR_RT_RECORD_ALPHA_TESTED  0x20u
-#define NVR_RT_MASK_ALPHA           0x04u     // the instance mask of alpha-tested geometry (rays that cannot test alpha leave it out)
+#define NVR_RT_MASK_ALPHA           0x10u     // the instance mask of alpha-tested geometry (rays that cannot test alpha leave it out)
 #define NVR_RT_ALPHA_SLOT_SIZE      64u
 #define NVR_RT_ALPHA_ATLAS_SLOTS    32u       // a row (and rows): 2048 x 2048 texels, 1024 slots
 

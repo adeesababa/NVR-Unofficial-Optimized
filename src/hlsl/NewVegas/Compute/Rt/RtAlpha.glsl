@@ -1,5 +1,5 @@
 // UNOFFICIAL 2026-10-29 alpha-tested casters in the ray tracing scene ([Main.Main.RayTracing] AlphaTested; FORK-RT-CORE.md): for any
-// trace shader in the helper. Alpha-tested instances are non-opaque, have the cull mask bit 0x04 and the record flag 0x20; their
+// trace shader in the helper. Alpha-tested instances are non-opaque, have the cull mask bit 0x10 and the record flag 0x20; their
 // texcoords (float2) are in the geometry data at the word offset floatBitsToUint(albedo.w), their diffuse alpha in the alpha atlas
 // (R16F, 64 x 64 texels a texture, 32 slots a row; slot = flags >> 16), the reference in (flags >> 8) & 0xFF.
 //
