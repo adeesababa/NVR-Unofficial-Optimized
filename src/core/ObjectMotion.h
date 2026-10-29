@@ -34,6 +34,7 @@ namespace ObjectMotion {
 	inline IDirect3DVertexShader9* VS = nullptr;  inline IDirect3DPixelShader9* PS = nullptr;
 	inline UInt32 Frames = 0, DrawnGeometries = 0, DrawnSkinned = 0, Noted = 0;
 	inline UInt32 MadeFrame = 0xFFFFFFFF;	// the frame TESR_ObjectMotionBuffer was made in
+	inline IDirect3DSurface9* CheckTarget = nullptr;  inline IDirect3DSurface9* CheckCopy = nullptr;	// the 600-frame read-back (Render)
 	// For the Vulkan readers (TAA.glsl, FSRPrep / FSRUpPrep): the buffer holds THIS frame's (a reader that runs before the effects, as the
 	// upscale before them does, finds last frame's and keeps camera motion only).
 	inline bool Ready() { return Data.x > 0.0f && Texture && MadeFrame == TheFrameRateManager->FrameNumber; }
@@ -369,8 +370,30 @@ namespace ObjectMotion {
 		Data.x = Failed ? 0.0f : 1.0f;
 		Data.y = (float)drawnGeos;
 		if (++Frames >= 600) {
-			Logger::Log("ObjectMotion: per frame %.1f geometries noted, %.1f moved ones drawn (%.1f skinned)", Noted / (double)Frames,
-				DrawnGeometries / (double)Frames, DrawnSkinned / (double)Frames);
+			// What the buffer holds this frame, read back small (a 96 x 54 point copy; one wait for the GPU every 600 frames): how many
+			// pixels carry a move, and the largest one (game units). Proof the moved things land on screen, not only that they were drawn.
+			int moving = -1; float largest = 0.0f;
+			if (drawnGeos) {
+				if (!CheckTarget && (FAILED(d->CreateRenderTarget(96, 54, D3DFMT_A16B16G16R16F, D3DMULTISAMPLE_NONE, 0, FALSE, &CheckTarget, NULL)) ||
+					FAILED(d->CreateOffscreenPlainSurface(96, 54, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM, &CheckCopy, NULL)))) {
+					if (CheckTarget) { CheckTarget->Release(); CheckTarget = nullptr; }
+				}
+				D3DLOCKED_RECT r = {};
+				if (CheckTarget && SUCCEEDED(d->StretchRect(Surface, NULL, CheckTarget, NULL, D3DTEXF_POINT)) && SUCCEEDED(d->GetRenderTargetData(CheckTarget, CheckCopy)) &&
+					SUCCEEDED(CheckCopy->LockRect(&r, NULL, D3DLOCK_READONLY))) {
+					moving = 0;
+					for (int y = 0; y < 54; y++) {
+						const D3DXFLOAT16* row = (const D3DXFLOAT16*)((const char*)r.pBits + y * r.Pitch);
+						for (int x = 0; x < 96; x++) {
+							float v[4]; D3DXFloat16To32Array(v, row + x * 4, 4);
+							if (v[3] > 0.5f) { moving++; largest = (std::max)(largest, sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])); }
+						}
+					}
+					CheckCopy->UnlockRect();
+				}
+			}
+			Logger::Log("ObjectMotion: per frame %.1f geometries noted, %.1f moved ones drawn (%.1f skinned); this frame %d of 5184 sampled pixels carry a move (largest %.2f units)",
+				Noted / (double)Frames, DrawnGeometries / (double)Frames, DrawnSkinned / (double)Frames, moving, largest);
 			Frames = DrawnGeometries = DrawnSkinned = Noted = 0;
 		}
 	}
