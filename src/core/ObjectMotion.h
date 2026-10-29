@@ -77,7 +77,18 @@ namespace ObjectMotion {
 		}
 	}
 
-	inline bool TransformDiffers(const NiTransform& a, const NiTransform& b) { return memcmp(&a, &b, sizeof(NiTransform)) != 0; }
+	// UNOFFICIAL 2026-10-29 (bench, Ultra-Luxe crowd: 151 'moved' geometries a frame moving 0.01-0.02 units, 0.4 ms GPU for nothing): a
+	// move counts only when some point of the thing can travel at least MinMove units (a twentieth of a unit: far under a pixel at any
+	// usual distance; TAA and FSR treat what is under it as still anyway). Rotation: the change of a rotation entry times the reach
+	// (the bound's radius for a rigid object; 64 units for a bone, a limb's length).
+	constexpr float MinMove = 0.05f, BoneReach = 64.0f;
+	inline bool TransformDiffers(const NiTransform& a, const NiTransform& b, float reach) {
+		const float dx = a.pos.x - b.pos.x, dy = a.pos.y - b.pos.y, dz = a.pos.z - b.pos.z;
+		if (dx * dx + dy * dy + dz * dz > MinMove * MinMove) return true;
+		float rot = fabsf(a.scale - b.scale);
+		for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) rot = (std::max)(rot, fabsf(a.rot.data[i][j] - b.rot.data[i][j]));
+		return rot * (std::max)(reach, 1.0f) > MinMove;
+	}
 
 	// After a world-context RenderPassStandard (rigid geometry).
 	inline void NoteRigid(NiGeometry* geo) {
@@ -93,7 +104,8 @@ namespace ObjectMotion {
 		e.camCur = CameraNow();
 		e.seen = frame;
 		Noted++;
-		if (e.hasPrev && TransformDiffers(e.prev, e.cur)) Moving.push_back(geo);
+		const float reach = geo->m_kWorldBound ? geo->m_kWorldBound->Radius : 64.0f;
+		if (e.hasPrev && TransformDiffers(e.prev, e.cur, reach)) Moving.push_back(geo);
 	}
 
 	// Did any bone move in the WORLD (the matrices are camera relative: the rotations compare as they are, the translations with the camera added)?
@@ -103,9 +115,9 @@ namespace ObjectMotion {
 		for (size_t b = 0; b + 12 <= e.bones.size(); b += 12) {
 			const float* n = &e.bones[b]; const float* p = &e.prevBones[b];
 			for (int r = 0; r < 3; r++) {
-				for (int k = 0; k < 3; k++) if (fabsf(n[r * 4 + k] - p[r * 4 + k]) > 1.0e-5f) return true;
+				for (int k = 0; k < 3; k++) if (fabsf(n[r * 4 + k] - p[r * 4 + k]) * BoneReach > MinMove) return true;
 				const float dt = (n[r * 4 + 3] + (&d.x)[r]) - p[r * 4 + 3];
-				if (fabsf(dt) > 0.01f) return true;
+				if (fabsf(dt) > MinMove) return true;
 			}
 		}
 		return false;
