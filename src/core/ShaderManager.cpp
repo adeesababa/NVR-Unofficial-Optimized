@@ -909,6 +909,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// create a map of all nearby valid lights and sort them per distance to player
 	std::multimap<float, ShadowSceneLight*> SceneLights;	// UNOFFICIAL: a multimap (two lamps with the same key used to drop one)
 	NiTList<ShadowSceneLight>::Entry* Entry = SceneNode->lights.start;
+	ShadowPool::BeginRanking();	// UNOFFICIAL 2026-10-29 ShadowPool: the shadow-casting lamps the live slots have no room for, in order
 
 	ShadowsExteriorEffect::InteriorsStruct* Settings = &Effects.ShadowsExteriors->Settings.Interiors;
 	ShadowsExteriorEffect::ShadowStruct* ShadowsConstants = &Effects.ShadowsExteriors->Constants;
@@ -1198,6 +1199,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			if (CastShadow && !clusterMembers.empty() && std::find(clusterMembers.begin(), clusterMembers.end(), (const void*)v->second) != clusterMembers.end())
 				CastShadow = false;	// UNOFFICIAL ShadowClusterEnabled: its group's brightest lamp casts the shadow
 
+			if (CastShadow && ShadowIndex >= ShadowLightsMax && radius > 10) ShadowPool::NoteCandidate(v->second);	// UNOFFICIAL 2026-10-29 ShadowPool
 			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
 				// add found light to the ranked list of lights that cast shadows (slots are assigned below)
 				ShadowCasters[ShadowIndex] = v->second;

@@ -2,6 +2,7 @@
 
 #include "PointShadowSchedule.h"
 #include "LampFixtures.h"
+#include "ShadowPool.h"	// UNOFFICIAL 2026-10-29 ShadowPool (ShadowPoolMax)
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
 //
@@ -66,8 +67,12 @@ namespace PointShadowForward {
 	inline bool Refused = false;
 	inline bool Active = false;				// this frame: indoors, Strength > 0, at least one cube map to use
 	inline bool FirstPerson = true;			// [Shaders.ShadowsInteriors.Forward] FirstPerson, read per frame
-	inline Slot Slots[ShadowCubeMapsMax] = {};
+	inline Slot Slots[ShadowCubeMapsMax + ShadowPoolMax] = {};	// the live slots (Publish), then the pool's static cube maps (PublishPool)
 	inline int SlotCount = 0;
+	// UNOFFICIAL 2026-10-29 ShadowPool: with pool lamps published, SetForPass finds a lamp's entry through this map (hundreds of entries);
+	// without (UseIndex false), by the scan over the live slots as before.
+	inline std::unordered_map<const ShadowSceneLight*, int> SlotIndex;
+	inline bool UseIndex = false;
 	inline int Focus = -1;					// DebugView 3: the Slots entry of the lamp in cube slot 0 (red in views 1 and 2), -1 none
 	inline unsigned TraceDraws = 0, TraceDrawsWithLamp = 0;	// DebugView 3: draws that got the focus lamp, and of those the ones lit by it
 	inline IDirect3DSurface9* TraceReadback = nullptr;		// DebugView 3: system-memory copy of one cube face (TraceCube)
@@ -309,7 +314,7 @@ namespace PointShadowForward {
 			for (auto it = ObjectLamps.begin(); it != ObjectLamps.end();) it = Frame - it->second.frame > 1024 ? ObjectLamps.erase(it) : std::next(it);
 		if ((Frame & 4095) == 0) GameCullMask.clear();	// freed lamps (a lamp new at a freed address gets one stale restore, harmless)
 		KeepLampsNow = KeepLampsWanted && !TheShaderManager->GameState.isExterior;
-		Active = false; SlotCount = 0; BoundThisFrame = false;
+		Active = false; SlotCount = 0; BoundThisFrame = false; UseIndex = false;
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 	}
 
@@ -322,6 +327,7 @@ namespace PointShadowForward {
 		static int lastCount = 0;
 		Active = false;
 		SlotCount = 0;
+		UseIndex = false;
 		Focus = -1;
 		if (!CompiledIn) { lastCount = 0; return; }
 		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
@@ -494,6 +500,36 @@ namespace PointShadowForward {
 		}
 	}
 
+	// UNOFFICIAL 2026-10-29 ShadowPool (core/ShadowPool.h): the pool lamps' static cube maps after the live slots Publish put in, with
+	// the same fill / invisible light rules (Publish's) and FadeIn from when each was first published. Then the lamp -> entry map.
+	struct PoolEntry { const ShadowSceneLight* light; D3DXVECTOR3 position; float radius; IDirect3DCubeTexture9* cube; int slot; double since; };
+	inline void PublishPool(const PoolEntry* entries, int count) {
+		UseIndex = false;
+		if (!CompiledIn || Refused || count <= 0) return;
+		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+		if (!forward.Enabled || !(forward.Strength > 0.0f)) return;
+		LARGE_INTEGER frequency, counter;
+		QueryPerformanceFrequency(&frequency);
+		QueryPerformanceCounter(&counter);
+		const double now = (double)counter.QuadPart / (double)frequency.QuadPart;
+		for (int i = 0; i < count && SlotCount < ShadowCubeMapsMax + ShadowPoolMax; i++) {
+			const PoolEntry& e = entries[i];
+			float fade = forward.FadeIn > 0.0f ? (float)(std::min)(1.0, (now - e.since) / forward.FadeIn) : 1.0f;
+			const NiPointLight* source = e.light->sourceLight;
+			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
+			if ((forward.InvisibleLightShadowStrength < 1.0f || InvisibleSize > 0.0f) && source && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::Invisible(source, forward.FixtureDistance)) {
+				fade *= forward.InvisibleLightShadowStrength;
+				if (InvisibleSize > 0.0f) fade = -fade;
+			}
+			Slots[SlotCount++] = { e.light, e.position, e.radius, e.cube, e.slot, fade };
+		}
+		SlotIndex.clear();
+		for (int s = 0; s < SlotCount; s++) SlotIndex.emplace(Slots[s].light, s);	// (a lamp in both: the live slot, first, wins)
+		UseIndex = true;
+		Active = SlotCount > 0;
+	}
+
 	inline IDirect3DCubeTexture9* NeutralCube() {
 		if (!Neutral && SUCCEEDED(TheRenderManager->device->CreateCubeTexture(1, 1, 0, D3DFMT_R32F, D3DPOOL_MANAGED, &Neutral, NULL))) {
 			for (int face = 0; face < 6; face++) {
@@ -553,7 +589,9 @@ namespace PointShadowForward {
 				const ShadowSceneLight* light = pass->lights[first + k];
 				if (!light || !light->bPointLight) continue;	// light 0 of most passes is the cell's directional light
 				if (trace && Focus >= 0 && Slots[Focus].light == light) focusIndex = k;
-				for (int s = 0; s < SlotCount; s++) {
+				int first = 0, last = SlotCount;	// UNOFFICIAL 2026-10-29 ShadowPool: straight to the lamp's entry when the map is up
+				if (UseIndex) { auto found = SlotIndex.find(light); if (found == SlotIndex.end()) continue; first = found->second; last = first + 1; }
+				for (int s = first; s < last; s++) {
 					if (Slots[s].light != light) continue;
 					constants[k][0] = Slots[s].position.x - camera.x;
 					constants[k][1] = Slots[s].position.y - camera.y;

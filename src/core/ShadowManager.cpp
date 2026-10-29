@@ -2635,9 +2635,75 @@ void ShadowManager::RenderShadowMaps() {
 			shadowMapTimer.LogTime(message.c_str());
 		}
 		scheduleFrame++;
+		// UNOFFICIAL 2026-10-29 ShadowPool (core/ShadowPool.h): static cube maps for the next lamps of the ranking, drawn a few a frame.
+		static PointShadowForward::PoolEntry poolEntries[ShadowPoolMax];
+		int poolCount = 0;
+		{
+			const int want = ShadowPool::Wanted();
+			const int spare = ShadowCubeMapsMax - 1;	// its static entries hold each pool cube while it is drawn
+			static bool spareWarned = false;
+			if (!want || isExterior || !PointShadowForward::UsesAllSlots(isExterior)) {
+				if (!want && !ShadowPool::Cubes.empty()) ShadowPool::Release();
+			}
+			else if (shadowedSlots >= spare) {
+				if (!spareWarned) { spareWarned = true; Logger::Log("[WARNING] UNOFFICIAL ShadowPool: needs [Shaders.ShadowsInteriors.Main] LightPoints below %d (it draws through the last slot): off", spare); }
+			}
+			else if (Shadows->CubeMapSizeCreated && Shadows->EnsureStaticCubeMap(spare)) {
+				ShadowPool::Frame++;
+				if (ShadowPool::MadeSize != Shadows->CubeMapSizeCreated) { ShadowPool::Release(); ShadowPool::MadeSize = Shadows->CubeMapSizeCreated; }
+				LARGE_INTEGER frequency, counter;
+				QueryPerformanceFrequency(&frequency);
+				QueryPerformanceCounter(&counter);
+				const double nowSeconds = (double)counter.QuadPart / (double)frequency.QuadPart;
+				int budget = ShadowPool::Budget();
+				static GpuTimer poolTimer("  Cube pool static layer (per frame)", 480);
+				GpuProfileScope gpuPool(poolTimer, Device);
+				for (ShadowSceneLight* light : ShadowPool::Candidates) {
+					if (poolCount >= want) break;
+					NiPointLight* source = light ? light->sourceLight : nullptr;
+					if (!source) continue;
+					const float radius = source->Spec.r * ShadowsInteriors->LightRadiusMult;	// as the slot loop
+					const NiPoint3& at = source->m_worldTransform.pos;
+					const int index = ShadowPool::EntryFor(light, Shadows->CubeMapSizeCreated, want);
+					if (index < 0) continue;
+					ShadowPool::Cube& cube = ShadowPool::Cubes[index];
+					const bool current = cube.valid && cube.x == at.x && cube.y == at.y && cube.z == at.z && cube.radius == radius && cube.cell == currentCell;
+					if (!current) {
+						if (budget <= 0) { if (GpuTimer::Enabled) ShadowPool::StatWaiting++; continue; }	// drawn on a later frame; no shadow until then
+						budget--;
+						IDirect3DCubeTexture9*& tex = Shadows->Textures.ShadowCubeMapStaticTexture[spare];
+						IDirect3DSurface9** faces = Shadows->Textures.ShadowCubeMapStaticSurface[spare];
+						std::swap(tex, cube.texture);
+						for (int f = 0; f < 6; f++) std::swap(faces[f], cube.faces[f]);
+						ShadowSceneLight* one[ShadowCubeMapsMax] = {};
+						one[spare] = light;
+						const bool drawn = RenderShadowCubeMap(one, spare, CubeLayer::StaticOnly);
+						std::swap(tex, cube.texture);
+						for (int f = 0; f < 6; f++) std::swap(faces[f], cube.faces[f]);
+						if (!drawn) continue;
+						cube.x = at.x; cube.y = at.y; cube.z = at.z; cube.radius = radius; cube.cell = currentCell; cube.valid = true;
+						if (GpuTimer::Enabled) ShadowPool::StatDrawn++;
+					}
+					if (cube.since <= 0.0) cube.since = nowSeconds;
+					cube.used = ShadowPool::Frame;
+					poolEntries[poolCount++] = { light, D3DXVECTOR3(cube.x, cube.y, cube.z), cube.radius, cube.texture, ShadowCubeMapsMax + index, cube.since };
+				}
+				if (GpuTimer::Enabled) {
+					ShadowPool::StatPublished += poolCount;
+					if (++ShadowPool::StatFrames >= 240) {
+						const float f = 1.0f / ShadowPool::StatFrames;
+						Logger::Log("SHADOW POOL per frame: %.1f lamps past the live slots, %.1f with their static cube map, %.2f drawn, %.2f waiting for a draw; %u cube maps (%u x %u)",
+							(float)ShadowPool::Candidates.size(), ShadowPool::StatPublished * f, ShadowPool::StatDrawn * f, ShadowPool::StatWaiting * f,
+							(unsigned)ShadowPool::Cubes.size(), ShadowPool::MadeSize, ShadowPool::MadeSize);
+						ShadowPool::StatFrames = ShadowPool::StatPublished = ShadowPool::StatDrawn = ShadowPool::StatWaiting = 0;
+					}
+				}
+			}
+		}
 		// UNOFFICIAL interior forward point-light shadows: the lights whose cube map is theirs this frame.
 		if (!isExterior) {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
+			PointShadowForward::PublishPool(poolEntries, poolCount);	// UNOFFICIAL 2026-10-29 ShadowPool (nothing when the pool is off)
 			ForwardWasActive = PointShadowForward::Active;
 			PointShadowForward::FrameStats();
 		}
