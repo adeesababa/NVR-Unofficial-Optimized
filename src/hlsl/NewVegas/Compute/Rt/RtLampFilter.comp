@@ -45,10 +45,24 @@ void main() {
 	vec3 slots = e - 64.0 * vis;
 	vec3 n = normalize(imageLoad(normalImage, pixel).xyz * 2.0 - 1.0);
 	int step = max(int(p.size.z), 1);
-	// the local depth slope (one texel), so taps on a slanted floor are not counted as another surface
-	float zx = imageLoad(depthImage, clamp(pixel + ivec2(1, 0), ivec2(0), size - 1)).r - z;
-	float zy = imageLoad(depthImage, clamp(pixel + ivec2(0, 1), ivec2(0), size - 1)).r - z;
-	float slope = max(abs(zx), abs(zy)) * float(step) + 0.01 * z;
+	// Flat answer: the pixel and its four neighbours one step away hold the same entries (all lit or all blocked, the common case):
+	// nothing to smooth, keep it (most of the screen; the filter's cost is then the edges only)
+	bool same = true;
+	for (int i = 0; i < 4 && same; i++) {
+		ivec2 q = clamp(pixel + ivec2(i == 0 ? step : i == 1 ? -step : 0, i == 2 ? step : i == 3 ? -step : 0), ivec2(0), size - 1);
+		same = all(equal(imageLoad(rawImage, q).xy, raw));
+	}
+	if (same) {
+		imageStore(resultImage, pixel, vec4(raw, 0.0, 0.0));
+		return;
+	}
+	// the local depth slope (one texel), so taps on a slanted floor are not counted as another surface; the smaller of the two
+	// one-sided differences each way, so a silhouette (a rail in front of the wall) does not open the weight to the background
+	float zr = imageLoad(depthImage, clamp(pixel + ivec2(1, 0), ivec2(0), size - 1)).r - z;
+	float zl = z - imageLoad(depthImage, clamp(pixel - ivec2(1, 0), ivec2(0), size - 1)).r;
+	float zd = imageLoad(depthImage, clamp(pixel + ivec2(0, 1), ivec2(0), size - 1)).r - z;
+	float zu = z - imageLoad(depthImage, clamp(pixel - ivec2(0, 1), ivec2(0), size - 1)).r;
+	float slope = max(min(abs(zr), abs(zl)), min(abs(zd), abs(zu))) * float(step) + 0.002 * z;
 
 	vec3 sum = vec3(0.0), weights = vec3(0.0);
 	for (int y = -2; y <= 2; y++) {
