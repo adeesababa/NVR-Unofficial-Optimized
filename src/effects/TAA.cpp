@@ -7,6 +7,7 @@
 #include "TAA.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/Upscaler.h"		// UNOFFICIAL 2026-10-27 (DLSS helper options)
+#include "../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion (the Vulkan passes' motion input)
 
 void TAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TAAData", &Constants.Data);
@@ -149,11 +150,12 @@ namespace {
 		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_TAAHistoryBuffer
 		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE, 2, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBuffer
 		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE, 3, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBufferViewModel
+		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE, 4, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer (placeholder: depth)
 		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D,  FALSE, 0 },	// Constants
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,  FALSE, 0 },	// POINT, CLAMP
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,  FALSE, 4 },	// LINEAR, CLAMP
 	};
-	const UINT TAATextureCount = 4;
+	const UINT TAATextureCount = 5;
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
@@ -188,6 +190,8 @@ bool TAAEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	uniforms.data = Constants.Data;
 	uniforms.prevProjection = Constants.PrevProjection;
 	uniforms.cameraDelta = Constants.CameraDelta;
+	const bool objectMotion = ObjectMotion::Ready();	// UNOFFICIAL 2026-10-29: cameraDelta.w = TAA.glsl's switch for t_objmotion
+	uniforms.cameraDelta.w = objectMotion ? 1.0f : 0.0f;
 	uniforms.weapon = Constants.Weapon;
 	uniforms.sharpen = Constants.Sharpen;
 	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
@@ -210,9 +214,9 @@ bool TAAEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 		for (UINT i = 0; i < TAATextureCount; i++) {
 			resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 		}
-		resources[4].Slot = 0; resources[4].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[4].pResource = buffer;
-		resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_SAMPLER; resources[5].pResource = point;
-		resources[6].Slot = 1; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = linear;
+		resources[TAATextureCount + 0].Slot = 0; resources[TAATextureCount + 0].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[TAATextureCount + 0].pResource = buffer;
+		resources[TAATextureCount + 1].Slot = 0; resources[TAATextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; resources[TAATextureCount + 1].pResource = point;
+		resources[TAATextureCount + 2].Slot = 1; resources[TAATextureCount + 2].Type = NVR_EXT_BIND_SAMPLER; resources[TAATextureCount + 2].pResource = linear;
 		TAAPush push = {};
 		return ExtDrawTo(pass.Pipeline, targets, 1, resources, _countof(resources), &push, sizeof(push));
 	};
@@ -221,11 +225,12 @@ bool TAAEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	// view reads what the resolve read; the output reads this frame's resolve (the buffer that becomes next frame's history).
 	IDirect3DBaseTexture9* history[2] = { Textures.ResolveTexture, Textures.HistoryTexture };
 	IDirect3DSurface9* surfaces[2] = { Textures.ResolveSurface, Textures.HistorySurface };
-	IDirect3DBaseTexture9* resolveInputs[TAATextureCount] = { source, history[historyIndex], depth, viewModel };
+	IDirect3DBaseTexture9* motion = objectMotion ? (IDirect3DBaseTexture9*)ObjectMotion::Texture : depth;
+	IDirect3DBaseTexture9* resolveInputs[TAATextureCount] = { source, history[historyIndex], depth, viewModel, motion };
 	IDirect3DSurface9* resolveTarget = surfaces[write];
 	if (!draw(0, resolveInputs, &resolveTarget)) return false;
 
-	IDirect3DBaseTexture9* outputInputs[TAATextureCount] = { source, history[write], depth, viewModel };
+	IDirect3DBaseTexture9* outputInputs[TAATextureCount] = { source, history[write], depth, viewModel, motion };
 	const bool shown = Settings.DebugView > 0 ? draw(1, resolveInputs, &RenderTarget) : draw(2, outputInputs, &RenderTarget);
 	if (shown && ++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as a Vulkan pass.", Name);
 	return shown;

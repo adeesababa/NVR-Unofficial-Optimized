@@ -1,5 +1,6 @@
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
 #include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals (TESR_CapturedNormalsData)
+#include "ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion (TESR_ObjectMotionData)
 #include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
 #include "HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
@@ -167,6 +168,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_SunAmount", &TheShaderManager->ShaderConst.SunAmount);
 	TheShaderManager->RegisterConstant("TESR_GameTime", &TheShaderManager->ShaderConst.GameTime);
 	TheShaderManager->RegisterConstant("TESR_CapturedNormalsData", &CapturedNormals::Data);	// UNOFFICIAL 2026-10-28 CapturedNormals
+	TheShaderManager->RegisterConstant("TESR_ObjectMotionData", &ObjectMotion::Data);	// UNOFFICIAL 2026-10-29 ObjectMotion
 	TheShaderManager->RegisterConstant("TESR_FogData", &TheShaderManager->ShaderConst.fogData);
 	TheShaderManager->RegisterConstant("TESR_FogDistance", &TheShaderManager->ShaderConst.fogDistance);
 	TheShaderManager->RegisterConstant("TESR_FogColor", &TheShaderManager->ShaderConst.fogColor);
@@ -1719,6 +1721,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 
 	// render post process normals for use by shaders
 	RenderDepthAndNormals(RenderTarget);
+	// UNOFFICIAL 2026-10-29 [Main.Main.Quality] ObjectMotion (core/ObjectMotion.h): the world-space move of what moved since last frame, for
+	// every temporal reader (TAA, FSR's motion vectors). Off: nothing runs (TESR_ObjectMotionData.x = 0).
+	if (ObjectMotion::Live) {
+		static GpuTimer objectMotionTimer("Object motion");
+		GpuProfileScope gpu(objectMotionTimer, Device);
+		ObjectMotion::Render(Device, Effects.CombineDepth->Textures.CombinedDepthTexture);
+		Device->SetRenderTarget(0, RenderTarget);
+		Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
+		Device->SetFVF(FrameFVF);
+	}
 	// UNOFFICIAL 2026-10-26 pixel inspector: the linear depth and the view normal every effect reads.
 	PixelInspector::CaptureIf("Depth (TESR_DepthBuffer, linear / farZ)", Effects.CombineDepth->Textures.CombinedDepthTexture, PixelInspector::Depth);
 	PixelInspector::CaptureIf("View normal (TESR_NormalsBuffer)", Effects.Normals->Textures.NormalsTexture, PixelInspector::Normal);

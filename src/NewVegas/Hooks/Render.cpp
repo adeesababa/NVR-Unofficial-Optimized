@@ -33,6 +33,7 @@
 #include "../../core/LinearSceneCensus.h"	// UNOFFICIAL 2026-10-28, diagnostic: what draws into the world and how (linear-scene plan)
 #include "../../core/LinearScene.h"	// UNOFFICIAL 2026-10-28 LinearScene: the world's main list kept in linear light
 #include "../../core/CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals: the main list's surfaces write their smooth normals
+#include "../../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion: what moved, noted as the main list draws it
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/FoldFog.h"	// UNOFFICIAL 2026-10-27 FoldFog: env-mapped objects fog in their lit pass, no fog pass
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
@@ -674,6 +675,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		SnowAccumulationEffect* snow = TheShaderManager->Effects.SnowAccumulation;
 		CapturedNormals::BeginFrame(TheRenderManager->device, (snow && snow->Enabled && snow->CapturedNormals && snow->ShouldRender()) || CapturedNormals::MergeWanted());
 	}
+	ObjectMotion::BeginFrame();	// UNOFFICIAL 2026-10-29 ObjectMotion
 	FoldFog::BeginFrame();	// UNOFFICIAL 2026-10-27 FoldFog
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
@@ -3088,6 +3090,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GameShaderEyes, per draw
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	GameEyes::After();
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) ObjectMotion::NoteRigid(((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL 2026-10-29 ObjectMotion
 	if (countOpt) OnePassDepth::Counts::After();
 	ManyLamps::AfterDraw((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsOnePass: the first person's lighting offset
 	LampsInOnePass::GlowAfterDraw(Pass);	// UNOFFICIAL ManyLampsGlow (statistics)
@@ -3151,6 +3154,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
 	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GameShaderEyes, per draw
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) ObjectMotion::NoteSkinned(((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL 2026-10-29 ObjectMotion: the bones the game just made
 	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ManyLamps::AfterDraw((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsOnePass: the first person's lighting offset

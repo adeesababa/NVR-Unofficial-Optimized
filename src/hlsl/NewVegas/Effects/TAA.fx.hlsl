@@ -63,6 +63,10 @@ sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; A
 sampler2D TESR_TAAHistoryBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-29 ObjectMotion (core/ObjectMotion.h): how far the surface at each pixel moved in the world since last frame (game
+// units), 0 where it moved with the world; TESR_ObjectMotionData.x 0 = not made this frame (the reprojection is then exactly as before).
+sampler2D TESR_ObjectMotionBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 TESR_ObjectMotionData;
 
 #include "Includes/Depth.hlsl"
 
@@ -113,6 +117,8 @@ float3 YCoCgToRGB(float3 c)
 float2 Reproject(float2 uv, out float inFront)
 {
 	float3 cameraVector = toWorld(uv) * readDepth(uv);
+	// UNOFFICIAL 2026-10-29 ObjectMotion: a surface that moved itself was that much further back along its path last frame.
+	[branch] if (TESR_ObjectMotionData.x > 0.0f) cameraVector -= tex2Dlod(TESR_ObjectMotionBuffer, float4(uv, 0.0f, 0.0f)).xyz;
 	float3 fromPrevCamera = cameraVector + TESR_TAACameraDelta.xyz;
 
 	// Same axis layout toWorld reads out of TESR_ViewTransform.
