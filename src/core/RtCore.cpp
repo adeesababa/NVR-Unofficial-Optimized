@@ -179,7 +179,7 @@ namespace {
 		UInt32		arenaUsed = 0, arenaCapacity = 0;
 		// Why geometry was left out ([0] objects, [1] land), counted from exchange 1 to 60 and logged with the scene at 60
 		enum Skip { kSeen, kNoShader, kSkinned, kNotLighting, kFlags, kLeaf, kAlpha, kDescribe, kMeasure, kTaken, kSkipCount };
-		UInt32		skips[2][kSkipCount] = {};
+		UInt32		skips[3][kSkipCount] = {};	// [0] objects, [1] land, [2] LOD land
 		UInt32		landCells[3] = {};		// cells walked, cells without a land node, land nodes culled (APP_CULLED)
 		UInt32		landWalk[5] = {};		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
@@ -192,8 +192,8 @@ namespace {
 		void		Poll();
 		void		Gather();
 		void		WalkCell(TESObjectCELL* cell);
-		void		Walk(NiAVObject* root, bool land);
-		void		AddGeometry(NiGeometry* geo, bool land);
+		void		Walk(NiAVObject* root, bool land, bool lod = false);
+		void		AddGeometry(NiGeometry* geo, bool land, bool lod = false);
 		bool		Describe(NiGeometry* geo, NVR_EXT_RT_GEOMETRY_DESC& desc, std::vector<NVR_EXT_RT_RANGE>& ranges, GeometryKey& key);
 		void		LogHelperMessage();
 		bool		Ready();					// Frame's checks before any exchange (start, poll, screen size): true = may exchange now
@@ -521,8 +521,8 @@ namespace {
 		return true;
 	}
 
-	void Core::AddGeometry(NiGeometry* geo, bool land) {
-		UInt32* skip = skips[land ? 1 : 0];
+	void Core::AddGeometry(NiGeometry* geo, bool land, bool lod) {
+		UInt32* skip = skips[lod ? 2 : land ? 1 : 0];
 		skip[kSeen]++;
 		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData) { skip[kNoShader]++; return; }
 		if (geo->skinInstance) { skip[kSkinned]++; return; }
@@ -607,7 +607,7 @@ namespace {
 		instance.flags = 0x1u;	// both faces (the game's two-sided and one-sided meshes alike: shadows need the back faces too)
 	}
 
-	void Core::Walk(NiAVObject* root, bool land) {
+	void Core::Walk(NiAVObject* root, bool land, bool lod) {
 		if (!root) return;
 		const NiPoint3 camera = { TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z };
 		auto inReach = [&](NiAVObject* o) {
@@ -624,16 +624,17 @@ namespace {
 			stack.pop_back();
 			// Land: no reach test (its nodes' world bounds are not usable: rtsun-6 met no land at all with it; the cascades' walk does not
 			// test land either). The loaded grid limits it (a few quads a cell).
-			if (land && object) { landWalk[0]++; if (object->m_flags & NiAVObject::NiFlags::APP_CULLED) landWalk[1]++; }
-			if (!object || (object->m_flags & NiAVObject::NiFlags::APP_CULLED) || (!land && !inReach(object))) continue;
-			if (object->IsGeometry()) { AddGeometry(static_cast<NiGeometry*>(object), land); continue; }
+			if (land && !lod && object) { landWalk[0]++; if (object->m_flags & NiAVObject::NiFlags::APP_CULLED) landWalk[1]++; }
+			// LOD land keeps the reach test (big quads with real bounds); its quads where the full land is loaded are APP_CULLED
+			if (!object || (object->m_flags & NiAVObject::NiFlags::APP_CULLED) || ((!land || lod) && !inReach(object))) continue;
+			if (object->IsGeometry()) { AddGeometry(static_cast<NiGeometry*>(object), land, lod); continue; }
 			NiNode* node = object->IsNiNode();
 			if (!node) continue;
-			if (land) landWalk[2]++;
+			if (land && !lod) landWalk[2]++;
 			// Faded out: not drawn. Land ignores it, as the cascades' walk does (rt-reflections' og-lake run met no land with it).
-			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) { if (land) landWalk[3]++; else continue; }
+			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) { if (land) { if (!lod) landWalk[3]++; } else continue; }
 			if (node->IsKindOf<NiSwitchNode>()) {
-				if (land) landWalk[4]++;
+				if (land && !lod) landWalk[4]++;
 				NiSwitchNode* sw = static_cast<NiSwitchNode*>(node);
 				if (sw->m_iIndex >= 0 && sw->m_iIndex < node->m_children.end) stack.push_back(node->m_children.data[sw->m_iIndex]);
 				continue;
@@ -668,6 +669,9 @@ namespace {
 			GridCellArray* cells = Tes->gridCellArray;
 			const UInt32 count = cells->size * cells->size;
 			for (UInt32 i = 0; i < count; i++) WalkCell(cells->GetCell(i));
+			// LOD land, as the cascades walk it (ShadowManager: GetRootLandLODNode): where the loaded cells hold no land geometry
+			// (rtsun-8 at og-lake: every land node empty), the ground on screen is LOD terrain.
+			Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
 		}
 		else if (Player) WalkCell(Player->parentCell);
 		instances = record->instanceCount;
@@ -841,13 +845,13 @@ namespace {
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
 			if (n == 60)
-				for (int k = 0; k < 2; k++) {
+				for (int k = 0; k < 3; k++) {
 					const UInt32* m = c.skips[k];
 					char cells[256] = "";
-					if (k) sprintf_s(cells, "; cells walked %u, without a land node %u, land node culled %u; land subtree: objects %u, culled %u, nodes %u, "
+					if (k == 1) sprintf_s(cells, "; cells walked %u, without a land node %u, land node culled %u; land subtree: objects %u, culled %u, nodes %u, "
 						"faded %u, switch %u", c.landCells[0], c.landCells[1], c.landCells[2], c.landWalk[0], c.landWalk[1], c.landWalk[2], c.landWalk[3], c.landWalk[4]);
 					Logger::Log("RT CORE: %s geometry met (exchanges 1-60): %u, taken %u; left out: no shader/data %u, skinned %u, not a lighting shader %u, "
-						"decal/refraction %u, tree leaves %u, alpha %u, not described %u, refused by the fork %u%s", k ? "land" : "object", m[kSeen], m[kTaken],
+						"decal/refraction %u, tree leaves %u, alpha %u, not described %u, refused by the fork %u%s", k == 2 ? "LOD land" : k ? "land" : "object", m[kSeen], m[kTaken],
 						m[kNoShader], m[kSkinned], m[kNotLighting], m[kFlags], m[kLeaf], m[kAlpha], m[kDescribe], m[kMeasure],
 						cells);
 				}
