@@ -205,7 +205,13 @@ accumulate (below): both are temporal + edge-aware spatial already.
   colour, exactly the light ComputeGI's taps use. Hits off screen keep the analytic light x GIOffscreen (0.1 default; 0 = on-screen
   bounces only, i.e. ComputeGI's light with ray-traced visibility). Merged claude/rt-sun-2 ffa19075 (alpha atlas on the GPU: ~900
   alpha-tested meshes a frame at Goodsprings now really in the scene).
-- Queued: rt-gi-4 (lucky22) and rt-ao-6 (og-goodsprings, AlphaTested on), both fork-0029.
+- **rt-gi-4 (10-29 18:33 lucky22 slot A, DLL 8F014ACC, GI v2): WORKS.** Same spot (al vs al-end 0.2 % = noise): RT AO 33.6 ->
+  RT AO + GI 35.7 (+2.1/255 on 12.7 % of pixels, was +8.3 on 74 % in v1); GI x2 37.8. The bounce light (view 13) mean linear 0.0058
+  (v1 0.026; ComputeGI's 0.0009): RT finds more bounce than the screen search (rays reach what the screen's slices miss), local and
+  warm near the lit railing, the counter and the lamps, not a wash. Final picture natural. Flaw: sparse orange fireflies where a bounce
+  ray lands on a lamp's glow on screen (the per-sample cap is 4.0: too high) -> next: a luminance clamp per sample. Cost unchanged:
+  core line 21.3 ms avg, 11.0 ms min (AO 4 + GI 1 + its shadow rays) on the iGPU in Lucky 38.
+- rt-ao-6 (og-goodsprings, AlphaTested on, foliage really in now) running.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
