@@ -167,6 +167,7 @@ MenuSceneGuard = true       # UNOFFICIAL (2026-10-20), with WorldSceneGuard: in 
 
 [_Main.Main.RayTracing]
 SceneRadius = 8192                   # UNOFFICIAL (2026-10-28), NVR DXVK + a GPU with ray tracing + NvrRtHelper.exe (Data\NVSE\Plugins\NvrRt\): the ray tracing core's scene holds the opaque static geometry (land and objects; not actors, alpha-tested or blended meshes, tree leaves, decals) of the loaded cells within this many units of the camera. It is only built while an RT effect is on ([Shaders.ShadowsExteriors.RT] Enabled). Larger: more geometry kept in the helper (GPU memory, a little build time when cells load). Live. docs\next\FORK-RT-CORE.md.
+AlphaTested = false                  # UNOFFICIAL (2026-10-29), with an RT effect on: alpha-tested meshes (foliage cards, fences, chain link, wires) go into the ray tracing scene too, tested against their diffuse alpha (64 x 64 a texture) by the RT passes that support it (RT sun shadows); without it they cast only through the shadow maps. Needs fork patch 0029 (d3d9.dll 1.8-rt-uv) and a helper restart (game restart). docs\next\FORK-RT-SUN.md.
 ArenaMB = 16                         # UNOFFICIAL (2026-10-28), with an RT effect on: the size of the shared image new geometry crosses to the ray tracing helper in, MB per frame. Geometry that does not fit waits for the next frames (a cell's objects then show up in the rays a few frames after it loads). Needs the helper to restart (a restart of the game, or a resolution change).
 
 [_Main.Main.Quality]
