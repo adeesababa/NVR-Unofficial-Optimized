@@ -74,6 +74,16 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   the helper logs "probe geometry" with the same ids read back from its staging buffer (first vertices, bounds, indices, the
   instance transform). Matching the two says whether the arena holds the game's positions.
 - Not run: the ticket (1028-150751-bd86) was cancelled while waiting, when RT work was paused (below).
+- Ran 2026-10-29 (run 20261029-035120-slotC, og-goodsprings; a first try on lucky22 was an interior: the sun user never ran).
+  **Cause found:** "RT sun constants" logged origin 71228.7 -2581.8 -8547.4 with camera position -71229 2582 8547: the ray
+  origin `Pointers::Generic::CameraLocation - CameraPosition` is minus the eye's world position, because CameraLocation reads ~0
+  here. Every ray started ~71000 units outside the camera-relative scene. The scene itself is right: the helper's readback of the
+  first three bottom levels matches NVR's CPU vertices exactly (door: first vertex -2.8 -40.3 -71.6 on both sides, bounds inside
+  the model bound, no NaN), transforms are camera-relative (a few thousand units). DebugView 5: depth, normals and the sun are fine
+  (ground = traced free, back faces = facing away, sky = no depth).
+- **Fix 4ba2abfd:** `RtCore::Eye()` = (0, 0, 0), the eye in scene space (the scene is relative to CameraPosition, the NiCamera's
+  world translation); the sun pass uses it. Sent to rt-reflections, rt-ao-sky and rt-lamp-shadows (their origins used the same
+  formula). Verification: rtsun-5 (rtsun-3's four headings + DebugView 6).
 
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the

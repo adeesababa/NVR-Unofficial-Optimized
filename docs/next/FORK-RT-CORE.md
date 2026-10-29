@@ -33,6 +33,9 @@ CPU per frame.
   values); the scene is gathered once per game frame, a later exchange resends the instances + records with no geometry ops and no
   arena. A second GPU bubble only while such a user is on.
 
+- 4ba2abfd **`RtCore::Eye()`** (= 0, 0, 0): the eye in scene space, for every ray origin from the camera. Do NOT use
+  `Pointers::Generic::CameraLocation` (it reads ~0 in game: rays started ~71000 units outside the scene, every ray missed).
+
 ## Pieces
 | where | what |
 |---|---|
