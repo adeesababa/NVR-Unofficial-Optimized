@@ -35,11 +35,12 @@ namespace RtLampShadows {
 		float size[4], forward[4], right[4], up[4], origin[4], params[4], params2[4];
 		float lamps[TracedSlots][4];
 		float radius[3][4];
+		float stops[3][4];						// per lamp: where its rays stop short of it, at least LampStop (its own globe / bulb / glass)
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
 	// This frame's lamps (Submit, from PointShadowForward::Publish) for Record
-	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; };
+	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; float stop; };	// stop: past the lamp's own glowing part (0 none)
 	inline SlotLamp Lamps[TracedSlots] = {};
 	inline int LampCount = 0;
 	inline bool LampsThisFrame = false;
@@ -237,6 +238,7 @@ namespace RtLampShadows {
 			lamp[0] = l.position.x - camera.x; lamp[1] = l.position.y - camera.y; lamp[2] = l.position.z - camera.z;
 			lamp[3] = l.reach;
 			c.radius[l.slot / 4][l.slot % 4] = l.fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
+			c.stops[l.slot / 4][l.slot % 4] = l.stop;
 		}
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
@@ -251,9 +253,15 @@ namespace RtLampShadows {
 
 	// RtCore's mask hook (the FULL mask, replacing the core's land 0x01 / objects 0x02): a lamp's glass or model gets ONLY its own bit,
 	// so the lamp rays' cull masks (no 0x04, near the lamp no 0x08) skip it while every other ray (the sun's 0xFF) still hits it.
+	inline UInt32 MaskCounts[4] = {};		// land, objects, glass, lamp models (logged now and then: is the hook used, does it find lamps?)
 	inline UInt32 MaskHook(NiGeometry* geometry, bool land) {
-		if (land) return 0x01;
+		static UInt32 calls = 0;
+		if ((++calls % 20000) == 0 && calls <= 200000)
+			Logger::Log("UNOFFICIAL RT lamp shadows: mask hook %u calls: land %u, objects %u, lamp glass %u, lamp models %u (cell glow list %u)",
+				calls, MaskCounts[0], MaskCounts[1], MaskCounts[2], MaskCounts[3], (UInt32)LampFixtures::Glows.size());
+		if (land) { MaskCounts[0]++; return 0x01; }
 		const UInt32 own = InstanceMask(geometry, false);
+		MaskCounts[own == MaskGlass ? 2 : own == MaskLampModel ? 3 : 1]++;
 		return own ? own : 0x02;
 	}
 

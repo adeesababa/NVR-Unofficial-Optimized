@@ -479,7 +479,18 @@ namespace PointShadowForward {
 		// UNOFFICIAL 2026-10-28 RT lamp shadows: this frame's trace request and the newest traced result (RtLampShadows.h)
 		if (RtLampShadows::CompiledIn) {
 			RtLampShadows::SlotLamp traced[ShadowCubeMapsMax];
-			for (int s = 0; s < SlotCount; s++) traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade };
+			const float fixture = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.FixtureDistance;
+			for (int s = 0; s < SlotCount; s++) {
+				// The lamp's own glowing part round its light (a globe, a bulb, a shade's glass): the rays stop before its far side
+				float stop = 0.0f;
+				const NiPointLight* source = Slots[s].light ? Slots[s].light->sourceLight : nullptr;
+				if (const LampFixtures::Glow* g = source ? LampFixtures::NearestLampPart(source, fixture) : nullptr) {
+					const NiPoint3& p = source->m_worldTransform.pos;
+					const float dx = g->x - p.x, dy = g->y - p.y, dz = g->z - p.z;
+					stop = sqrtf(dx * dx + dy * dy + dz * dz) + g->radius + 2.0f;
+				}
+				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop };
+			}
 			RtLampShadows::Submit(traced, SlotCount);
 		}
 		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }

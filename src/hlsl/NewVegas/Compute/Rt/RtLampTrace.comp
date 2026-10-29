@@ -26,6 +26,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 params2;       // x LampModelDistance (0 = one segment), y far cull mask, z near cull mask, w lamp count (0-9)
 	vec4 lamps[9];      // xyz the lamp (scene space), w its reach (units; 0 = no lamp in this slot)
 	vec4 radius[3];     // the radius the rays aim over for lamp k: radius[k / 4][k % 4]
+	vec4 stops[3];      // lamp k's own stop (past its globe / bulb / glass; 0 = none): the rays stop max(LampStop, this) short of it
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
@@ -65,7 +66,7 @@ void main() {
 	vec3 normal = normalize(normalize(p.right.xyz) * n.x + normalize(p.up.xyz) * n.y + normalize(p.forward.xyz) * n.z);
 
 	uint rays = uint(clamp(p.params.x, 1.0, 8.0));
-	float offset = p.params.y, stop = p.params.z;
+	float offset = p.params.y;
 	float spin = 6.2831853 * fract(hash12(vec2(pixel)) + p.params.w);
 	uint farMask = uint(p.params2.y), nearMask = uint(p.params2.z);
 	vec3 origin = position + normal * offset;
@@ -75,6 +76,7 @@ void main() {
 	for (int s = 0; s < 9; s++) {
 		float steps = 15.0;                                   // lit: no lamp, out of reach, at the lamp, or facing away (the
 		vec4 lamp = p.lamps[s];                               // object shader's own lighting takes that to 0 with its finer normal)
+		float stop = max(p.params.z, p.stops[s / 4][s % 4]);
 		vec3 toLamp = lamp.xyz - origin;
 		float dist = length(toLamp);
 		if (s < count && lamp.w > 0.0 && dist < lamp.w && dist > stop + offset && dot(toLamp, normal) > 0.0) {
