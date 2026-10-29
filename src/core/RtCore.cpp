@@ -668,10 +668,12 @@ namespace {
 		if (Player && Player->GetWorldSpace() && Tes && Tes->gridCellArray) {
 			GridCellArray* cells = Tes->gridCellArray;
 			const UInt32 count = cells->size * cells->size;
+			const UInt32 landBefore = skips[1][kTaken];
 			for (UInt32 i = 0; i < count; i++) WalkCell(cells->GetCell(i));
-			// LOD land, as the cascades walk it (ShadowManager: GetRootLandLODNode): where the loaded cells hold no land geometry
-			// (rtsun-8 at og-lake: every land node empty), the ground on screen is LOD terrain.
-			Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
+			// LOD land only when the loaded cells gave no land geometry this frame (rtsun-8 at og-lake: every land node empty, the ground on
+			// screen is LOD terrain). With the full land there, LOD land stays out: its coarse quads stand above the real ground and cast
+			// false shadows on it (rtsun-9 at og-goodsprings: black slabs on the road and the house front).
+			if (skips[1][kTaken] == landBefore) Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
 		}
 		else if (Player) WalkCell(Player->parentCell);
 		instances = record->instanceCount;
