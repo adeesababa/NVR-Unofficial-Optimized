@@ -138,6 +138,20 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   ground, the porch roof shading the house front at noon). "Ray tracing" p50 3.55-3.65 ms at both spots (720p, iGPU).
 - Open: a frame with SOME cells' land loaded and others empty takes no LOD for the empty ones (no land there until they load).
 
+### rtsun-11 / 12 (claude/rt-sun-2; og-goodsprings 9 / 16; 1070 run too): GPU pick + alpha-tested casters
+- **GPU pick** (218ee685): the helper takes the game's GPU by adapter LUID and says so ("ready: ray tracing on AMD Radeon(TM)
+  Graphics, the game's GPU (found by adapter LUID ...)"). On the 1070 (20261029-181121-slotC): "no ray tracing on the game's GPU
+  (NVIDIA GeForce GTX 1070: no VK_KHR_ray_query, found by adapter LUID): the RT effects stay off", the core off once; RT on vs off
+  differ on 0.42% of pixels, inside this run's noise between equal settings (0.04-0.68%).
+- **Alpha-tested casters** (`[Main.Main.RayTracing] AlphaTested`, fork patch 0029): the first version (53bd124d, CPU alpha decode
+  of managed textures) took ~5 meshes a frame. dc1a5dd4 draws each texture's alpha into the atlas on the GPU (fork pass
+  RtAlphaToAtlas: any pool, any format, the texture's mips downsample). rtsun-12 (20261029-181912-slotC): **54532 alpha-tested
+  meshes taken in 60 exchanges (~900 a frame), 45 atlas slots**, only 1200 blended-only left out. DebugView 6 shows the Joshua
+  trees, bushes and the power-line wires as cut-outs; foliage casts dappled traced shadows.
+- Cost: the scene went from 685 to 1597 instances (397 geometries, 1.35 M triangles, 209 MB): "Ray tracing" p50 5.15 ms at
+  720p on the iGPU (2.5 ms without alpha; candidate hits run the alpha test). Heavy for the iGPU; on a real RT GPU it is the
+  any-hit cost every modern game pays for foliage. Off by default.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
