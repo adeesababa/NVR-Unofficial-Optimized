@@ -96,3 +96,16 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
 - Compute/ObjectMotion.glsl: the contract + ObjectMotionBack() for new readers (sent to rt-sun-core for its shared denoiser).
 - Cost fix (561532b1): moves under 0.05 units count as still. Ultra-Luxe crowd 151 -> 13-19 moved geometries a frame, GPU 0.40 -> 0.027 ms
   (run 20261029-190742-slotA).
+
+## Main session's steps 2-4 (2026-10-29 evening), branch claude/material-buffer f246a4c8, DLL 84A2F641
+- **2. MaterialBuffer** (`[Main.Main.Quality] MaterialBuffer`, restart, with CapturedNormals): TESR_MaterialBuffer (fp16, the normals'
+  span): r class (1 object, 2 skinned gear, 3 cloth, 4 land, 5 plant), g the object's bound radius (thickness, upper bound), b roughness
+  (-1 none), a 1; actors' skin = the normals' a == 2. Format sent to rt-sun-core and rt-reflections. Object / Parallax / Terrain write it on
+  their spare COLOR2; per-draw class + radius on c217 (ps_3_0 has c0-c223 only; c217 is free in the lit templates). **PASS**, run
+  20261029-194016-slotA (Vault 21, the user's toml + MaterialBuffer): written exactly where the normals are (1849 of 4096 sampled texels),
+  objects + gear, roughness 0.07-0.98, thickness up to 696; ~1000-1250 writer draws a frame, never in the skin blur's way. No reader yet.
+- **3. PoolPeopleLamps: dropped** (f246a4c8 reverts it). Same run at LightPoints 4 (the NPCs' near lamps in the pool): people drawn onto
+  3-6 pool lamps a frame, picture on = off to 0.01% (the repeat-shot floor).
+- **4. The rest of INTERIOR-SHADOWS-MODERN:** lamp contact shadows (ContactShadows 0.5) with the pool on: no visible change (0.01%) for
+  0.036 ms -- left off. Capsule shadows: not built -- people's shadows from more lamps measured invisible here (step 3). RT lamps: the
+  rt-lamp-shadows sessions. Nothing left in that plan pays off on this evidence.
