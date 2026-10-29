@@ -225,6 +225,33 @@ met 0 ... cells walked 540, without a land node 0, land node culled 0", so 28ea9
 (reported to rt-sun-core). Objects: 209 instances, 82 geometries, 525k triangles; helper GPU 1.0 ms, my pass 0.9-1.0 ms (few
 reflecting pixels outdoors in dry weather).
 
+### 2026-10-29 06:17 iGPU, og-goodsprings with forced rain (wet road), slot C, DLL 44d4bd03
+
+The run is `bench/autotest/20261029-061648-slotC`; the plugin stopped after shot 08 of 13. **Not a usable picture A/B**: the rain
+particles and moving clouds put two RT-off shots 62 % of pixels apart. **Alignment (shot 04)**: the road, the ground, the houses
+and the rocks are green, so the land is in the scene here (Goodsprings' cells have full land; og-lake's ground is LOD terrain,
+which rt-sun-core's 18d27859 adds). Two kinds of patches:
+- **blue** patches on the ground: the traced land is nearer than the screen's surface. NVR's land tessellation displaces the
+  ground on the GPU, while the scene holds the undisplaced mesh. That costs reflections nothing visible: the hit is the same
+  ground, within the screen-match tolerance a little farther on.
+- **red** on a pole top and a far roof edge: alpha or thin geometry left out.
+
+Cost: `Reflections trace (half)` 2.0-3.4 ms SSR only -> 6.0 ms RT (about +3 ms); exchange 3.05 ms; helper passes 2.35 ms, scene 0.15 ms
+(686 instances, 811k triangles with land, 125 MB); response 0.46 ms.
+
+### Where the bench stands against "done" (2026-10-29 06:30)
+
+| Scene | Alignment (scene = screen) | Picture A/B | Cost on the iGPU (720p, 2 CUs) |
+|---|---|---|---|
+| Ultra-Luxe (polished floor) | yes | **yes**: the floor picks up the fountain's neon; 1.37 % px vs floor 0.3 %; no wrong colours / leaks | +6-7 ms |
+| Lucky 38 (metal + tiles) | yes (left columns, palm missing: gather filters) | **yes**: 15.5 % more reflection on the floor, cube/sky leaks gone | +9 ms |
+| og-lake (water) | rocks yes, LOD ground missing (fix 18d27859 pending) | no (dust storm, moving player) | ~+1 ms |
+| og-goodsprings rain (wet road) | yes (land in) | no (rain + clouds: 62 % noise) | +3 ms |
+
+Water: the game's planar water reflection is untouched by design (see "Water"), so og-lake checks only the shore and rocks.
+Still to do for a full "done": a still outdoor wet-road spot (rain particles off, clouds frozen) for a clean A/B, and og-lake again
+after 18d27859.
+
 **Summary of the two interiors:** RT fills SSR's gaps and blocks the fallback's leaks, with no wrong colours seen. It costs +6-9 ms at
 720p on the 2-CU iGPU; the helper's ray passes are most of it.
 
