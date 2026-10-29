@@ -1358,6 +1358,15 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);
+	// UNOFFICIAL 2026-10-29 [Shaders.ShadowsInteriors.Main] TwoSidedCasters (live; user: lamp shadows "that seem to trace the inside
+	// of a mesh", rings under cups and glasses): each caster drew with its own cull mode (RenderPass::RenderGeometry), and the cube
+	// faces are mirrored (lookup (1, 1, -1), ShadowCubeMap.vso), so the side kept was the one turned AWAY from the lamp: the map held
+	// a cup's inner walls and the underside of its bottom (at the table's height, lost in the bias), and the shadow came out as a ring.
+	// Double-sided, as the sun's maps (TwoSidedCasters there): the face nearest the lamp wins the depth test. Off: as before.
+	struct TwoSidedScope {
+		explicit TwoSidedScope(bool on) { RenderPass::TwoSided = on; }
+		~TwoSidedScope() { RenderPass::TwoSided = false; }
+	} twoSidedScope(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TwoSidedCasters") != 0);
 	
 	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
