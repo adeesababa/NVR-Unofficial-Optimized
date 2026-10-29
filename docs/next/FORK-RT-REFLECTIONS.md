@@ -169,6 +169,17 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 18:58 foliage in reflections: noon, `[Main.Main.RayTracing] AlphaTested` on (fork-0029, DLL b618044a, 77079aa2)
+
+The run is `bench/autotest/20261029-185845-slotA`, list rtrefl-3, all 9 shots. The core took the alpha-tested meshes (41877 met over 60
+exchanges, atlas 40 slots, 1334 instances), and my pass ran as ReflectionsRTAlpha (the cut-outs tested through RtAlpha.glsl).
+- **Only weakly verified.** Shots don't compare across launches: the two noon runs' SSR-only shots already differ on 41 % of pixels
+  (light). In this run, RT vs SSR is 23.9 % of pixels, +0.37/255 (rtrefl-4 noon without foliage: 24 %, +0.52). Less brightening is
+  what bushes blocking some of the sky in the wet ground's reflection would give. The alignment view cannot show it (a ground pixel
+  the screen shows is never behind a bush). A direct check needs a view of a reflecting surface behind or under foliage: a puddle
+  under a tree or a fence (a bench spot to find).
+- **Cost:** helper passes 2.7-3.2 ms (noon without foliage: exchange 1.9-2.3 ms); scene rebuild 0.28-0.34 ms with 1334 instances.
+
 ### 2026-10-29 18:27 the ray budget (rtrefl-5; DLL 3142cb6b + shaders eed3580d): RoughShare + the key-lamp shadow ray only below roughness 0.25
 
 The runs are `bench/autotest/20261029-182734-slotA` (lucky22) and `20261029-184453-slotA` (luxe), all 9 shots each. Budget = RoughShare 0.3 (above
