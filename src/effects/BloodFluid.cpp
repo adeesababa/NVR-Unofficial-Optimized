@@ -493,6 +493,7 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	// (BloodFluidDraw.frag): a film over the image as the game's decals are; y how much a thin film follows the ground's texture.
 	f.look4[0] = Settings.OldColour ? 0.0f : 1.0f;
 	f.look4[1] = Settings.OldColour ? 0.0f : Settings.TextureRelief;
+	f.look4[2] = 1.0f / rw; f.look4[3] = 1.0f / rh;	// (2026-10-29: RayAt, BloodFluid.glsl)
 	// BloodFlow's look: its colours and times (its clock runs at TunedClockRate x real time).
 	const BloodFlowEffect::BloodFlowStruct& c = Owner->Constants;
 	f.look2[0] = (float)TunedClockRate; f.look2[1] = c.Dry.w; f.look2[2] = c.Info.z; f.look2[3] = c.Fresh.w;
