@@ -351,8 +351,10 @@ void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forwar
 	static bool hoseLogged = false;
 	if (hose && !hoseLogged) { hoseLogged = true; Logger::Log("UNOFFICIAL BloodFluid WaterGun: hose on"); }
 	const float ground = Player ? (float)Player->pos.z - 1.0f : Eye.z - 120.0f;
+	// (2026-10-29: a press is the key going down, whatever the focus test said: focus flickered and one V gave a ball a frame.)
+	const bool clearRaw = held(Settings.ClearKey), dumpRaw = held(Settings.DumpKey);
 	if (clear && !ClearWas) Clear("WaterGun clear key");
-	ClearWas = clear;
+	ClearWas = clearRaw;
 	if (hose) {
 		// A stream from just right of and below the eye (as from a held nozzle) at the view centre.
 		HoseDebt += Elapsed * Settings.HoseFlow;
@@ -372,7 +374,7 @@ void BloodFluid::WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forwar
 			Hash(0x3A7E100000000000ull + (UInt64)(++WaterShots)), 0, 3);
 		Logger::Log("UNOFFICIAL BloodFluid WaterGun: a ball of %d particles at (%.0f %.0f %.0f)", Settings.DumpAmount, at.x, at.y, at.z);
 	}
-	DumpWas = dump;
+	DumpWas = dumpRaw;
 }
 
 bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDirect3DSurface9* Source, BloodFlowEffect* Owner) {
