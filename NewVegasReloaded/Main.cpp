@@ -5,6 +5,7 @@
 #include "../src/core/Device/Hook.h"
 #include "../src/NewVegas/Managers.h"
 #include "../src/core/EffectSelfTest.h"
+void HdrOutputNoteDesktop();	// in Render.cpp (UNOFFICIAL 2026-10-29)
 #include "../src/core/IOWorker2.h"	// UNOFFICIAL 2026-10-20 (EXPERIMENTAL, off by default): a second loading thread for model / texture tasks
 
 extern "C" {
@@ -134,6 +135,7 @@ extern "C" {
 			TheSettingManager->LoadSettings();
 			PresetManager::Initialize();
 			AttachHooks();
+			HdrOutputNoteDesktop();	// UNOFFICIAL 2026-10-29: Windows' HDR state before the game's fullscreen window changes it (HdrOutput.h)
 			IOWorker2::Install();	// UNOFFICIAL 2026-10-20: IOWorker2 = 1 only; must run before the game creates its IOManager
 		}
 		return true;

@@ -15,6 +15,11 @@
 //
 // Display check: the output must be in HDR mode in Windows (DXGI colour space ST.2084), else the output stays SDR automatically
 // (logged); IgnoreDisplayCheck forces it (tests on an SDR desktop: Windows then maps the HDR signal down itself).
+// UNOFFICIAL 2026-10-29: the colour space DXGI reports is the monitor's CURRENT mode, and the game's own fullscreen SDR picture
+// switches an HDR desktop's monitor to SDR (and back on alt-tab). The check alone therefore locked itself out: SDR at the first
+// frame although Windows HDR was on, or SDR again after a short mode change while HDR10 was being set up (user's log 10-29 15:11).
+// Now a monitor seen in HDR mode once in this run (at plugin load, before the game opens its window: NoteDesktop, or at any later
+// check) counts as "Windows HDR on" for the rest of the run; a later SDR reading for it is logged once and ignored.
 //
 // Test tool: CaptureFrame (a counter: each new non-zero value) writes, 60 frames later, a frame's HDR output, as the fork sends it (scRGB,
 // 1.0 = 80 nits), to NVR-Unofficial-Optimized-Logs\NeonSelfTest_HdrCapture_<n>.pfm.world (a PFM: RGB float, bottom row first;
@@ -22,6 +27,7 @@
 
 #include <dxgi1_6.h>
 #include <vector>
+#include <algorithm>
 #include <cstdio>
 #include "DxvkCompute.h"
 #include "../effects/Tonemapping.h"
@@ -35,6 +41,7 @@ namespace HdrOutput {
 		NVR_EXT_HDR_OUTPUT		Applied = {};
 		bool					Refused = false;	// the fork refused the mode (logged once until the settings change)
 		int						DisplayHdr = -1;	// -1 unknown, 0 SDR desktop, 1 Windows HDR on (ST.2084)
+		std::vector<HMONITOR>	SeenHdr;			// monitors seen in HDR mode in this run (UNOFFICIAL 2026-10-29)
 		float					DisplayMaxNits = 0.0f;
 		unsigned				Frame = 0;
 		char					LastReason[160] = "";
@@ -56,14 +63,14 @@ namespace HdrOutput {
 		if (strcmp(S.LastReason, text)) { strncpy_s(S.LastReason, text, _TRUNCATE); Logger::Log("UNOFFICIAL HDR output: %s", text); }
 	}
 
-	// Windows' HDR switch for the monitor showing the game window (IDXGIOutput6::GetDesc1). dxgi.dll is loaded on demand.
-	inline void CheckDisplay(IDirect3DDevice9* Device) {
-		D3DDEVICE_CREATION_PARAMETERS cp = {};
-		HMONITOR monitor = nullptr;
-		if (SUCCEEDED(Device->GetCreationParameters(&cp)) && cp.hFocusWindow) monitor = MonitorFromWindow(cp.hFocusWindow, MONITOR_DEFAULTTONEAREST);
+	inline bool SeenHdr(HMONITOR monitor) { return std::find(S.SeenHdr.begin(), S.SeenHdr.end(), monitor) != S.SeenHdr.end(); }
+
+	// Every monitor's current mode (IDXGIOutput6::GetDesc1); Monitor null = all of them. HDR ones go into S.SeenHdr. dxgi.dll is
+	// loaded on demand. Hdr / MaxNits: of Monitor (or of any monitor when it is null).
+	inline void ReadMonitors(HMONITOR monitor, int& hdr, float& maxNits) {
 		typedef HRESULT(WINAPI* CreateFactory)(REFIID, void**);
 		static CreateFactory create = (CreateFactory)GetProcAddress(LoadLibraryA("dxgi.dll"), "CreateDXGIFactory1");
-		int hdr = 0; float maxNits = 0.0f;
+		hdr = 0; maxNits = 0.0f;
 		IDXGIFactory1* factory = nullptr;
 		if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), (void**)&factory))) {
 			IDXGIAdapter1* adapter = nullptr;
@@ -73,9 +80,13 @@ namespace HdrOutput {
 					IDXGIOutput6* output6 = nullptr;
 					if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), (void**)&output6))) {
 						DXGI_OUTPUT_DESC1 desc = {};
-						if (SUCCEEDED(output6->GetDesc1(&desc)) && (!monitor || desc.Monitor == monitor)) {
-							if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) hdr = 1;
-							if (desc.MaxLuminance > maxNits) maxNits = desc.MaxLuminance;
+						if (SUCCEEDED(output6->GetDesc1(&desc))) {
+							const bool isHdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+							if (isHdr && desc.Monitor && !SeenHdr(desc.Monitor)) S.SeenHdr.push_back(desc.Monitor);
+							if (!monitor || desc.Monitor == monitor) {
+								if (isHdr) hdr = 1;
+								if (desc.MaxLuminance > maxNits) maxNits = desc.MaxLuminance;
+							}
 						}
 						output6->Release();
 					}
@@ -85,6 +96,29 @@ namespace HdrOutput {
 			}
 			factory->Release();
 		}
+	}
+
+	// At plugin load, before the game makes its window and swap chain: which monitors Windows has in HDR mode (Render.cpp's
+	// HdrOutputNoteDesktop, called from NVSEPlugin_Load).
+	inline void NoteDesktop() {
+		int hdr; float maxNits;
+		ReadMonitors(nullptr, hdr, maxNits);
+		Logger::Log("UNOFFICIAL HDR output: at load, before the game's window, %u monitor(s) in HDR mode (Windows HDR %s)", (unsigned)S.SeenHdr.size(), S.SeenHdr.empty() ? "off" : "on");
+	}
+
+	// Windows' HDR switch for the monitor showing the game window.
+	inline void CheckDisplay(IDirect3DDevice9* Device) {
+		D3DDEVICE_CREATION_PARAMETERS cp = {};
+		HMONITOR monitor = nullptr;
+		if (SUCCEEDED(Device->GetCreationParameters(&cp)) && cp.hFocusWindow) monitor = MonitorFromWindow(cp.hFocusWindow, MONITOR_DEFAULTTONEAREST);
+		int hdr; float maxNits;
+		ReadMonitors(monitor, hdr, maxNits);
+		if (!hdr && monitor && SeenHdr(monitor)) {
+			static bool told = false;
+			if (!told) { told = true; Logger::Log("UNOFFICIAL HDR output: the display reports SDR mode now, but it was in HDR mode earlier in this run (the game's own fullscreen picture switches it): HDR stays on"); }
+			hdr = 1;
+		}
+		if (maxNits <= 0.0f) maxNits = S.DisplayMaxNits;
 		if (hdr != S.DisplayHdr) Logger::Log("UNOFFICIAL HDR output: display %s (Windows HDR %s), display peak %.0f nits", hdr ? "in HDR mode" : "in SDR mode", hdr ? "on" : "off", maxNits);
 		S.DisplayHdr = hdr;
 		S.DisplayMaxNits = maxNits;
