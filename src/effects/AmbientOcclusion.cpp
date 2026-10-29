@@ -235,7 +235,7 @@ namespace {
 		if (pass.Tried) return;
 		pass.Tried = true;
 		if (!DxvkCompute::HasSpirv(spvName)) { Logger::Log("UNOFFICIAL RT AO: Compute\\%s.spv is missing; NVR's own pass runs.", spvName); return; }
-		NVR_EXT_BINDING_DESC bindings[9] = {};
+		NVR_EXT_BINDING_DESC bindings[10] = {};
 		UINT count = 0;
 		for (UINT i = 0; i < textureCount; i++, count++) {
 			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
@@ -535,16 +535,17 @@ bool AmbientOcclusionEffect::ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDire
 	if (rtFailed || !depth || !normals || !Target || FAILED(Target->GetDesc(&desc)) || !desc.Width || !desc.Height) return false;
 	IDirect3DTexture9* raw = RtRaw();
 	if (!raw) return false;
-	MakePipelineRT(extSkyRT, "AmbientOcclusionSkyRT", 5, 1);
+	MakePipelineRT(extSkyRT, "AmbientOcclusionSkyRT", 6, 1);
 	const D3DXVECTOR4 skyLayout(1.0f / desc.Width, 1.0f / desc.Height, SmoothedNormals ? 1.0f : 0.0f, 0.0f);
 	if (!extSkyRT.Pipeline || !ExtConstants(extSkyUniforms, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), skyLayout)) return false;
-	IDirect3DBaseTexture9* inputs[5] = { depth, normals, SunMask ? (IDirect3DBaseTexture9*)SunMask : depth,
-		SmoothedNormals ? (IDirect3DBaseTexture9*)SmoothedNormals : depth, raw };
-	NVR_EXT_RESOURCE_BINDING resources[9] = {};
+	if (!rtInputTexture) return false;
+	IDirect3DBaseTexture9* inputs[6] = { depth, normals, SunMask ? (IDirect3DBaseTexture9*)SunMask : depth,
+		SmoothedNormals ? (IDirect3DBaseTexture9*)SmoothedNormals : depth, raw, rtInputTexture };
+	NVR_EXT_RESOURCE_BINDING resources[10] = {};
 	UINT count = 0;
 	AOPush push = {};
 	const bool wasFailed = ExtFailed;
-	if (Resources(resources, count, inputs, 5, extSkyUniforms.Buffer) && ExtDrawTo(extSkyRT.Pipeline, &Target, 1, resources, count, &push, sizeof(push))) return true;
+	if (Resources(resources, count, inputs, 6, extSkyUniforms.Buffer) && ExtDrawTo(extSkyRT.Pipeline, &Target, 1, resources, count, &push, sizeof(push))) return true;
 	ExtFailed = wasFailed;
 	rtFailed = true;
 	Logger::Log("UNOFFICIAL RT AO: the RT sky pass failed to draw; Skylighting's ortho map pass runs from now on.");

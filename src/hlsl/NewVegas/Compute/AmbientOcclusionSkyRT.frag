@@ -4,15 +4,20 @@
 // shape. Same target, same output (x the factor, y the depth, z the visibility), same settings (Strength, OpenThreshold, ShareApply,
 // AmbientScale, the sun mask; LightCap and Skylighting's DebugView 1-4 downstream), so AmbientLight's apply and the fog's composite take
 // it unchanged. effects/AmbientOcclusion.cpp RenderSkyVisibility. FrameVS's uv in the sky target's viewport, as the v2 pass.
+// 2026-10-29: the trace turns its sky rings by a fixed 4 x 4 per-texel interleave (16 turns, no noise over time); this pass averages
+// the 4 x 4 traced texels round its own (any 4 neighbours in a row cover all 4 turns of that axis), each kept only where its view
+// distance matches this texel's (5 %, at least 4 units: no sky light bleeding across an edge). So the interleave never shows.
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_samplerless_texture_functions : require
 #include "AmbientOcclusion.glsl"
 
 layout(set = 1, binding = 0) uniform texture2D t_depth;      // TESR_DepthBuffer (LINEAR, CLAMP)
 layout(set = 1, binding = 1) uniform texture2D t_normals;    // TESR_NormalsBuffer (NONE = POINT, CLAMP)
 layout(set = 1, binding = 2) uniform texture2D t_sunMask;    // NVR_SunMask (POINT, CLAMP); a stand-in unless cb.sky4.z > 0.5
 layout(set = 1, binding = 3) uniform texture2D t_skyPrep;    // NVR_SkyPrep (POINT, CLAMP); a stand-in unless cb.skyLayout.z > 0.5
-layout(set = 1, binding = 4) uniform texture2D t_rt;         // NVR_RTAORaw (half resolution; LINEAR)
+layout(set = 1, binding = 4) uniform texture2D t_rt;         // NVR_RTAORaw (half resolution; texelFetch)
+layout(set = 1, binding = 5) uniform texture2D t_rtInput;    // NVR_RTAOInput (the trace's input: x view distance; texelFetch)
 
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 o_color;
@@ -37,9 +42,23 @@ void main() {
     float sunMask = cb.sky4.z > 0.5 ? mix(cb.shadowFade.x, 1.0, POINT_LOD(t_sunMask, uv).r) : 1.0;
     if (depth < endFade) {
         vec3 n = normalize((cb.invViewTransform * vec4(viewNormal, 0.0)).xyz);
-        vec4 rt = LINEAR_LOD(t_rt, inUV);
-        float visibility = saturate(rt.y * cb.sky3.y);
-        result = SkyFactor(visibility, n, sunMask, rt.z);
+        ivec2 size = textureSize(t_rt, 0);
+        ivec2 centre = clamp(ivec2(inUV * vec2(size)), ivec2(0), size - 1);
+        float centreZ = texelFetch(t_rtInput, centre, 0).x;
+        float tolerance = max(centreZ * 0.05, 4.0);
+        vec2 sum = vec2(0.0);
+        float weight = 0.0;
+        for (int y = -1; y <= 2; y++) {
+            for (int x = -1; x <= 2; x++) {
+                ivec2 t = clamp(centre + ivec2(x, y), ivec2(0), size - 1);
+                float w = abs(texelFetch(t_rtInput, t, 0).x - centreZ) < tolerance ? 1.0 : 0.0;
+                sum += w * texelFetch(t_rt, t, 0).yz;
+                weight += w;
+            }
+        }
+        vec2 rt = weight > 0.0 ? sum / weight : texelFetch(t_rt, centre, 0).yz;   // x sky visibility, y covered (a share now)
+        float visibility = saturate(rt.x * cb.sky3.y);
+        result = SkyFactor(visibility, n, sunMask, rt.y);
         skyVisibility = visibility;
     }
     o_color = vec4(result, min(depth, endFade), skyVisibility, 1.0);

@@ -108,6 +108,15 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   > 2/255); the raw view (DebugView 1) and the hit-distance view (3) equal it: the traced values read "open, nothing hit" everywhere,
   RayCount 1/2/4 alike. Suspect: the input (view distance / normal) or the ray origin. Run 2 checks the input directly.
 
+## Resumed 2026-10-29 (main session, on the user's word)
+- The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
+  100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.
+- Done meanwhile (needs no hits): the RT sky's 4 x 4 interleave is now resolved in AmbientOcclusionSkyRT.frag (each texel averages
+  the 4 x 4 traced texels round it, kept where the view distance matches within 5 % / 4 units: all 16 ring turns, no pattern, no
+  bleeding across edges; NVR_RTAOInput bound as a 6th texture). Build DACEA5B7 (VS2019, clean).
+- Bench: rt-ao-1 rewritten (v2: settings after their shot line; occlusion views first, inside the 8 shots where lucky22's camera
+  holds), rt-ao-2 kept as the input check; run toml bench/deep-roadmap/rtao/run-toml-igpu.toml now has AmbientLight ON.
+
 ## Paused here (2026-10-28 ~15:15, on the user's word via the main session)
 - State: branch claude/rt-ao-sky-9f04fd, built on the RT core (rt-sun-core d71ecf96); last DLL 669534FA (VS2019, clean). Off by
   default; with the core not running every pass is the old one.
