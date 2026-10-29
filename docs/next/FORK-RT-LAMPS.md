@@ -17,6 +17,18 @@
   TwoSided pass; and a traced lamp costs no cube map, so the 64-slot pressure only matters for the cube fallback. What RT does
   not fix yet: people (not in the scene: ActorsFromCubeMaps) and alpha-tested casters.
 
+### Lucky 38 self-shadow check (2026-10-29 06:38, run 20261029-063825-slotA, rtlamp-3, 13 shots, PASS; DLL 7AE67874)
+- The mask hook works: "mask hook 200000 calls: objects 190034, lamp glass 5169, lamp models 4796 (cell glow list 132)".
+- **The stair-base stripe is NOT a lamp shadowing itself:** noskip (glass + models block), LampStop 24 and LampStop 48 all equal
+  rt1 to 0.1-0.2 %; the per-lamp stop past each lamp's glow part changes nothing either. So what blocks that light lies more
+  than 48 units from its lamp: a real blocker the cube map misses (a one-sided surface it does not draw, which the two-sided rays
+  hit) or geometry the cube map leaves out (MinRadius, UseCastShadowFlag, the object kinds). Which one is open: next list logs
+  the lamp (forward DebugView 2 tint + LogLamps) to find it.
+- A/B still clean (cube-a = cube-b 0.1 %, rt1-a = rt1-b 0.0 %); rt1 vs cube 7.9 % / -0.22 as before; coverage green 43.5 %.
+- save26 / save27 could not run anywhere: every bench slot is slim (vanilla plugins, fixed save list without those saves). Vault 21
+  is reached instead from the lucky22 save the way the main session's intshadow lists do (player.moveto 0017A642 + a fixed spot):
+  list rtlamp-4-lucky22 (queued).
+
 ### Saloon, full list (2026-10-29 05:15, run 20261029-051554-slotA, 17 shots, PASS) + next batch
 - Coverage (exact view): green 51.5 %, red 0.3 %, blue 0 %; the CHARACTER is green now: the skin shaders' lookup works (the
   earlier "blue" was the old encoded view's distortion).
