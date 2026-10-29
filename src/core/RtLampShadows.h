@@ -79,6 +79,7 @@ namespace RtLampShadows {
 	inline bool UploadedValid = false;
 
 	inline int imageDepth = -1, imageNormals = -1, imageResult = -1, imageTable = -1, shader = -1;
+	inline int imageRaw = -1, filterShader = -1;	// Filter: the trace writes imageRaw, RtLampFilter.comp imageResult
 	inline IDirect3DTexture9* TableTexture = nullptr;		// the lamp table as the GPU sees it (copied into imageTable each frame)
 	inline IDirect3DSurface9* TableSurface = nullptr;
 	inline IDirect3DTexture9* TableStaging = nullptr;		// written by the CPU (system memory), UpdateSurface into TableTexture
@@ -234,6 +235,7 @@ namespace RtLampShadows {
 		imageNormals = RtCore::AddImage("NVR RT lamps normals", w, h, NVR_EXT_SHARED_RGBA16F);
 		imageResult = RtCore::AddImage("NVR RT lamps", w, h, NVR_EXT_SHARED_RG32F);
 		imageTable = RtCore::AddImage("NVR RT lamp table", TableWidth, 1, NVR_EXT_SHARED_RG32F);
+		imageRaw = RtCore::AddImage("NVR RT lamps unfiltered", w, h, NVR_EXT_SHARED_RG32F);
 	}
 
 	// The lamp table into its GPU texture (scene space = world minus CameraPosition), for the copy into imageTable
@@ -321,8 +323,19 @@ namespace RtLampShadows {
 		}
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals) || !RtCore::CopyIn(imageTable, TableTexture)) return;
-		const int images[4] = { imageDepth, imageNormals, imageResult, imageTable };
+		// UNOFFICIAL 2026-10-29 Filter: the soft edges' noise (LampRadius, 1 ray) smoothed per lamp (RtLampFilter.comp) before the copy out
+		const bool filter = imageRaw >= 0 && filterShader >= 0 && TheSettingManager->GetSettingI(kSection, "Filter");
+		const int images[4] = { imageDepth, imageNormals, filter ? imageRaw : imageResult, imageTable };
 		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		if (filter) {
+			struct { float size[4], params[4]; } f = {};
+			f.size[0] = (float)w; f.size[1] = (float)h;
+			f.size[2] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "FilterStep"), 1), 4);
+			f.size[3] = (std::max)(TheSettingManager->GetSettingF(kSection, "FilterDepthSigma"), 0.01f);
+			f.params[0] = (std::max)(TheSettingManager->GetSettingF(kSection, "FilterNormalPower"), 0.0f);
+			const int filterImages[4] = { imageDepth, imageNormals, imageRaw, imageResult };
+			if (!RtCore::AddPass(filterShader, filterImages, 4, 0x8, &f, sizeof(f), (w + 7) / 8, (h + 7) / 8)) return;
+		}
 		if (!RtCore::CopyOut(imageResult, ResultSurface)) return;
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
@@ -360,6 +373,7 @@ namespace RtLampShadows {
 		if (!CompiledIn) return;
 		RtCore::SetMaskHook(MaskHook);
 		shader = RtCore::AddShader("RtLampTrace");
+		filterShader = RtCore::AddShader("RtLampFilter");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}
 
