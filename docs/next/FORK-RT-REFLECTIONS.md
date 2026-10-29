@@ -169,6 +169,24 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 16:27 OUTDOOR A/B AT A STILL SPOT: scene noon (NVRAutoTest8, desert by pylons, sun high), forced rain wetness, rain particles off
+
+Branch `claude/rt-refl-2` (from `claude/rt-test-merge` af12c7e7, DLL 429a8c6b, unchanged RT code). Run
+`bench/autotest/20261029-162722-slotA`, list `rtrefl-3`, all 9 shots. The `noon` save loads in place, in first person and clear
+weather, so the frame is still. The og-* spots teleport the player, and the player then moves.
+- **Noise floor** (two RT-off shots): top half 0.19 % of pixels > 2/255 (sky, hills: still), bottom half 10.5 % (the wet ground's own
+  temporal noise).
+- **RT vs off**: 21.5 % of pixels, mean -0.97/255: **the wet ground gets darker where it should**. In the reflection-alone views
+  (shots 06/07), SSR's wet ground mirrors bright sky almost everywhere, in front of the bushes and the hills too: the sky fallback
+  leaks wherever the march misses. With RT, the ground reflects the bushes and the hills where they block the sky, and keeps the sky
+  only where it is open.
+- **Artefact found**: amber blotches low in the frame. Rays leaving the tessellated (displaced) ground hit the flat land mesh of the
+  scene right away and reflect "ground". Fixed after the run: a land hit within 40 units + 1 % of the view distance of the start
+  counts as the ground itself, and one more query starts past it (`Rt/ReflectionsRT.comp`, `LandSelfHit`). To verify in rtrefl-4.
+- **Alignment** (shot 02): the ground and bushes are green. Red: the far roofs, rocks and hills, which are distant LOD objects / terrain
+  beyond the core's SceneRadius (8192): expected.
+- **Cost**: `Reflections trace (half)` 2.9-3.0 ms SSR only -> 5.4-6.0 ms RT (about +2.5-3 ms); exchange 1.9-2.3 ms.
+
 ### 2026-10-29 04:34 FIRST REAL RT REFLECTIONS, iGPU (AMD Radeon(TM) Graphics, 1280x720, FSR off), scene luxe, slot A
 
 The run is `bench/autotest/20261029-043724-slotA` (list `rtrefl-2`, toml `evidence/rtrefl/rtrefl-igpu.toml`), with the shots in

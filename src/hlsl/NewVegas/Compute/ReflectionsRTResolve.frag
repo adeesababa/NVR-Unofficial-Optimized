@@ -40,7 +40,7 @@ void main() {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
-            rtInstance = float(hitFlags);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
+            rtInstance = float(hitFlags & 15u);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
             vec3 hitW = surfaceW + worldR * hitData.x;
             vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
             vec2 at = ToScreen(hitV);
@@ -53,7 +53,8 @@ void main() {
                 rtCubeShare = missing * env.a;
                 rtGuessShare = missing - rtCubeShare;
                 vec3 hitNormal = (hitFlags & 4u) != 0u ? OctDecode(hitData.zw) : -worldR;
-                sum += env.rgb * rtCubeShare + RtShadeHit(hitNormal, shade.rgb, shade.a) * rtGuessShare;
+                int keyLamp = int(hitFlags >> 4u) - 1;   // -1: none (outdoors by day shade.a is the sun's)
+                sum += env.rgb * rtCubeShare + RtShadeHit(hitW, hitNormal, shade.rgb, shade.a, keyLamp) * rtGuessShare;
             }
             confidence += missing;
         }
