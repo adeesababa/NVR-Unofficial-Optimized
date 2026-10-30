@@ -62,6 +62,15 @@ Risks: the instruction limit with the sun code (the RT-only level is the answer)
 code (c206-c217, s15); more records to compile at startup (the shader cache); lamps that light a draw but are not in the set (the
 game's light list outdoors is larger than ShadowLights + tracked lamps: they stay unshadowed).
 
+### ExteriorForward built (e0db92bb + 22691757, DLL 09C9436D): runs rtlamp-25/26, 2026-10-30
+- rtlamp-25: the GPU refused 64 of 68 outdoor records: ps_3_0 has 224 constants (c0-c223), the reprojection was on c228. Moved to
+  c200-c203 (free in the object pixel shaders: ParticleLight / ClothWind use them in other shaders).
+- rtlamp-26 (20261030-030851-slotA, PASS): 67 of 68 outdoor records load (SKIN2011: its constant table failed). Freeside Kings street
+  at 23:00: coverage 35 % of pixels use a traced lamp lookup (the street, facades, the wreck casting a blocked shadow); traced vs today
+  0.68 % of pixels darker (repeats 0.02 / 0.09 %); trace 12.5-14 ms (helper, iGPU). Novac motel: 0 % traced (its lamps are far from
+  that spot): needs a closer spot. Open: the left street lamp's own pool on the ground and the facade beside it go dark: the lamp's
+  head shadowing its own light? rtlamp-27 tries ExteriorLampStop 40 / 100 / 200.
+
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
   flashlight's reach toward it (people included, lamp glass not), stopping FlashlightStop 40 short (the player's body and weapon);
