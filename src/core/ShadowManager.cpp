@@ -2719,7 +2719,25 @@ void ShadowManager::RenderShadowMaps() {
 				int budget = ShadowPool::Budget();
 				static GpuTimer poolTimer("  Cube pool static layer (per frame)", 480);
 				GpuProfileScope gpuPool(poolTimer, Device);
-				for (ShadowSceneLight* light : ShadowPool::Candidates) {
+				// UNOFFICIAL 2026-10-30 ShadowHold (core/ShadowHold.h): members first (a lamp that had a shadow last frame and ranked inside the
+				// pool within the last ShadowHold seconds), then the newcomers inside the pool's rank, so the edge of the pool stops flipping.
+				const float holdSeconds = ShadowHold::Seconds();
+				std::vector<ShadowSceneLight*> poolOrder;
+				if (holdSeconds > 0.0f) {
+					for (size_t r = 0; r < ShadowPool::Candidates.size(); r++) if ((int)r < want) ShadowHold::Map[ShadowPool::Candidates[r]].lastTop = nowSeconds;
+					for (size_t r = 0; r < ShadowPool::Candidates.size(); r++) {
+						ShadowSceneLight* l = ShadowPool::Candidates[r];
+						if (ShadowHold::Continuous(l) && nowSeconds - ShadowHold::Map[l].lastTop <= holdSeconds) {
+							poolOrder.push_back(l);
+							if ((int)r >= want && GpuTimer::Enabled) ShadowHold::StatHeld++;
+						}
+					}
+					for (size_t r = 0; r < ShadowPool::Candidates.size() && (int)r < want; r++) {
+						ShadowSceneLight* l = ShadowPool::Candidates[r];
+						if (std::find(poolOrder.begin(), poolOrder.end(), l) == poolOrder.end()) poolOrder.push_back(l);
+					}
+				}
+				for (ShadowSceneLight* light : holdSeconds > 0.0f ? poolOrder : ShadowPool::Candidates) {
 					if (poolCount >= want) break;
 					NiPointLight* source = light ? light->sourceLight : nullptr;
 					if (!source) continue;
@@ -2728,7 +2746,19 @@ void ShadowManager::RenderShadowMaps() {
 					const int index = ShadowPool::EntryFor(light, Shadows->CubeMapSizeCreated, want);
 					if (index < 0) continue;
 					ShadowPool::Cube& cube = ShadowPool::Cubes[index];
-					const bool current = cube.valid && cube.x == at.x && cube.y == at.y && cube.z == at.z && cube.radius == radius && cube.cell == currentCell;
+					bool current = cube.valid && cube.x == at.x && cube.y == at.y && cube.z == at.z && cube.radius == radius && cube.cell == currentCell;
+					// UNOFFICIAL 2026-10-30 ShadowHold: a flicker's reach change under 2 % (position under 1 unit) keeps the map; a map that is not
+					// current is still used until its redraw (same cell, moved under 32 units), instead of no shadow meanwhile.
+					bool stale = false;
+					if (!current && holdSeconds > 0.0f && cube.valid && cube.cell == currentCell) {
+						const float dx = cube.x - at.x, dy = cube.y - at.y, dz = cube.z - at.z, d2 = dx * dx + dy * dy + dz * dz;
+						if (d2 < 1.0f && fabsf(cube.radius - radius) <= 0.02f * radius) { current = true; if (GpuTimer::Enabled) ShadowHold::StatNear++; }
+						else stale = d2 < 32.0f * 32.0f;
+					}
+					if (!current && stale && budget <= 0) {
+						if (GpuTimer::Enabled) ShadowHold::StatStale++;
+						current = true;	// published below with its last map
+					}
 					if (!current) {
 						if (budget <= 0) { if (GpuTimer::Enabled) ShadowPool::StatWaiting++; continue; }	// drawn on a later frame; no shadow until then
 						budget--;
@@ -2764,7 +2794,19 @@ void ShadowManager::RenderShadowMaps() {
 		// UNOFFICIAL interior forward point-light shadows: the lights whose cube map is theirs this frame.
 		if (!isExterior) {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
+			const int liveCount = PointShadowForward::SlotCount;	// UNOFFICIAL 2026-10-30 ShadowHold
 			PointShadowForward::PublishPool(poolEntries, poolCount);	// UNOFFICIAL 2026-10-29 ShadowPool (nothing when the pool is off)
+			{	// UNOFFICIAL 2026-10-30 ShadowHold: which lamps have a shadow this frame (FadeIn continuity, the SHADOW FLIPS line)
+				static const void* published[ShadowCubeMapsMax + ShadowPoolMax];
+				int n = 0;
+				for (int s = 0; s < PointShadowForward::SlotCount; s++) {
+					const void* l = PointShadowForward::Slots[s].light;
+					bool dup = false;
+					for (int k = 0; k < n; k++) if (published[k] == l) { dup = true; break; }
+					if (!dup) published[n++] = l;
+				}
+				ShadowHold::AfterPublish(published, n, liveCount);
+			}
 			ForwardWasActive = PointShadowForward::Active;
 			PointShadowForward::FrameStats();
 		}
