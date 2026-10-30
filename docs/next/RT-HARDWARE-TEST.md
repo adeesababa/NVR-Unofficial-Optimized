@@ -36,7 +36,10 @@ Goodsprings (og-goodsprings spot) facing the town. Let each setting settle 300 f
 | G | F + each other RT effect on, one at a time (reflections, lamp shadows indoors, AO / sky / GI) | each effect's own GPU PROFILE line + the helper's pass time for its shader |
 | H | everything on (the "max RT" case) | the frame time (FrameTimeStats line), all of the above |
 
-The bench list `bench/foundations/lists/rt-hw-1.txt` does steps A-F with shots (`profile` on); G and H are by hand.
+**`AlphaTested`, `Actors` and `HitTextures` are read when the helper starts** (a game start): steps A-D are separate launches with those
+set in the user toml; within one launch only the live settings change (SunAngle, Denoise, HalfResolution, DenoiseKernel, ActorRadius,
+ActorUpdateInterval, DebugView). The bench list `bench/foundations/lists/rt-hw-1.txt` is one launch with all three on in the toml and
+walks the live steps (hard -> soft -> soft + half + 3x3, with DebugView 4 / 6 / 7 shots); G and H are by hand.
 
 ## 3. What to send back (one block per step)
 ```
