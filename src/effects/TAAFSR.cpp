@@ -30,7 +30,7 @@ namespace {
 	struct FSRPrepConstants {
 		D3DXMATRIX	projection, view, prevView;
 		D3DXVECTOR4	cameraData, prevProjection, cameraDelta, size;
-		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5
+		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5, y: ReactiveMaxDistance
 	};
 
 	// Binding tables: (set, binding) as the SPIR-V declares them (checked with spirv-dis), slot = binding for images,
@@ -184,7 +184,7 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	prep.cameraDelta.w = objectMotion ? 1.0f : 0.0f;
 	prep.size = D3DXVECTOR4((float)width, (float)height, reset ? 1.0f : 0.0f, FSRSettings.WeaponReactive);
 	const bool reactive = ReactiveMask::Ready();	// UNOFFICIAL 2026-10-30
-	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, ReactiveMask::MaxDistance(), 0.0f, 0.0f);
 	ID3D9NvrExtBuffer* prepBuffer = ExtUniforms(fsrPrepUniforms, &prep, sizeof(prep));
 	if (!prepBuffer) return fail("its constant buffer could not be written");
 	{

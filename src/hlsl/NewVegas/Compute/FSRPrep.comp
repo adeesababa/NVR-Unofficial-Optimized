@@ -29,7 +29,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 prevProjection;        // x, y: last frame's projMatrix._11, _22
     vec4 cameraDelta;           // xyz: camera position this frame minus last frame's
     vec4 size;                  // xy render size, z: 1 = no history (motion 0), w: reactive value on weapon pixels
-    vec4 extra;                 // UNOFFICIAL 2026-10-30 x: 1 = t_reactive holds this frame's reactive mask (the alpha draws), 0 = weapon only
+    vec4 extra;                 // UNOFFICIAL 2026-10-30 x: 1 = t_reactive holds this frame's reactive mask (the alpha draws), 0 = weapon only; y: ReactiveMaxDistance
 } cb;
 
 layout(push_constant) uniform Push {
@@ -76,6 +76,7 @@ void main() {
 
     imageStore(o_motion, pixel, vec4(motion, 0.0, 0.0));
     // UNOFFICIAL 2026-10-30 ReactiveMask: smoke, fire, glass and other alpha draws over the world are reactive too
-    float reactive = cb.extra.x > 0.5 ? texelFetch(sampler2D(t_reactive, POINT_S), pixel, 0).x : 0.0;
+    // (only nearer than ReactiveMaxDistance: the sky and the distant land are drawn after the main list too, and change only with the camera)
+    float reactive = cb.extra.x > 0.5 && z < cb.extra.y ? texelFetch(sampler2D(t_reactive, POINT_S), pixel, 0).x : 0.0;
     imageStore(o_depth, pixel, vec4(weapon ? 0.0 : device, weapon ? max(cb.size.w, reactive) : reactive, 0.0, 0.0));
 }

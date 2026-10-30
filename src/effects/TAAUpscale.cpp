@@ -57,7 +57,7 @@ namespace {
 	struct UpPrepConstants {
 		D3DXMATRIX	projection, view, prevView;
 		D3DXVECTOR4	cameraData, prevProjection, cameraDelta, size;
-		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5
+		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5, y: ReactiveMaxDistance
 	};
 #define IMG(b)      { 1, b, NVR_EXT_BIND_SAMPLED_IMAGE, b, NVR_EXT_VIEW_2D, FALSE, 0 }
 #define UAV(b)      { 1, b, NVR_EXT_BIND_STORAGE_IMAGE, b, NVR_EXT_VIEW_2D, TRUE, 0 }
@@ -492,7 +492,7 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
 	// w: v2 (the weapon is drawn by now) = its reactive value and FSRPrep.comp's weapon rule; v1 = -1, no weapon test.
 	prep.size = D3DXVECTOR4((float)renderWidth, (float)renderHeight, reset ? 1.0f : 0.0f, resolveDepth ? -1.0f : FSRSettings.WeaponReactive);
 	const bool reactive = ReactiveMask::Ready();	// UNOFFICIAL 2026-10-30
-	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, ReactiveMask::MaxDistance(), 0.0f, 0.0f);
 	ID3D9NvrExtBuffer* prepBuffer = ExtUniforms(Up.PrepUniforms, &prep, sizeof(prep));
 	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
 	if (!prepBuffer || !point) { fail("its constant buffer or sampler could not be made"); return false; }
