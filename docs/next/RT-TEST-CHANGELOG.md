@@ -118,3 +118,22 @@ nothing here is pushed, released or installed unless the user says so.
   reflections, all on each change the picture, debug view right, no crash. Timings not trusted: rp8-skipluxe-4 and
   rp8-skipv21-1 ran in other slots at the same time.
 - DLL CRC32 F7BAB601, NvrRtHelper 077433EA (protocol 3), fork-0033b 9E5E68CF. Package `H:\_NVR-pkgt-test-4fe32674\`.
+
+## Round 8 (2026-10-30 07:20, d4a2439c)
+
+- Merged: claude/rt-sun-2 a5e04304 (RTX GPU fault fix: fork patch 0034 1.8-rt-seq orders the arena copy after the vertex
+  conversions + sequence texel; helper arena guard clamps indices and builds stale geometry empty; + e7f56980 scene-cost switches
+  Compact / BuildTrianglesPerFrame / BuildNearRadius / CullSmallAngle, all off); claude/rt-lamps-2 a888f059 (ExteriorForward off,
+  StartOffsetPerUnit 0.002 for all lamp traces, SKIN2011 outdoor record); claude/rootplan-round3 eee49d29.
+- **ObjectMotion is now ON by default** ([Main.Main.Quality], rootplan eee49d29): moving people and objects keep a sharp TAA/FSR
+  history.
+- Ported a605e259: Balebandro's LOD water crash fix (Physically-Based-Reloaded 1ce5d62, author Alejandro Martinez):
+  IsWaterNodeVisible (0x4E62E0) detour returns false for water 3D that is not a node or has no children array.
+- Fork from now on: rtsunork-0033c (D58B4425, patches 0001-0029 + 0033 + 0034, RT-only).
+- Conflict: PointShadowForward.h (pool slots + ExteriorForward members: both kept). PointShadowForward.hlsl back to CRLF.
+- Bench PASS: 1070 RT off (20261030-071047-slotC) vs round 7 = 7/7 at noise level; iGPU interior (070945-slotA, rtm-igpu-int3):
+  helper by LUID, every RT effect works, shots within 0.1-1.3 % of round 6 except Lucky 38 lamp RT 2.1 % (far railing / stairs
+  no longer self-shadowed: intended), lamp trace ~22.5 ms, no stale-arena warnings, no crash.
+- Side job: rt-test-7 swap package H:\_NVR-pkgt-test-7-fix-587f0ac8 (claude/rt-test-7-fix = 4fe32674 + e7f56980 + a5e04304),
+  smoke PASS (1070 064310-slotC, iGPU 064526-slotC).
+- DLL CRC32 7F06CF91, NvrRtHelper FC94590F (protocol 3), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-d4a2439c\`.
