@@ -235,6 +235,14 @@ accumulate (below): both are temporal + edge-aware spatial already.
   AO 4 rays). Needs RtDenoise's half-resolution mode (asked; ~4x less) before it is usable on this GPU; Denoise stays the default
   (the RT AO itself is off by default). Interleave's cost is NOT readable here: with the denoiser saturating the iGPU the core's
   "Ray tracing" line (which includes the waits) read 13.4 / 27.3 / 21.4 ms for Interleave 1 / 2 / 4 = contention, not rays.
+- **rt-gi-4 (10-29 20:29 lucky22, denoise off):** the same pattern without the denoiser (AO 11.7-14.9 ms, AO + GI at Interleave 1 / 2 / 4:
+  13.9 / 25.9 / 21.8 ms): the core's line includes waiting for GPU work queued before the RT point and its 120-frame windows straddle
+  shot changes, so it is NOT a per-pass cost. Per-pass GPU time of the helper pass is needed (asked of rt-sun-core); until then
+  Interleave's saving is unmeasured (it does trace 1/2, 1/4 of the texels).
+- **RtDenoise half resolution + RGB (merged claude/rt-sun-2 82976a88; DLL 3FFB0E01):** the AO denoise now runs at the trace grid
+  (Downscale 2: ~4x cheaper than the 23.6 ms screen-size run), and the GI bounce light goes through its RGB mode (Channels 3, Downscale 2)
+  into NVR_RTGIDenoised, which AmbientLight's RT estimate takes instead of the raw bounce (then ComputeGI's accumulate as before). First
+  use of the RGB mode anywhere. Bench rt-gi-5 queued.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 

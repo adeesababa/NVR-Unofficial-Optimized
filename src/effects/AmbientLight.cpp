@@ -1170,7 +1170,9 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 							// (rt-ao-gi) variant bit 8: the bounce light (3rd texture) into rgb; without GI the 3rd is a stand-in, not read.
 							// (2026-10-29) the AO visibility through the shared RT denoiser when on (.x; screen size, read by uv)
 							IDirect3DTexture9* rtVis = ao->RtDenoised(Device);
-							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtVis ? rtVis : rtRaw, rtGI ? (IDirect3DBaseTexture9*)rtGI : (IDirect3DBaseTexture9*)rtRaw };
+							IDirect3DTexture9* rtGIClean = rtGI ? ao->RtDenoisedGI(Device) : nullptr;	// (2026-10-29) RGB, half
+							IDirect3DTexture9* rtGIUsed = rtGIClean ? rtGIClean : rtGI;
+							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtVis ? rtVis : rtRaw, rtGIUsed ? (IDirect3DBaseTexture9*)rtGIUsed : (IDirect3DBaseTexture9*)rtRaw };
 							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView | (rtGI ? 0x100u : 0u), reduced);
 							if (drawn && rtGI) giDrawn = true;	// ComputeGI's accumulate and apply take the bounce light from here
 						}
