@@ -40,6 +40,7 @@ float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only 
 float4x4 TESR_ShadowCameraToLightTransformOrtho;   // camera-relative world position -> the top-down ortho map (as Wet World)
 float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV, z: SpecularOcclusionLevel (REFL_SPECOCC_ON)
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
+float4 TESR_ObjectMotionData;        // UNOFFICIAL 2026-10-29 ObjectMotion: x 1 = Temporal finds its buffer on stage 11 (Reflections.cpp)
 float4 TESR_ReflectionsCube;         // x: face being drawn (0-5, D3D order), y: its size in texels, z: mip level, w: 1 = empty the cube
 float4 TESR_ReflectionsCube2;        // x: capture blend, y: fade per frame, z: last mip level, w: 1 = the cube is in use
 float4 TESR_ReflectionsGrid;         // UNOFFICIAL 2026-10-19 GridFallback: xyz the light grid's corner relative to the camera, w: cell size
@@ -523,6 +524,9 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	}
 
 	float3 world = toWorld(uv) * depth;
+	// UNOFFICIAL 2026-10-29 ObjectMotion (core/ObjectMotion.h): a surface that moved itself was that far back along its path. Stage 11
+	// (TESR_OrthoMapBuffer, which this pass never reads) holds TESR_ObjectMotionBuffer for this pass only (Reflections.cpp RenderBuffers).
+	[branch] if (TESR_ObjectMotionData.x > 0.0) world -= tex2Dlod(TESR_OrthoMapBuffer, float4(uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy), 0, 0)).xyz;
 	float4 clip = mul(float4(world, 1.0), TESR_ReflectionsReproject);
 	float w = max(clip.w, 0.001);
 	float2 last = screenToRect(float2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5));	// UNOFFICIAL 2026-10-27 RenderScale v2: the history is in the rect too

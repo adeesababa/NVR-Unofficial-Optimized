@@ -63,6 +63,10 @@ sampler2D NVR_ALBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRES
 sampler2D NVR_ALHistory : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 // UNOFFICIAL 2026-10-14: the occlusion kept from frame to frame too (r visibility, g view depth): with the sample pattern turning every
 // frame the occlusion alone showed a new grain each frame (user: "a sort of noise filter over everything").
+// UNOFFICIAL 2026-10-29 ObjectMotion (core/ObjectMotion.h): the world move of what moved itself since last frame (0 elsewhere); s8 is the grid
+// passes' (NVR_GridWave), never read in Accumulate. TESR_ObjectMotionData.x 0 = not made this frame: Accumulate reprojects as before.
+sampler2D TESR_ObjectMotionBuffer : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 TESR_ObjectMotionData;
 sampler2D NVR_ALOcclusionHistory : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float Radius = max(TESR_AmbientLightData.x, 1.0f);
@@ -355,6 +359,9 @@ AccumulateOut Accumulate(VSOUT IN) {
 	OUT.occlusion = float4(current.a, viewZ, 0.0f, 1.0f);
 	[branch] if (!(NVR_ALTemporal.x > 0.0f) || viewZ < NearFade) return OUT;
 	float3 origin = PositionFromViewZ(uv, viewZ);
+	// UNOFFICIAL 2026-10-29 ObjectMotion: a surface that moved itself (a grabbed teapot, a walking NPC) was that far back along its path
+	// (the world move, into view space)
+	[branch] if (TESR_ObjectMotionData.x > 0.0f) origin -= mul(tex2Dlod(TESR_ObjectMotionBuffer, float4(uv, 0.0f, 0.0f)).xyz, (float3x3)TESR_ViewTransform);
 	float4 clip = mul(float4(origin, 1.0f), NVR_ALReproject);
 	float w = max(clip.w, 0.001f);
 	float3 last = float3(clip.x / w * 0.5f + 0.5f, 0.5f - clip.y / w * 0.5f, clip.w);

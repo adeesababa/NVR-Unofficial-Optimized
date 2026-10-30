@@ -10,6 +10,7 @@ layout(set = 1, binding = 0) uniform texture2D t_source;      // TESR_SourceBuff
 layout(set = 1, binding = 1) uniform texture2D t_history;     // TESR_TAAHistoryBuffer (LINEAR)
 layout(set = 1, binding = 2) uniform texture2D t_depth;       // TESR_DepthBuffer (POINT)
 layout(set = 1, binding = 3) uniform texture2D t_viewmodel;   // TESR_DepthBufferViewModel (POINT)
+layout(set = 1, binding = 4) uniform texture2D t_objmotion;   // UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer (POINT; a placeholder while cameraDelta.w is 0)
 
 layout(set = 2, binding = 0, std140) uniform Constants {
     mat4 projectionTransform;   // TESR_ProjectionTransform
@@ -19,7 +20,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraData;            // TESR_CameraData
     vec4 data;                  // TESR_TAAData: x history weight, y clip gamma, z history valid, w debug view
     vec4 prevProjection;        // TESR_TAAPrevProjection
-    vec4 cameraDelta;           // TESR_TAACameraDelta
+    vec4 cameraDelta;           // TESR_TAACameraDelta (w: UNOFFICIAL 2026-10-29 ObjectMotion, 1 = t_objmotion holds this frame's)
     vec4 weapon;                // TESR_TAAWeapon
     vec4 sharpen;               // TESR_TAASharpen
 } cb;
@@ -65,6 +66,8 @@ vec3 YCoCgToRGB(vec3 c) {
 // Where this pixel's surface was on screen last frame (the HLSL Reproject, line for line).
 vec2 Reproject(vec2 p, out float inFront) {
     vec3 cameraVector = toWorld(p) * readDepth(p);
+    // UNOFFICIAL 2026-10-29 ObjectMotion: a surface that moved itself was that much further back along its path last frame.
+    if (cb.cameraDelta.w > 0.0) cameraVector -= textureLod(sampler2D(t_objmotion, POINT_S), p, 0.0).xyz;
     vec3 fromPrevCamera = cameraVector + cb.cameraDelta.xyz;
 
     vec3 prevRight   = vec3(cb.prevViewTransform[0][0], cb.prevViewTransform[1][0], cb.prevViewTransform[2][0]);

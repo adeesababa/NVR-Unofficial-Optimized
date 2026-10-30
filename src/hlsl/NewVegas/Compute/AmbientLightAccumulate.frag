@@ -7,6 +7,7 @@
 layout(set = 1, binding = 0) uniform texture2D t_buffer;            // NVR_ALBuffer (the blurred estimate)
 layout(set = 1, binding = 1) uniform texture2D t_prep;              // NVR_ALPrep
 layout(set = 1, binding = 2) uniform texture2D t_occlusionHistory;  // NVR_ALOcclusionHistory (last frame's)
+layout(set = 1, binding = 3) uniform texture2D t_objmotion;         // UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer (read with variant bit 2)
 
 layout(location = 0) out vec4 o_bounce;
 layout(location = 1) out vec4 o_occlusion;
@@ -19,6 +20,8 @@ void main() {
     o_occlusion = vec4(current.a, viewZ, 0.0, 1.0);
     if (!(cb.alTemporal.x > 0.0) || viewZ < NearFade) return;
     vec3 origin = PositionFromViewZ(uv, viewZ);
+    // UNOFFICIAL 2026-10-29 ObjectMotion (the HLSL's mul(motion, (float3x3)TESR_ViewTransform)): variant bit 2 = this frame's buffer is there
+    if ((pc.variant & 4u) != 0u) origin -= (cb.viewTransform * vec4(pointLod(t_objmotion, uv).xyz, 0.0)).xyz;
     vec4 clip = cb.reproject * vec4(origin, 1.0);   // mul(float4(origin, 1), NVR_ALReproject)
     float w = max(clip.w, 0.001);
     vec3 last = vec3(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5, clip.w);

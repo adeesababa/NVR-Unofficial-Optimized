@@ -85,6 +85,7 @@ vec3 UnpackColour(float t) {
 
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
+    if (px.x >= int(F.screen.x) || px.y >= int(F.screen.y)) discard;   // (2026-10-29: outside a RenderScale frame's drawn part)
     uint tile = uint(px.y >> 4) * F.counts.z + uint(px.x >> 4);
     uint count = min(TileCount[tile], F.counts2.x);
     if (count == 0u) discard;
@@ -99,7 +100,7 @@ void main() {
     vec3 nv = Texel(t_normals, px).xyz * 2.0 - 1.0;
     vec3 Ns = vec3(dot(F.viewRot0.xyz, nv), dot(F.viewRot1.xyz, nv), dot(F.viewRot2.xyz, nv));
     Ns = dot(Ns, Ns) > 1e-6 ? normalize(Ns) : -rd;
-    float aa = max(depth * F.screen.w * 2.0 / F.up.w, 0.05);   // a pixel's size on the surface (units)
+    float aa = max(depth * 2.0 / (F.screen.y * F.up.w), 0.05);   // a pixel's size on the surface (units)
     uint debug = F.counts2.z;
     if (debug == 3u) {   // TEST: the depth this pass reads (red bands every 64 units; green where the raw value is above 0)
         outColor = vec4(fract(depth / 64.0), Texel(t_depth, px).x > 0.0 ? 1.0 : 0.0, 0.0, 0.8);
@@ -107,9 +108,9 @@ void main() {
     }
 
     // Gather: stains (thickness field on the surface) and drops (spheres in the air).
-    float T = 0.0, ageSum = 0.0, poolSum = 0.0, tintW = 0.0;
+    float T = 0.0, ageSum = 0.0, poolSum = 0.0, tintW = 0.0, waterSum = 0.0;   // (2026-10-29 WaterGun: waterSum = kind 3)
     vec3 tintSum = vec3(0.0), grad = vec3(0.0);
-    float A = 0.0, nearT = 1e9, dropAge = 0.0, dropTint = 0.0;
+    float A = 0.0, nearT = 1e9, dropAge = 0.0, dropTint = 0.0, dropWater = 0.0;
     vec3 dropN = -rd;
     vec4 dot_ = vec4(0.0);
     uint base = tile * F.counts2.x;
@@ -144,6 +145,7 @@ void main() {
             T += w;
             ageSum += w * r.b.w;
             poolSum += r.c.z > 0.5 && r.c.z < 1.5 ? w : 0.0;
+            waterSum += r.c.z > 2.5 ? w : 0.0;
             grad += ip * (-4.0 * w1 / (R * R) * keep);
             if (r.c.x > 0.5) { tintSum += w * UnpackColour(r.c.x); tintW += w; }
         }
@@ -156,7 +158,7 @@ void main() {
             float tf = t - h;
             if (tf <= 0.0 || tf > sceneDist) continue;
             A += 2.0 * h * amount;
-            if (tf < nearT) { nearT = tf; dropN = normalize(rd * tf - c); dropAge = r.b.w; dropTint = r.c.x; }
+            if (tf < nearT) { nearT = tf; dropN = normalize(rd * tf - c); dropAge = r.b.w; dropTint = r.c.x; dropWater = r.c.z > 2.5 ? 1.0 : 0.0; }
         }
     }
     if (debug == 2u) {
@@ -223,6 +225,9 @@ void main() {
     float pool = T > 1e-4 ? poolSum / T : 0.0;
     float dryTime = mix(F.look2.y, F.look2.z, pool);
     float dry = cover > 0.0 ? smoothstep(0.0, 1.0, age / (dryTime * mix(0.5, 1.6, thick))) : 0.0;
+    // UNOFFICIAL 2026-10-29 WaterGun (BloodFluid.cpp): water (kind 3) does not dry; it is clear and bends what is under it.
+    float water = T > 1e-4 ? saturate(waterSum / T * 2.0 - 0.5) : 0.0;
+    dry *= 1.0 - water;
     vec3 freshColour = F.fresh.rgb;
     vec3 dryColour = F.dryColor.rgb;
     vec3 glintTint = vec3(0.02, 0.004, 0.004);
@@ -254,12 +259,22 @@ void main() {
         blood = (sceneLin * through + light * albedo * mix(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
         blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
     }
+    if (water > 0.0) {
+        // (Water: what is under it, shifted by the surface's slope (refraction) and a little darker and bluer where deep; a wet
+        // film darkens the ground as wet dirt does.)
+        vec2 bendPx = vec2(dot(grad, F.right.xyz), -dot(grad, F.up.xyz)) * (6.0 + 18.0 * thick);
+        ivec2 rp = clamp(px + ivec2(bendPx), ivec2(0), ivec2(F.screen.xy) - 1);
+        vec3 under = linearize(max(Texel(t_scene, rp).rgb, vec3(0.0)));
+        vec3 clearWater = under * mix(vec3(0.72, 0.74, 0.76), vec3(0.62, 0.78, 0.86), thick);
+        blood = mix(blood, clearWater, water);
+    }
     vec3 colour = mix(sceneLin, blood, cover);
 
     // Wet blood shines (BloodPS): small highlights, at most about the light here; the edge's slope bends the normal.
     // (BloodPS 2026-10-27, look3 = TESR_BloodFlowLook: the sheen weaker, capped, part in the blood's own hue.)
     vec3 hue = saturate((glintTint - 0.004) / 0.016);
     float gloss = F.look2.w * (1.0 - dry) * cover * mix(0.5, 1.0, thick);
+    gloss = mix(gloss, cover * mix(0.6, 1.0, thick), water);   // (WaterGun: water always shines)
     vec3 V = -rd;
     if (gloss > 0.001) {
         // (2026-10-27, rework.z: a pool's top is flat; the field's slope bends the normal mostly where the blood is thin, at its
@@ -280,14 +295,15 @@ void main() {
             if (bumpLength > 0.4) bump *= 0.4 / bumpLength;
             Nb = normalize(Nb - bump);
         }
-        float rough = mix(0.12, 0.45, dry);
+        float rough = mix(mix(0.12, 0.45, dry), 0.05, water);
         float a2 = rough * rough * rough * rough;
         float glints = Highlights(Nb, V, rel, a2, lit);
         float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
         vec3 surroundings = F.match.w > 0.5 ? linearize(saturate(F.horizon.rgb)) : vec3(light * 0.1);
         if (deep) surroundings *= saturate(sceneLight / max(irradiance, 0.05));   // (2026-10-27 evening: less where the spot is shut in)
-        vec3 sheenTint = mix(vec3(1.0), hue, F.look3.z);
-        colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, F.look3.y) * surroundings * sheenTint * (1.0 - rough) * 0.5 * F.look3.x) * gloss;
+        vec3 sheenTint = mix(mix(vec3(1.0), hue, F.look3.z), vec3(1.0), water);
+        float sheen = mix(min(fresnel, F.look3.y) * F.look3.x, fresnel, water);
+        colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + sheen * surroundings * sheenTint * (1.0 - rough) * 0.5) * gloss;
     }
     // A drop in the air: a dark red bead with a glint, in front of whatever is behind it.
     if (coverA > 0.0) {
@@ -308,6 +324,12 @@ void main() {
         // (2026-10-27, rework.w: the drops' white glints made each one a shiny orb; weaker, and part in the blood's hue.)
         vec3 dropGlint = mix(vec3(1.0), saturate((dropTintRgb - 0.004) / 0.016), F.look3.z) * F.rework.w;
         drop += min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.4 * min(light, 1.2) * F.look2.w * dropGlint;
+        if (dropWater > 0.5) {
+            // (WaterGun: a clear drop: what is behind it, bent through it, and a white glint.)
+            ivec2 rp = clamp(px + ivec2(vec2(dot(dropN, F.right.xyz), -dot(dropN, F.up.xyz)) * 10.0), ivec2(0), ivec2(F.screen.xy) - 1);
+            drop = linearize(max(Texel(t_scene, rp).rgb, vec3(0.0))) * vec3(0.85, 0.92, 0.96)
+                + min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.6 * min(light, 1.2);
+        }
         colour = mix(colour, drop, coverA);
     }
     float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);

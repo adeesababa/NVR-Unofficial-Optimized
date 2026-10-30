@@ -19,6 +19,10 @@
 #include "LinearScene.h"	// UNOFFICIAL 2026-10-28: with LinearScene live the sums are exact already (every mode off)
 
 namespace PassSums {
+	// UNOFFICIAL 2026-10-29: called right after the fold-in's state block Apply (set by CapturedNormals' lean hook, which tracks the device
+	// state from its Set calls; a state block bypasses them).
+	inline void (*AfterStateBlock)(IDirect3DDevice9*) = nullptr;
+
 
 	inline D3DXVECTOR4 Redirect = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// TESR_PassRedirect (c210): x 1 = this pass draws into the buffer, linear
 	inline float Gamma = 1.0f;					// the gamma LinEncode uses (PBR.cpp: [Shaders.PBR.Linear] Gamma when linear lighting is on, else 1)
@@ -283,6 +287,7 @@ namespace PassSums {
 				{ -0.5f, h - 0.5f, 0, 1, 0, 1 }, { w - 0.5f, h - 0.5f, 0, 1, 1, 1 } };
 			device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
 			saved->Apply();
+			if (AfterStateBlock) AfterStateBlock(device);	// UNOFFICIAL 2026-10-29 (CapturedNormals' lean hook re-reads the state)
 			Composes++;
 		}
 		else Logger::Log("ExactPassSums: fold-in skipped (state block or copy failed): this frame's run keeps its separate sums wrong way");

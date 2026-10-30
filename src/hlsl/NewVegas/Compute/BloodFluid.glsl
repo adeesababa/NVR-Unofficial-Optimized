@@ -116,7 +116,7 @@ vec3 ProjectRel(vec3 rel) {
 
 // The eye ray through pixel centre px (eye-relative, scaled so that its view depth is 1: Depth.hlsl toWorld).
 vec3 RayAt(vec2 px) {
-    vec2 uv = px * F.screen.zw;
+    vec2 uv = px * F.look4.zw;   // (2026-10-29: 1 / the drawn part's size; screen.zw is 1 / the textures' size, for UVs: they differ in RenderScale frames)
     return F.fwd.xyz + F.right.xyz * ((2.0 * uv.x - 1.0) / F.right.w) - F.up.xyz * ((2.0 * uv.y - 1.0) / F.up.w);
 }
 

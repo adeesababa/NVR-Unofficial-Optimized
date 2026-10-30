@@ -204,7 +204,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-28 CapturedNormals (Shaders/Includes/CapturedNormals.hlsl, core/CapturedNormals.h): the four lit templates write their
 	// smooth vertex normal to COLOR3; compiled in only when a reader's switch is on at startup, so that otherwise they are exactly as before
 	// (defined only then: the define list, and so the shader cache's keys, stay as they were with it off).
-	if (CapturedNormals::CompiledIn()) AppendDefine("CAPTURED_NORMALS_ON", "1");
+	if (CapturedNormals::CompiledIn()) AppendDefine("CAPTURED_NORMALS_ON", CapturedNormals::MaterialCompiledIn() ? "2" : "1");	// UNOFFICIAL 2026-10-29: 2 = with MaterialBuffer
 	// UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals also gives the land and parallax templates their smooth vertex normal for
 	// the sun lookup and the sky ambient (TerrainTemplate / ParallaxTemplate CAPTURED_NORMALS_FORWARD), as SmoothObjectNormals did for objects.
 	if (CapturedNormals::MergeWanted()) AppendDefine("CAPTURED_NORMALS_FORWARD", "1");
@@ -225,7 +225,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) ? "1" : "0");
 	// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS): the 4-lamp-and-up shiny object shaders take
 	// up to 24 lamps from c37-c63, c76-c87 and c98-c107, lit per pixel through the surface's tangent frame. DXVK only (shader length), read at startup.
-	AppendDefine("MANY_LAMPS_ON", ManyLamps::ShadersWant() ? "1" : "0");
+	// UNOFFICIAL 2026-10-29: 2 = LightCommonLamps (the lamps from the frame's lamp table, Includes/LightCommon.hlsl)
+	AppendDefine("MANY_LAMPS_ON", ManyLamps::ShaderDefine());
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
@@ -455,6 +456,18 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				&Errors,
 				&ConstantTable
 			);
+			// UNOFFICIAL 2026-10-29: D3DX ran out of ps_3_0 temp registers (X4505). Measured: the 6-layer land shaders SLS2132-2138 with terrain
+			// blending and captured normals both on fail in Includes/Parallax.hlsl at flags 0 while 5 and 7 layers compile -- an allocation
+			// quirk, not a real budget. Compiled again with D3DXSHADER_PREFER_FLOW_CONTROL, which keeps the same branches and fits (all 256
+			// combinations of the land options at 6 layers: scratch terrain_sweep.py). Only after such a failure: every shader that compiles
+			// at flags 0 keeps exactly that bytecode.
+			if (!Shader && Errors && strstr((const char*)Errors->GetBufferPointer(), "X4505")) {
+				Logger::Log("UNOFFICIAL %s: out of temp registers at the default flags; compiling again with PREFER_FLOW_CONTROL", Name);
+				Errors->Release(); Errors = nullptr;
+				if (ConstantTable) { ConstantTable->Release(); ConstantTable = nullptr; }
+				D3DXCompileShader((const char*)ShaderSource->GetBufferPointer(), ShaderSource->GetBufferSize(), NULL, NULL, "main", ShaderProfile,
+					D3DXSHADER_PREFER_FLOW_CONTROL, &Shader, &Errors, &ConstantTable);
+			}
 			if (Errors) Logger::Log((char*)Errors->GetBufferPointer());
 			if (Shader) {
 				Function = Shader->GetBufferPointer();
@@ -525,8 +538,11 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 						// UNOFFICIAL 2026-10-28 CapturedNormals (core/CapturedNormals.h): the pixel shaders that write the normal target (COLOR3).
 						bool writes = false;
 						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
-							if (!strcmp(Template.Defines[d].Name, "CAPTURED_NORMALS_ON")) writes = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+							if (!strcmp(Template.Defines[d].Name, "CAPTURED_NORMALS_ON")) writes = Template.Defines[d].Definition && (!strcmp(Template.Defines[d].Definition, "1") || !strcmp(Template.Defines[d].Definition, "2"));
 						if (writes) CapturedNormals::NoteWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+						// UNOFFICIAL 2026-10-29 MaterialBuffer: Object / Parallax / Terrain write it on COLOR2 (the skin templates' COLOR2 is the skin blur's)
+						if (writes && Template.Name && (!strcmp(Template.Name, "ObjectTemplate") || !strcmp(Template.Name, "ParallaxTemplate") || !strcmp(Template.Name, "TerrainTemplate")))
+							CapturedNormals::NoteMaterialWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 					}
 					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.

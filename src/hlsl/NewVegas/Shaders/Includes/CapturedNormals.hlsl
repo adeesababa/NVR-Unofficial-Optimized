@@ -29,6 +29,19 @@
             return float4(ShadowEncodeNormal(n), length(worldPos), 1.0f);
         #endif
     }
+
+    // UNOFFICIAL 2026-10-29 MaterialBuffer (core/CapturedNormals.h; [Main.Main.Quality] MaterialBuffer, restart; CAPTURED_NORMALS_ON 2): the
+    // templates' spare COLOR2 = TESR_MaterialBuffer while the main list draws: r the material class (Render.cpp per draw: 1 object, 2 worn
+    // gear (skinned), 3 cloth, 4 land, 5 plants), g the drawn object's world bound radius (thickness, an upper bound), b the roughness the
+    // shader lit with (-1: none), a 1. Actors' skin is not in it (its template's COLOR2 is the skin blur's): the normals' a == 2 marks it.
+    #if CAPTURED_NORMALS_ON == 2
+        float4 NVR_MaterialDraw : register(c217);	// x class, y bound radius (free in the lit templates: only ParticleLight.hlsl's lamp array covers c215-c226)
+        #define CapturedMaterialOut(roughness) float4(NVR_MaterialDraw.x, NVR_MaterialDraw.y, (roughness), 1.0f)
+        #define CapturedMaterialOutClass(materialClass, roughness) float4((materialClass), NVR_MaterialDraw.y, (roughness), 1.0f)
+    #else
+        #define CapturedMaterialOut(roughness) 0.0f
+        #define CapturedMaterialOutClass(materialClass, roughness) 0.0f
+    #endif
 #endif
 
 #endif

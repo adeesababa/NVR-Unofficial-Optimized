@@ -758,7 +758,7 @@ PS_OUTPUT main(PS_INPUT IN)
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 #if CAPTURED_NORMALS_ON
     OUT.capturedPad1 = 0.0f;
-    OUT.capturedPad2 = 0.0f;
+    OUT.capturedPad2 = CapturedMaterialOut(-1.0f);	// UNOFFICIAL 2026-10-29 MaterialBuffer (0 without it; the roughness is not in scope here)
     // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map and the parallax offset. The displacement
     // layout (NVR DXVK object tessellation) has no channel for it (uv.zw is the object normal there): none, the depth-rebuilt normal stays.
     #if defined(DISPLACE_LAYOUT) || defined(DIFFUSE) || defined(ONLY_SPECULAR)

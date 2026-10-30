@@ -71,6 +71,14 @@ namespace ShaderPrecompile {
 		ID3DXConstantTable* table = nullptr;
 		D3DXCompileShader((const char*)job->SourceBuffer->GetBufferPointer(), job->SourceBuffer->GetBufferSize(), NULL, NULL, "main",
 			profile, NULL, &job->ShaderBuffer, &errors, &table);
+		// UNOFFICIAL 2026-10-29: out of temp registers (X4505): again with PREFER_FLOW_CONTROL, as ShaderRecord::LoadShader (see there)
+		if (!job->ShaderBuffer && errors && strstr((const char*)errors->GetBufferPointer(), "X4505")) {
+			job->Log += "out of temp registers at the default flags; compiled again with PREFER_FLOW_CONTROL\n";
+			errors->Release(); errors = nullptr;
+			if (table) { table->Release(); table = nullptr; }
+			D3DXCompileShader((const char*)job->SourceBuffer->GetBufferPointer(), job->SourceBuffer->GetBufferSize(), NULL, NULL, "main",
+				profile, D3DXSHADER_PREFER_FLOW_CONTROL, &job->ShaderBuffer, &errors, &table);
+		}
 		if (table) table->Release();
 		if (errors) { job->Log += (char*)errors->GetBufferPointer(); errors->Release(); }
 		if (job->ShaderBuffer) {

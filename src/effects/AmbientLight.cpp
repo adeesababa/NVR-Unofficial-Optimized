@@ -3,6 +3,7 @@
 #include "../core/FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
+#include "../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion (Accumulate's motion input)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/RtAmbient.h"	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 
@@ -725,7 +726,7 @@ namespace {
 		{ "AmbientLightSmoothPass", 1,  0 },		// prep (X) / buffer 1 (Y)
 		{ "AmbientLightEstimate",   2,  0 },		// prep, blue noise
 		{ "AmbientLightBlurPass",   2,  0 },		// depth, buffer
-		{ "AmbientLightAccumulate", 3,  0 },		// buffer, prep, last occlusion history
+		{ "AmbientLightAccumulate", 4,  1u << 3 },	// buffer, prep, last occlusion history, (UNOFFICIAL 2026-10-29) ObjectMotion's buffer
 		{ "AmbientLightStats",      7,  1u << 6 },	// source, depth, view model, occlusion history, normals, grid, grid colour
 		{ "AmbientLightReduce",     2,  0 },		// stats, last balance
 		// source, SunFar, depth, normals, point shadows, sky, view model, occlusion history, grid wave stage, grid, grid colour, balance, buffer
@@ -1186,8 +1187,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 						drawn = ExtDraw(ExtGIAccumulate, targets, 2, giTextures, 0, reduced);
 					}
 					if (!drawn) giDrawn = false;	// (ComputeGI) no accumulated light: the plain apply
-					IDirect3DBaseTexture9* textures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex] };
-					if (!drawn) drawn = ExtDraw(ExtAccumulate, targets, 2, textures, 0, reduced);
+					// UNOFFICIAL 2026-10-29 ObjectMotion: its buffer when this frame's is made (variant bit 2), else a stand-in nothing reads
+					const bool objectMotion = ObjectMotion::Ready();
+					IDirect3DBaseTexture9* textures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex], objectMotion ? (IDirect3DBaseTexture9*)ObjectMotion::Texture : nullptr };
+					if (!drawn) drawn = ExtDraw(ExtAccumulate, targets, 2, textures, objectMotion ? 4u : 0u, reduced);
 				}
 				else if (p == 5) {
 					IDirect3DBaseTexture9* textures[] = { scene, depth, viewModel, occlusionHistory[writeIndex], normals, grid, gridColour };
@@ -1241,6 +1244,9 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 			}
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
+			// UNOFFICIAL 2026-10-29 ObjectMotion: Accumulate's TESR_ObjectMotionBuffer shares s8 with the grid passes' NVR_GridWave, which may
+			// still be bound there from RenderGrid: its own texture, explicitly (null when not made: TESR_ObjectMotionData.x is 0 then)
+			if (p == 4) Device->SetTexture(8, ObjectMotion::Data.x > 0.0f ? (IDirect3DBaseTexture9*)ObjectMotion::Texture : nullptr);
 			else if (applyLike) Device->SetTexture(11, occlusionHistory[writeIndex]);
 			if (p == 7 && skyTexture) {	// UNOFFICIAL 2026-10-20 (skyamb): the sky target for Apply (NVR_ALSkyVis)
 				Device->SetTexture(10, skyTexture);

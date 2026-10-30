@@ -17,6 +17,54 @@
 #else
     lighting = 0.0f;
 #endif
+#if MANY_LAMPS_ON == 2
+// UNOFFICIAL 2026-10-29 LightCommonLamps (Includes/LightCommon.hlsl, core/ManyLamps.h): the same lamps from the frame's lamp table. c37 x the
+// count, y the reach scale; c38 the lighting offset; c39-c41 world -> object rows; c42-c44 the table indices (LightCommonIndex). The first six
+// keep their compile-time cube-map shadow slot (SHADOWED needs it), so they are written out; every lamp after them is ONE real loop.
+{
+    const float3 mlWorldPos = IN.lPosition.xyz;	// the object's space, as the lamps once moved there
+    const float mlCount = NVR_ManyLamps[0].x;
+    #define ML_TS(d) float3(dot(IN.light2.xyz, (d)), dot(IN.light3.xyz, (d)), dot(IN.light4.xyz, (d)))
+    #define ML_LAMP_AT(COND, POSITION, COLOR) [branch] if (COND) { \
+            const float4 mlP = POSITION; \
+            const float3 mlD = mlP.xyz - mlWorldPos; \
+            const float3 mlL = ML_TS(mlD); \
+            att = vanillaAtt(mlD, max(mlP.w, 1.0e-3f)); \
+            [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
+                lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
+        }
+    #define ML_TABLE_LAMP(j, COLOR) [branch] if ((j) < mlCount) { \
+            const float mlI = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], (float)(j)); \
+            float4 mlTP; float3 mlTC; \
+            [branch] if (mlI < LIGHT_COMMON_NONE) { \
+                LightCommonLamp(mlI, NVR_ManyLamps[1], NVR_ManyLamps[2], NVR_ManyLamps[3], NVR_ManyLamps[4], NVR_ManyLamps[0].y, mlTP, mlTC); \
+                ML_LAMP_AT(true, mlTP, COLOR) \
+            } \
+        }
+    #ifdef OPT
+        ML_TABLE_LAMP(0, SHADOWED(mlTC, 0, att))
+        ML_TABLE_LAMP(1, SHADOWED(mlTC, 1, att))
+        ML_TABLE_LAMP(2, SHADOWED(mlTC, 2, att))
+        ML_TABLE_LAMP(3, SHADOWED(mlTC, 3, att))
+        ML_TABLE_LAMP(4, SHADOWED(mlTC, 4, att))
+        ML_TABLE_LAMP(5, SHADOWED(mlTC, 5, att))
+    #else
+        ML_TABLE_LAMP(0, SHADOWED(mlTC, 1, att))
+        ML_TABLE_LAMP(1, SHADOWED(mlTC, 2, att))
+        ML_TABLE_LAMP(2, SHADOWED(mlTC, 3, att))
+        ML_TABLE_LAMP(3, SHADOWED(mlTC, 4, att))
+        ML_TABLE_LAMP(4, SHADOWED(mlTC, 5, att))
+        ML_TABLE_LAMP(5, mlTC)
+    #endif
+    [loop] for (int mlIndex = 6; mlIndex < 24; mlIndex++) {
+        [branch] if (mlIndex >= mlCount) break;
+        ML_TABLE_LAMP(mlIndex, mlTC)
+    }
+    #undef ML_TABLE_LAMP
+    #undef ML_LAMP_AT
+    #undef ML_TS
+}
+#else
 {
     const float3 mlWorldPos = IN.lPosition.xyz;	// the object's space, as the lamps in c38 + 2k
     const float mlCount = NVR_ManyLamps[0].x;
@@ -65,6 +113,7 @@
     #undef ML_LAMP_AT
     #undef ML_TS
 }
+#endif // MANY_LAMPS_ON == 2
 #else
 #ifndef OPT
     lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);

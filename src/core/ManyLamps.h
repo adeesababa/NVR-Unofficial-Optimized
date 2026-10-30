@@ -83,6 +83,17 @@ namespace ManyLamps {
 		return WantedAtStartup() && TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4);
 	}
 
+	// UNOFFICIAL 2026-10-29 LightCommonLamps ([Main.Main.Misc], restart; docs/next/ROOT-ASSUMPTIONS-PLAN.md C, Includes/LightCommon.hlsl): the
+	// same lamps, but from ONE lamp table a frame (a float texture on s3) instead of each lamp's position and colour in the draw's constants:
+	// a draw gets its list of table indices and its own world -> object rows (c37-c44), and the shader lights every lamp past the sixth in a
+	// real loop (constant arrays can only be unrolled in ps_3_0). MANY_LAMPS_ON is then 2 (ShaderRecord::BuildDefines). Off: as before.
+	inline int TableWanted = -1;
+	inline bool TableAtStartup() {
+		if (TableWanted < 0) TableWanted = TheSettingManager->GetSettingI("Main.Main.Misc", "LightCommonLamps") != 0;
+		return TableWanted != 0;
+	}
+	inline const char* ShaderDefine() { return ShadersWant() ? (TableAtStartup() ? "2" : "1") : "0"; }
+
 	inline bool Active() {
 		if (State < 0 && TheRenderManager && TheRenderManager->device) {
 			State = ShadersWant() ? 1 : 0;
@@ -126,6 +137,118 @@ namespace ManyLamps {
 		return true;
 	}
 
+	// --- LightCommonLamps: the frame's lamp table ---------------------------------------------------------------------------------
+	enum { TableLamps = 1024, TableTexels = 2 * TableLamps, NoLamp = 4095 };	// LightCommon.hlsl LIGHT_COMMON_TEXELS / LIGHT_COMMON_NONE
+	inline IDirect3DTexture9* Table = nullptr;
+	inline bool TableFailed = false;
+	inline UInt32 TableFrame = 0;		// FrameId the table was filled for
+	inline std::unordered_map<const ShadowSceneLight*, int> TableIndex;
+	inline unsigned StatTableMissing = 0, StatTableLamps = 0;
+
+	inline bool TableMode() { return Active() && TableAtStartup() && !TableFailed; }
+	inline void Upload();	// (below)
+
+	// Every lamp of the scene (ShadowSceneNode's list) into the table, once a frame, at the first draw that wants it (so the lamps' LOD
+	// dimmers are this frame's: the scene walk sets them). Position in the world (the draw adds its lighting offset), reach, colour as Put.
+	inline void BuildTable() {
+		TableFrame = FrameId;
+		TableIndex.clear();
+		IDirect3DDevice9* d = TheRenderManager->device;
+		if (!Table && FAILED(d->CreateTexture(TableTexels, 1, 1, D3DUSAGE_DYNAMIC, D3DFMT_A32B32G32R32F, D3DPOOL_DEFAULT, &Table, NULL))) {
+			Logger::Log("[ERROR] UNOFFICIAL LightCommonLamps: the lamp table could not be made: the lamps of many-lamp objects stay dark (set it off)");
+			TableFailed = true;
+			return;
+		}
+		D3DLOCKED_RECT r = {};
+		if (FAILED(Table->LockRect(0, &r, NULL, D3DLOCK_DISCARD))) return;
+		float* t = (float*)r.pBits;
+		memset(t, 0, TableTexels * 4 * sizeof(float));
+		const bool linear = LinearCompiled && LinearPreDecode::Gamma > 1.0f;
+		const float gamma = LinearPreDecode::Gamma;
+		int n = 0;
+		for (NiTList<ShadowSceneLight>::Entry* e = SceneNode ? SceneNode->lights.start : nullptr; e && n < TableLamps; e = e->next) {
+			const ShadowSceneLight* light = e->data;
+			const NiPointLight* source = light ? light->sourceLight : nullptr;
+			if (!source || !light->bPointLight || TableIndex.count(light)) continue;
+			float* p = t + n * 8;
+			p[0] = source->m_worldTransform.pos.x; p[1] = source->m_worldTransform.pos.y; p[2] = source->m_worldTransform.pos.z;
+			p[3] = source->Spec.r;
+			float dimmer = source->Dimmer;
+			if (!*(const bool*)0x011F941E && dimmer > 1.0f) dimmer = 1.0f;	// BSShaderManager::bHDR (as Put)
+			const float lod = light->fLODDimmer;
+			const float raw[4] = { source->Diff.r * dimmer * lod, source->Diff.g * dimmer * lod, source->Diff.b * dimmer * lod, 0.0f };
+			if (linear) LinearPreDecode::DecodeFast(p + 4, raw, gamma);
+			else memcpy(p + 4, raw, sizeof(raw));
+			TableIndex[light] = n++;
+		}
+		Table->UnlockRect(0);
+		StatTableLamps = n;
+	}
+
+	inline int TableSlot(const ShadowSceneLight* light) {
+		if (!light) return NoLamp;
+		auto found = TableIndex.find(light);
+		if (found != TableIndex.end()) return found->second;
+		if (GpuTimer::Enabled) StatTableMissing++;
+		return NoLamp;	// a lamp the scene's list did not hold at the frame's first draw: left out this frame
+	}
+
+	// The object's lamps for this pass as table indices (the same choice and order as SetForPass below).
+	inline void SetForPassTable(const PointShadowForward::RenderPassView* pass) {
+		if (TableFrame != FrameId) BuildTable();
+		if (TableFailed) return;
+		int idx[MaxLamps];
+		int count = 0;
+		if (pass && pass->lights && pass->geometry) {
+			NiGeometry* geometry = pass->geometry;
+			GetInverseWorldMatrix(&geometry->m_worldTransform, geometry->skinInstance, &ToObject);
+			ReachScale = !geometry->skinInstance && geometry->m_worldTransform.scale > 0.0f ? 1.0f / geometry->m_worldTransform.scale : 1.0f;
+			LightingOffset = FirstPerson ? FirstPersonOffset : D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+			for (int i = 1; i < pass->numLights && count < MaxLamps; i++) {
+				const ShadowSceneLight* light = pass->lights[i];	// (lamp k stays light k + 1 of the pass: its shadow slot)
+				idx[count++] = light && light->sourceLight && light->bPointLight ? TableSlot(light) : NoLamp;
+			}
+			if (pass->maxLights > pass->numLights && IsOptPass(pass->passEnum)) {	// as SetForPass: a capped many-lamp pass's other lamps
+				const UInt8* property = (const UInt8*)geometry->propertyState.m_spShadeProperty;
+				int extras = 0;
+				for (const UInt32* node = property ? *(const UInt32* const*)(property + 0x60) : nullptr; node; node = (const UInt32*)node[0]) {
+					const UInt8* light = (const UInt8*)node[2];
+					if (!light || *(const UInt16*)(light + 0x110) == 0xFF) continue;
+					const UInt8* niLight = *(const UInt8* const*)(light + 0xF8);
+					if (!niLight || (niLight[0x30] & 1) || light[0xEC]) continue;
+					bool known = false;
+					for (int i = 1; i < pass->numLights && !known; i++) known = (const UInt8*)pass->lights[i] == light;
+					if (known) continue;
+					if (count == MaxLamps) { StatOver++; continue; }
+					const ShadowSceneLight* l = (const ShadowSceneLight*)light;
+					if (!l->sourceLight || !l->bPointLight) continue;
+					const int slot = TableSlot(l);
+					if (slot == NoLamp) continue;
+					idx[count++] = slot; extras++;
+				}
+				if (GpuTimer::Enabled && extras) { StatExtraDraws++; StatExtras += extras; }
+			}
+		}
+		for (int k = count; k < MaxLamps; k++) idx[k] = NoLamp;
+		Block[0][0] = (float)count; Block[0][1] = ReachScale; Block[0][2] = Block[0][3] = 0.0f;
+		Block[1][0] = LightingOffset.x; Block[1][1] = LightingOffset.y; Block[1][2] = LightingOffset.z; Block[1][3] = 0.0f;
+		const D3DXMATRIX& m = ToObject;	// row vectors: local = (world, 1) x m, so row r of the shader's transform is m's column r
+		const float rows[3][4] = { { m._11, m._21, m._31, m._41 }, { m._12, m._22, m._32, m._42 }, { m._13, m._23, m._33, m._43 } };
+		memcpy(Block[2], rows, sizeof(rows));
+		for (int f = 0; f < 12; f++)	// two 12-bit indices a float (exact below 2^24), eight a float4 (LightCommonIndex)
+			Block[5 + f / 4][f % 4] = (float)(idx[f * 2] + 4096 * idx[f * 2 + 1]);
+		BlockRegisters = 8;
+		Upload();
+		TheRenderManager->renderState->SetTexture(3, Table);	// through the game's state cache, so its own binds there still happen
+		for (DWORD s : { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER }) TheRenderManager->renderState->SetSamplerState(3, (D3DSAMPLERSTATETYPE)s, D3DTEXF_POINT, false);
+		TheRenderManager->renderState->SetSamplerState(3, D3DSAMP_MIPFILTER, D3DTEXF_NONE, false);
+		TheRenderManager->renderState->SetSamplerState(3, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP, false);
+		TheRenderManager->renderState->SetSamplerState(3, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP, false);
+		LastPass = pass;
+		LastFrame = FrameId;
+		if (GpuTimer::Enabled) { StatDraws++; StatByCount[count]++; }
+	}
+
 	// The block's rows in use onto the device (NVR's own upload: AfterPixelWrite ignores it).
 	inline void Upload() {
 		OwnUpload = true;
@@ -138,6 +261,7 @@ namespace ManyLamps {
 
 	// The object's lamps for this pass into the block.
 	inline void SetForPass(const PointShadowForward::RenderPassView* pass) {
+		if (TableMode()) { SetForPassTable(pass); return; }	// UNOFFICIAL 2026-10-29 LightCommonLamps
 		int count = 0;
 		const bool linear = LinearCompiled && LinearPreDecode::Gamma > 1.0f;	// as LinColor: decoded only above gamma 1
 		const float gamma = LinearPreDecode::Gamma;
@@ -247,8 +371,9 @@ namespace ManyLamps {
 		for (int k = 0; k <= MaxLamps; k++) if (StatByCount[k]) n += sprintf_s(line + n, sizeof(line) - n, " %d:%.1f", k, StatByCount[k] / f);
 		n += sprintf_s(line + n, sizeof(line) - n, " | capped many-lamp passes given their other lamps %.1f (%.1f lamps), lamps past %d dropped %.2f",
 			StatExtraDraws / f, StatExtras / f, (int)MaxLamps, StatOver / f);
+		if (TableMode()) n += sprintf_s(line + n, sizeof(line) - n, " | lamp table %u lamps, lamps not in it %.2f", StatTableLamps, StatTableMissing / f);
 		Logger::Log("%s", line);
-		StatFrames = 0; StatDraws = StatExtraDraws = StatExtras = StatOver = 0;
+		StatFrames = 0; StatDraws = StatExtraDraws = StatExtras = StatOver = 0; StatTableMissing = 0;
 		memset(StatByCount, 0, sizeof(StatByCount));
 	}
 }

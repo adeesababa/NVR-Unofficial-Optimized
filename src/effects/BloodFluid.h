@@ -48,6 +48,23 @@ public:
 		float	TestThrow = 0.0f;		// TEST: a throw from the camera at the view centre every this many seconds (0 off)
 		bool	TestPour = false;		// TEST: a pool bleeding on the ground ahead (once, when turned on)
 		int		StatsEvery = 0;			// TEST: log the particles' state every this many frames (waits for the GPU)
+		// UNOFFICIAL 2026-10-29 WaterGun (user: "gwater with a ton of water ... controlled by something like the tool gun"): water
+		// (kind 3, BloodFluidDraw.frag: clear, bends what is under it, never dries) poured from the camera on held keys.
+		bool	WaterGun = false;
+		int		HoseKey = 0x30;			// DIK: held = a hose from the camera at the view centre (B)
+		int		DumpKey = 0x2F;			// DIK: pressed = a big ball of water dropped ahead (V; also VATS: rebind if you use it)
+		int		ClearKey = 0x31;		// DIK: pressed = all fluid gone (N)
+		float	HoseFlow = 6000.0f;		// particles a second
+		float	HoseSpeed = 700.0f;		// units a second
+		int		DumpAmount = 6000;		// particles a ball
+		float	DumpDistance = 350.0f;	// units ahead (and a third of it up)
+		// UNOFFICIAL 2026-10-29 (user: "a big flood ... with larger particles", "merge into a smooth fluid"):
+		float	WaterScale = 1.0f;		// particle size and grid cell x this while the gun is on (blood too: one sim); 64x the water at 4
+		int		FloodKey = 0x32;		// DIK: pressed = rain of water over the area ahead starts / stops (M)
+		float	FloodRate = 60000.0f;	// particles a second (at most 8192 a frame)
+		float	FloodRadius = 900.0f;	// units round the spot ahead
+		float	FloodDistance = 700.0f;	// the spot: this far ahead of the camera
+		float	FloodHeight = 600.0f;	// rain starts this far above the camera
 	};
 	SettingsStruct Settings;
 
@@ -71,6 +88,12 @@ private:
 		UInt32	Data[4];	// first slot, count, seed, colour | kind << 24
 	};
 	static const int		EmittersMax = 64;
+	UInt32					TileCap = 128;		// particles a 16 x 16 tile lists (256 with the WaterGun: deep water)
+	double					HoseDebt = 0.0;
+	bool					DumpWas = false, ClearWas = false, FloodWas = false, Flooding = false;
+	float					LastScale = 1.0f;
+	UInt32					WaterShots = 0;
+	void	WaterGunInput(const D3DXVECTOR3& Eye, const D3DXVECTOR3& Forward, const D3DXVECTOR3& Right, double Elapsed);
 	Emitter					Pending[EmittersMax];
 	int						PendingCount = 0;
 	UInt32					PendingParticles = 0;
