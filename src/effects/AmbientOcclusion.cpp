@@ -462,6 +462,7 @@ IDirect3DTexture9* AmbientOcclusionEffect::RtDenoised(IDirect3DDevice9* Device) 
 	GpuProfileScope gpu(timer, Device);
 	RtDenoise::Settings s;	// the defaults: 16 frames of history, 3 a-trous passes
 	s.Downscale = 2;
+	s.Kernel = RtAmbient::Current.DenoiseKernel;	// (2026-10-30) 3 by default: ~2.5x cheaper (rt-sun 1f5d987e)
 	result = RtDenoise::Run(denoiser, Device, raw, rtDenoisedSurface, s);
 	static bool logged = false;
 	if (result && !logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: the AO visibility goes through the shared RT denoiser (RtDenoise)."); }
@@ -486,6 +487,7 @@ IDirect3DTexture9* AmbientOcclusionEffect::RtDenoisedGI(IDirect3DDevice9* Device
 	RtDenoise::Settings s;
 	s.Channels = 3;
 	s.Downscale = 2;
+	s.Kernel = RtAmbient::Current.DenoiseKernel;	// (2026-10-30) 3 by default: ~2.5x cheaper (rt-sun 1f5d987e)
 	result = RtDenoise::Run(denoiser, Device, gi, rtDenoisedGISurface, s);
 	static bool logged = false;
 	if (result && !logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: the GI bounce light goes through the shared RT denoiser (RGB, half resolution)."); }
@@ -581,7 +583,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const int albedoAtlas = RtCore::AlbedoAtlasImage() >= 0 ? RtCore::AlbedoAtlasImage() : RtImageAlbedoStandIn;
 	if (RtImageLight < 0 || albedoAtlas < 0) return;
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
-	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, 0.0f, 0.0f, 0.0f);
+	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, (float)rt.AOAlpha, 0.0f, 0.0f);
 	const int images[6] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		!RtCore::AddPass(RtShader, images, 6, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,

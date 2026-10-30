@@ -36,7 +36,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
-    vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; yzw unused
+    vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; y AOAlpha (0 skip, 1 opaque, 2 test); zw unused
 } cb;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
@@ -87,10 +87,12 @@ vec2 R2(float i) { return fract(i * vec2(0.7548777, 0.5698403)); }
 
 // One ray from p (relative to the view origin) along d: x the hit distance (-1: nothing within tMax), y 1 = a back face. The core's
 // scene is static geometry (land and objects, both faces; alpha-tested ones tested; no actors). anyHit: the first hit found, else the closest.
-vec2 Trace(vec3 p, vec3 d, float tMin, float tMax, bool anyHit) {
+// (2026-10-30) alpha: how alpha-tested meshes (mask 0x10) take part: 0 left out, 1 solid (no alpha test: leaf cards occlude whole),
+// 2 tested (rtAlphaPass per candidate; rt-gi-8: AO's 4 short rays 9.5 -> 28 ms at Lucky 38 with the test, so AO defaults to 1).
+vec2 Trace(vec3 p, vec3 d, float tMin, float tMax, bool anyHit, int alpha) {
     rayQueryEXT q;
-    uint flags = anyHit ? gl_RayFlagsTerminateOnFirstHitEXT : 0u;
-    rayQueryInitializeEXT(q, scene, flags, RT_CULL, p + cb.origin.xyz, tMin, d, tMax);
+    uint flags = (anyHit ? gl_RayFlagsTerminateOnFirstHitEXT : 0u) | (alpha == 1 ? gl_RayFlagsOpaqueEXT : 0u);
+    rayQueryInitializeEXT(q, scene, flags, alpha == 0 ? (RT_CULL & 0xEFu) : RT_CULL, p + cb.origin.xyz, tMin, d, tMax);
     Proceed(q);
     if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) return vec2(-1.0, 0.0);
     return vec2(rayQueryGetIntersectionTEXT(q, true), rayQueryGetIntersectionFrontFaceEXT(q, true) ? 0.0 : 1.0);
@@ -240,7 +242,7 @@ void main() {
         float reach = cb.ao.x, occlusion = 0.0, inside = 0.0, meanHit = 0.0;
         for (int i = 0; i < rays; i++) {
             vec3 d = CosineDirection(n, fract(noise + R2(float(i))));
-            vec2 hit = Trace(start, d, 0.05 * bias, reach, false);
+            vec2 hit = Trace(start, d, 0.05 * bias, reach, false, int(cb.gi3.y + 0.5));
             if (hit.x < 0.0) { meanHit += 1.0; continue; }
             if (hit.y > 0.5 && hit.x < 4.0 * bias) { inside += 1.0; meanHit += 1.0; continue; }
             occlusion += 1.0 - smoothstep(0.5 * reach, reach, hit.x);
@@ -260,7 +262,7 @@ void main() {
         float reach = cb.sky.x;
         vec2 cell = vec2(texel & 3);
         float turn = (cell.x * 4.0 + cell.y) * (3.14159265 / 4.0 / 16.0);
-        covered = Trace(start, vec3(0.0, 0.0, 1.0), 0.0, reach, true).x >= 0.0 ? 1.0 : 0.0;
+        covered = Trace(start, vec3(0.0, 0.0, 1.0), 0.0, reach, true, int(cb.gi3.y + 0.5)).x >= 0.0 ? 1.0 : 0.0;
         float total = 0.034 * clamp(n.z, 0.0, 1.0);
         float open = total * (1.0 - covered);
         int rings = skyRays > 8 ? 2 : 1;
@@ -274,7 +276,7 @@ void main() {
                 float w = ringWeight * clamp(dot(d, n), 0.0, 1.0);
                 if (w <= 0.0) continue;
                 total += w;
-                if (Trace(start, d, 0.0, reach, true).x < 0.0) open += w;
+                if (Trace(start, d, 0.0, reach, true, 2).x < 0.0) open += w;
             }
         }
         skyVisibility = total > 1.0e-5 ? open / total : 1.0;
