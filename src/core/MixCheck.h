@@ -286,18 +286,17 @@ namespace MixCheck {
 		if (!Decided) {
 			Decided = true;
 			// The setup the tester's reports depend on, one line, whether or not the check is on.
-			SettingManager::Configuration::ConfigNode node;
-			const bool invertedKey = TheSettingManager->Config.FillNode(&node, "Main.Main.Misc", "InvertedDepth");
+			// (A toml's old [Main.Main.Misc] InvertedDepth key is not in the defaults, so the settings cannot see it: the line says only that
+			// NVR goes by the game's depth clear.)
 			IDirect3DSurface9* depth = nullptr;
 			D3DSURFACE_DESC depthDesc = {};
 			if (SUCCEEDED(d->GetDepthStencilSurface(&depth)) && depth) { depth->GetDesc(&depthDesc); depth->Release(); }
 			const bool on = TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkMixCheck") != 0;
-			Logger::Log("UNOFFICIAL NVR DXVK setup: %s; NvrDxvkPasses %s, NvrDxvkKeepD3D9 \"%s\"; reversed depth %s (the game's depth clear %.1f; [Main.Main.Misc] "
-				"InvertedDepth %s, a key this build does not read); game depth buffer %ux%u multisample %u; exterior shadow maps MSAA %s; NvrDxvkMixCheck %s",
+			Logger::Log("UNOFFICIAL NVR DXVK setup: %s; NvrDxvkPasses %s, NvrDxvkKeepD3D9 \"%s\"; reversed depth %s (from the game's depth clear %.1f; an "
+				"InvertedDepth key in the toml is not read by this build); game depth buffer %ux%u multisample %u; exterior shadow maps MSAA %s; NvrDxvkMixCheck %s",
 				DxvkCompute::Status(), TheSettingManager->SettingsMain.Main.NvrDxvkPasses ? "on" : "off", TheSettingManager->SettingsMain.Main.NvrDxvkKeepD3D9,
 				TheRenderManager->IsReversedDepth() ? "yes" : "no", NiDX9Renderer::GetSingleton()->m_fZClear,
-				invertedKey ? (node.BoolValue ? "= true" : "= false") : "absent", depthDesc.Width, depthDesc.Height, (unsigned)depthDesc.MultiSampleType,
-				shadowMapsMsaa ? "on" : "off", on ? "on" : "off");
+				depthDesc.Width, depthDesc.Height, (unsigned)depthDesc.MultiSampleType, shadowMapsMsaa ? "on" : "off", on ? "on" : "off");
 			On = on;
 			if (On) Hook(d);
 			if (On) Logger::Log("MIXCHECK: on (one line per image, reader and mode: EMPTY = nothing wrote it, STALE = written N frames ago, EDGE = written on the other path this frame)");
