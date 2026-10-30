@@ -343,3 +343,14 @@ helper's own timing).
   (cosine-sampled bounce: RIS weight = luminance) each frame in the GIInterleave tiles and wherever there is no history.
   One candidate alone gives exactly the old value; GIReuse 0 runs the bounce in the AO pass as before (the A/B).
 - v1 limits: no re-trace of the kept sample (a light switched off fades over GIReuse frames), no spatial reuse, no Jacobian.
+- **rt-gi-10 (20261030-013830-slotA, Lucky 38, e39c8048):** quality at a still camera PASS. Bounce light (DebugView 6) means (luma,
+  1280x720 every 4th pixel): denoised 19.32 (GIReuse 0) vs 18.84 (GIReuse 8): -2.5 %, the same light; raw 17.4 vs 19.6, raw sd 9.7
+  -> 8.9, and the firefly clusters on the walls and by the plant are gone with reuse. Cost (helper per pass): GIReuse 0 = 33.3 ms
+  (AO + GI in one pass); GIReuse 8 = AO 14.8 + RtGITrace 26.3 = 41.1 ms (the separate pass costs ~8 ms more than the GI rays did
+  inside the AO pass); GIReuse 8 + GIInterleave 4 = 13.4 + 11.9 = 25.3 ms (not 1/4: texels without history trace anyway, and the
+  camera was moving). The GIInterleave 4 light view, taken while the camera drifts, shows two faint ghost silhouettes and vertical
+  stripes at the left edge; there is no GIReuse 0 + GIInterleave 4 shot in motion to compare, so it is open whether reuse causes it.
+  Final pictures r0 / r8 are different views (drift), not compared.
+- **Default GIReuse 0** for now (52fa…, see git log), the reuse path is opt-in until a motion A/B. Next: a bench list that pairs
+  GIReuse 0 / 8 at GIInterleave 4 back to back in the drifting shots, and a cheaper GI pass (history-only tiles skip the input
+  reprojection maths; check why non-candidate tiles still trace).

@@ -41,7 +41,7 @@ namespace RtAmbient {
 		int		DenoiseKernel = 3;		// (2026-10-30) RtDenoise's a-trous kernel for both denoisers: 3 (9 taps) or 5 (25 taps)
 		int		GIInterleave = 1;		// 1, 2 or 4 (2026-10-29): the GI rays in every / every 2nd / every 4th 8 x 8 tile a frame			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
-		int		GIReuse = 8;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
+		int		GIReuse = 0;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
 										// texel, at most this many frames of samples behind it; 0 = the bounce inside the AO pass as before
 	};
 	inline Settings Current;
