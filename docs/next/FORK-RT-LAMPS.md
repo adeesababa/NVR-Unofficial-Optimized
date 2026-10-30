@@ -104,6 +104,16 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   because its street and pavement are object meshes. So outdoor lamp shadows on the land need the terrain shaders too (NVR land does
   get the game's lamps: Vanilla Plus Terrain); open item. Its catch: TerrainTemplate already takes s15 (TESR_TerrainBlendDepth), so
   the traced buffer needs another free stage there (a register audit of the terrain records first).
+- Land support built (34849a3e, DLL C845BC41): register audit of the 28 land shaders (fxc /dumpbin): samplers 0-13 (base and normal
+  layers, displacement), s14 the sun atlas, s15 Terrain Blending's depth when that is on; constants up to c135 + c137-c145, c167, c191,
+  c223: c146-c166 and c168-c175 free; at most 3223 slots. The land's lamps are its own list (PointLightPosition, the land's space), so
+  TERRAIN_LAMP_RT matches them by POSITION: a lamp's camera-relative position = the pixel's (shadowWorldPos) + its vector to the lamp
+  (the same in every space); the trace's slot positions as traced (RtLampShadows::TracedLampWorld, slots 0-19) at c146-c165, the
+  reprojection c168-c171, c172, the traced buffer on s15; +135 slots on the largest (2639 -> 2774, offline). Only with Terrain Blending
+  off (logged otherwise). Test: rtlamp-34 (Novac + Freeside).
+- The Strip showcase (parked, for the user to run): foundations\liststlamp-strip-showcase.txt (11 shots: today / traced x2 /
+  coverage, two headings, 23:00 clear) in a FULL game copy or the real folder with the strip20 save (the slim slots have none), run
+  toml bench\deep-roadmaptlampun-toml-igpu-rtlamp-extfwd.toml.
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
