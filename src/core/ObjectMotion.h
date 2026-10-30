@@ -32,7 +32,7 @@ namespace ObjectMotion {
 	inline IDirect3DTexture9* Texture = nullptr;  inline IDirect3DSurface9* Surface = nullptr;	// TESR_ObjectMotionBuffer
 	inline UINT MadeW = 0, MadeH = 0;
 	inline IDirect3DVertexShader9* VS = nullptr;  inline IDirect3DPixelShader9* PS = nullptr;
-	inline UInt32 Frames = 0, DrawnGeometries = 0, DrawnSkinned = 0, Noted = 0;
+	inline UInt32 Frames = 0, DrawnGeometries = 0, DrawnSkinned = 0, Noted = 0, CameraFollowers = 0;
 	inline UInt32 MadeFrame = 0xFFFFFFFF;	// the frame TESR_ObjectMotionBuffer was made in
 	inline IDirect3DSurface9* CheckTarget = nullptr;  inline IDirect3DSurface9* CheckCopy = nullptr;	// the 600-frame read-back (Render)
 	// For the Vulkan readers (TAA.glsl, FSRPrep / FSRUpPrep): the buffer holds THIS frame's (a reader that runs before the effects, as the
@@ -55,10 +55,17 @@ namespace ObjectMotion {
 	inline int BoneSpaceLogged = 0;	// one diagnostic line: are the game's bone matrices camera relative (as the shadow code reads them)?
 
 	inline bool Wanted() { return TheSettingManager->GetSettingI("Main.Main.Quality", "ObjectMotion") != 0; }
+	// UNOFFICIAL 2026-10-30 [Main.Main.Quality] ObjectMotionSkipCameraFollow: the sky dome (and anything else the game keeps centred on
+	// the camera) moves by exactly the camera's move every frame the player walks, so it was drawn as 'moved'. Its depth matched the
+	// ground's along a ring at the dome's radius round the player (the depth test's 2 % + 4 units), and that ring of ground got the
+	// camera's move as its own: FSR / TAA reprojected it as if it walked along, a blurred circle round the player (RenderScale v2 only,
+	// where the upscale runs after this buffer is made). On: a geometry whose move is the camera's move counts as still.
+	inline bool SkipCameraFollow = false;	// read in BeginFrame
 
 	// Render.cpp, once a frame, before the world draws.
 	inline void BeginFrame() {
 		Live = !Failed && Wanted();
+		SkipCameraFollow = TheSettingManager->GetSettingI("Main.Main.Quality", "ObjectMotionSkipCameraFollow") != 0;
 		if (!Live) {
 			if (!Map.empty()) { Map.clear(); Moving.clear(); }
 			Data.x = 0.0f;
@@ -105,7 +112,14 @@ namespace ObjectMotion {
 		e.seen = frame;
 		Noted++;
 		const float reach = geo->m_kWorldBound ? geo->m_kWorldBound->Radius : 64.0f;
-		if (e.hasPrev && TransformDiffers(e.prev, e.cur, reach)) Moving.push_back(geo);
+		if (e.hasPrev && TransformDiffers(e.prev, e.cur, reach)) {
+			if (SkipCameraFollow) {
+				NiTransform carried = e.prev;	// last frame's, carried along by the camera's move
+				carried.pos.x += e.camCur.x - e.camPrev.x; carried.pos.y += e.camCur.y - e.camPrev.y; carried.pos.z += e.camCur.z - e.camPrev.z;
+				if (!TransformDiffers(carried, e.cur, reach)) { CameraFollowers++; return; }
+			}
+			Moving.push_back(geo);
+		}
 	}
 
 	// Did any bone move in the WORLD (the matrices are camera relative: the rotations compare as they are, the translations with the camera added)?
@@ -404,9 +418,9 @@ namespace ObjectMotion {
 					CheckCopy->UnlockRect();
 				}
 			}
-			Logger::Log("ObjectMotion: per frame %.1f geometries noted, %.1f moved ones drawn (%.1f skinned); this frame %d of 5184 sampled pixels carry a move (largest %.2f units)",
-				Noted / (double)Frames, DrawnGeometries / (double)Frames, DrawnSkinned / (double)Frames, moving, largest);
-			Frames = DrawnGeometries = DrawnSkinned = Noted = 0;
+			Logger::Log("ObjectMotion: per frame %.1f geometries noted, %.1f moved ones drawn (%.1f skinned), %.1f left out as following the camera; this frame %d of 5184 sampled pixels carry a move (largest %.2f units)",
+				Noted / (double)Frames, DrawnGeometries / (double)Frames, DrawnSkinned / (double)Frames, CameraFollowers / (double)Frames, moving, largest);
+			Frames = DrawnGeometries = DrawnSkinned = Noted = CameraFollowers = 0;
 		}
 	}
 }
