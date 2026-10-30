@@ -37,6 +37,7 @@ public:
 		bool	HiZ;			// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h): the hierarchical ray march on the Hi-Z pyramid (Vulkan trace only), outdoors
 		float	GlassReflect;	// UNOFFICIAL 2026-10-29 (core/GlassMask.h, Vulkan passes only): how much see-through glass reflects (0 off: nothing hooked)
 		bool	MaterialBufferRoughness;	// UNOFFICIAL 2026-10-30 (Vulkan passes only): the floor guess takes TESR_MaterialBuffer's roughness where written
+		bool	CloudSky;		// UNOFFICIAL 2026-10-30 (Vulkan passes only, with VolumetricClouds): the sky fallback shows the clouds (the cloud sky probe)
 		bool	HiZSafeCells;		// test only: coarse cells read as min/max of their two channels, "behind" skip on the finest level only
 		bool	HiZInteriorsTest;	// test only: HiZ indoors too (the interior picture is not yet the old trace's; DebugView 9 / 10 to find why)
 		float	ReflectivityExterior;	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / Interior: times the dry sheen and
@@ -58,6 +59,7 @@ public:
 		float	RtContactSharpness;	// 2026-10-29: the blur radius share at contact (1 = off: the blur as before)
 		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
 		float	RtGlowBrightness;	// 2026-10-29: glowing hits (the core's emissive flag) add their colour x this as light
+		bool	RtHitAmbientGrid;	// 2026-10-30: a hit's ambient from the light grid at the hit (AmbientLight's), else the cube near the camera
 		bool	RtHitTextures;		// 2026-10-29: with the core's [Main.Main.RayTracing] HitTextures, hits take the texture's colour (else the draw's average)
 	};
 	SettingsStruct	Settings;

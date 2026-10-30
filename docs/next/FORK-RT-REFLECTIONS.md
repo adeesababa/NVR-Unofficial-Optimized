@@ -128,6 +128,21 @@ DXVK sees them only as that draw's descriptors. So the tiers are:
 So: on-screen hits are exact; off-screen hits are as good as the cube; hidden hits are their draw's average colour on their own triangle normal (tiers 3-4, built but not yet seen in game),
 and approximate (no texture detail, no lamps beyond the ambient) until tiers 5-6.
 
+## Cost: resolution and the ray budget (main's item 3, 2026-10-30)
+Already built, so no new pass was added for this item:
+- **Half resolution:** RayGen, the helper's trace and Resolve all run at half the screen each way (`RtWidth/RtHeight` = width / 2,
+  height / 2). One ray per half-res pixel per frame at most.
+- **Depth-aware upsample:** the composite (`ReflectionsComposite.frag`, "Depth-aware bilinear upsample") rebuilds full resolution from
+  the four nearest half-res texels, each weighted down by its depth's distance from the pixel's (tolerance 3 % of the depth + 4 units):
+  no halo across silhouettes.
+- **Rough surfaces at quarter rate:** RoughShare 0.3 (rtrefl-5): above roughness 0.3 one pixel per 2x2 block casts a frame (the
+  caster moves round the block), the others reuse its hit; above MaxRoughness (0.5) no rays at all (cube / grid). With the blur and
+  temporal history that is the quarter-resolution rough reflection modern engines use.
+- **SSR first:** a ray is cast only where the screen march came up short (or for rough casters, always, so the block has a hit).
+- **Measured (iGPU, 720p):** helper passes luxe 4.7 ms, lucky22 5.4-5.7 ms with the budget (6.0-11.2 ms without); picture the same at
+  luxe, 3.3 % px slightly darker at lucky22 (averaging). Further cut if wanted: RoughShare down to 0.2 (more surfaces at quarter rate)
+  or a 4x4 block above roughness 0.4: not done.
+
 ## Water
 
 The game's water already reflects through its own planar reflection (WATER*.pso, `ReflectionMap`). That is exact for what the game
@@ -184,6 +199,31 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
   run toml `bench/deep-roadmap/evidence/rtrefl/rtrefl.toml`.
 
 ## Results
+
+### 2026-10-30 09:45 main's three items: clouds at misses, ambient at hits, cost
+**(1) Clouds where a reflection finds nothing: CloudSky ([Shaders.Reflections.Main], off): NOT PASSED, parked off.**
+- Finding (rtrefl-12, noon + rain + volumetric clouds, 20261030-080453-slotA, RT DebugView 6 = the fallbacks split): the clouds are
+  drawn before Reflections and the surroundings cube is captured from that frame, so a miss already shows the clouds wherever the
+  cube saw the sky; only directions the camera never looked at fall to the plain sky gradient (no clouds). Turned round (z 180), a
+  sky-facing patch took the gradient.
+- Built: a cloud sky probe (VolumetricClouds technique 12, `VolumetricCloudsSkyProbe.frag`, Vulkan only; MarchRay moved unchanged into
+  `VolumetricCloudsMarchRay.glsl`, VolumetricCloudsMarch.spv byte-identical): the clouds marched over the whole upper sky into a
+  hemi-octahedral map, laid on the gradient the way the clouds' composite lays them on the screen.
+- Cost: first 128 x 128, every texel each frame, full steps: **12.07 ms** on the iGPU (rtrefl-13, 20261030-082555-slotA). Now 64 x 64,
+  one 8-row band a frame, half steps (8dad15d1): **0.86-1.01 ms** (20261030-092712-slotA). Still too much for what it shows.
+- Picture: no visible change at any place tried (z 0, z 180, looking 55 degrees down into a puddle): sky vs no sky stays inside
+  the noise of the same shot repeated (foliage and rain move 15-57 % of pixels here). The sky overhead had few clouds and the cube
+  already covers most sky a floor reflects. The noon + rain + clouds setup runs at ~150 ms a frame on the iGPU, so the 17-shot run
+  hit the self-test's time limit after 14 shots (not a crash).
+- Left: verify under a heavy overcast, or drop it. Not handed in.
+
+**(2) Ambient at hits: HitAmbientGrid ([Shaders.Reflections.RT], true inside RT off): PASS, small.** A reflected hit's ambient
+from the light grid at the hit (AmbientLight's world grid, SH toward the hit's normal) instead of the cube's blurriest mip near the
+camera; the cube stays outside the grid. rtrefl-14: lucky22 20261030-083535-slotA reflection alone 0.30 % px (noise 0.01 %, 444
+brighter / 226 darker), int23 20261030-090159-slotA 0.07 % (noise 0.02 %); full pictures in noise. Small because only the estimate
+tier (hits neither on screen nor in the cube) uses it. rt-ao-sky asked whether its GI leaves anything world-space to read at a hit.
+
+**(3) Cost:** already built and measured: see "Cost: resolution and the ray budget" above.
 
 ### 2026-10-30 04:00 MaterialBufferRoughness (4b3c5ca7, DLL FE2ADFD6): wiring for the material buffer, effect waits for the merge round
 `[Shaders.Reflections.Main] MaterialBufferRoughness` (off, Vulkan passes): where the game's shader wrote the roughness it lit a surface

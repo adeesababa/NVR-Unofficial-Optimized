@@ -83,6 +83,8 @@ public:
 		IDirect3DSurface9* ShadowSurface = nullptr;
 		IDirect3DTexture9* ProbeTexture = nullptr;	// UNOFFICIAL: the layer probe's 1 x 1 target
 		IDirect3DSurface9* ProbeSurface = nullptr;
+		IDirect3DTexture9* SkyProbeTexture = nullptr;	// UNOFFICIAL 2026-10-30: the cloud sky probe (64 x 64 hemi-octahedral, TESR_CloudSkyProbe)
+		IDirect3DSurface9* SkyProbeSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 	UINT	shadowMapSize = 256;	// UNOFFICIAL: ShadowResolution, read once at start
@@ -109,6 +111,13 @@ public:
 	// asked earlier), the strength SunFar puts on the land (0: no shadows to hand over), and whether SunFar drew them this frame
 	// (it sets this; the composite then leaves the land alone).
 	void	RenderShadowMap(IDirect3DDevice9* Device);
+	// UNOFFICIAL 2026-10-30 the cloud sky probe for reflections ([Shaders.Reflections.Main] CloudSky; NVR DXVK passes only): the clouds over
+	// the whole upper sky (VolumetricCloudsSkyProbe.frag), drawn after this frame's clouds when Reflections asks. SkyProbeReady: drawn
+	// this frame or the one before.
+	void	RenderSkyProbe(IDirect3DDevice9* Device);
+	bool	SkyProbeReady() const { return skyProbeFrame != UINT_MAX && skyProbeBands >= 8 && frame - skyProbeFrame <= 2; }
+	UINT	skyProbeFrame = UINT_MAX;
+	UINT	skyProbeBands = 0;	// bands drawn since start (the probe is whole after 8; one 8-row band a frame)
 	float	ShadowStrengthForSunFar();
 	bool	shadowsViaSunFar = false;
 	// UNOFFICIAL 2026-10-21, test tool (SettingShots 'cloudcoverage'): puts the eased coverage away from the weather's, as right after a
@@ -121,7 +130,7 @@ public:
 	int		ExtMarchSteps = 48;	// UNOFFICIAL 2026-10-26: the march's step count without the D3D9 shader's 64 cap (UpdateConstants), for ExtRender
 
 private:
-	ExtPass		extPasses[4];				// composite, march, temporal, shadow map
+	ExtPass		extPasses[5];				// composite, march, temporal, shadow map, sky probe (2026-10-30)
 	ExtUniformBuffer	extUniforms;
 	CachedHandle	physicalSkyCache;		// TESR_SkyViewLUT: there only when the effect was compiled with PHYSICAL_SKY_ON
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
