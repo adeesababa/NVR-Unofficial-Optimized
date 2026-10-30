@@ -68,6 +68,10 @@ namespace PointShadowForward {
 	inline bool Active = false;				// this frame: indoors, Strength > 0, at least one cube map to use
 	inline bool FirstPerson = true;			// [Shaders.ShadowsInteriors.Forward] FirstPerson, read per frame
 	inline Slot Slots[ShadowCubeMapsMax] = {};
+	// UNOFFICIAL 2026-10-30 RT lamp shadows ExteriorForward: the outdoor lamp-shadow record of each lit pixel shader (ShaderManager::
+	// LoadShader), chosen outdoors while ExteriorActive (NiD3DPixelShaderEx::SetupShader)
+	inline std::unordered_map<const void*, ShaderRecordPixel*> ExteriorRecords;
+	inline bool ExteriorActive = false;		// this frame: outdoors, ExteriorForward lamps published and the trace live
 	inline int SlotCount = 0;
 	inline int Focus = -1;					// DebugView 3: the Slots entry of the lamp in cube slot 0 (red in views 1 and 2), -1 none
 	inline unsigned TraceDraws = 0, TraceDrawsWithLamp = 0;	// DebugView 3: draws that got the focus lamp, and of those the ones lit by it
@@ -310,7 +314,7 @@ namespace PointShadowForward {
 			for (auto it = ObjectLamps.begin(); it != ObjectLamps.end();) it = Frame - it->second.frame > 1024 ? ObjectLamps.erase(it) : std::next(it);
 		if ((Frame & 4095) == 0) GameCullMask.clear();	// freed lamps (a lamp new at a freed address gets one stale restore, harmless)
 		KeepLampsNow = KeepLampsWanted && !TheShaderManager->GameState.isExterior;
-		Active = false; SlotCount = 0; BoundThisFrame = false;
+		Active = false; SlotCount = 0; BoundThisFrame = false; ExteriorActive = false;
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 	}
 
@@ -553,6 +557,29 @@ namespace PointShadowForward {
 	inline bool Bound = false;				// the pixel shader the game bound last is one of the records that read c174-c188
 	inline float Uploaded[16][4] = {};		// c174-c189 as last written
 
+	// UNOFFICIAL 2026-10-30 ExteriorForward: ShadowManager, outdoors after RtLampShadows::SubmitExterior: the shadow lamps as slots
+	// (slot = their index in ShadowLights, as in the trace's table; no cube maps), for the outdoor records' per-draw lookups
+	inline void PublishExterior(ShadowSceneLight* const* lights, int count) {
+		ExteriorActive = false;
+		if (!CompiledIn || ExteriorRecords.empty() || !RtLampShadows::ExteriorForwardFrame || !RtCore::Running()) return;
+		const ShadowsExteriorEffect::InteriorsStruct& interiors = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors;
+		const float strength = interiors.Forward.Strength;
+		if (!(strength > 0.0f)) return;
+		Params[0] = (std::min)(strength, 1.0f); Params[1] = 0.0f; Params[2] = 0.0f; Params[3] = 0.0f;
+		Soft[0] = Soft[1] = Soft[2] = Soft[3] = 0.0f;
+		Magnified[0] = Magnified[1] = Magnified[2] = Magnified[3] = 0.0f;
+		Quality = 0.0f; DebugView = 0.0f; NearFade = 0.0f; InvisibleSize = 0.0f;
+		IDirect3DCubeTexture9* neutral = NeutralCube();
+		for (int i = 0; i < count && i < ShadowCubeMapsMax && SlotCount < ShadowCubeMapsMax; i++) {
+			const NiPointLight* source = lights[i] ? lights[i]->sourceLight : nullptr;
+			if (!source || !(source->Spec.r > 0.0f)) continue;
+			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(source->m_worldTransform.pos.x, source->m_worldTransform.pos.y, source->m_worldTransform.pos.z),
+				source->Spec.r * interiors.LightRadiusMult, neutral, i, 1.0f };
+		}
+		Focus = -1;
+		Active = ExteriorActive = SlotCount > 0;
+	}
+
 	// One object's render pass: its lamps to c174-c187 and the cube stages. wanted: the world pass, or the first-person
 	// pass with FirstPerson on (never the water reflection). force: just after a shader bind, write everything.
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
@@ -625,8 +652,10 @@ namespace PointShadowForward {
 		// UNOFFICIAL 2026-10-28 RT lamp shadows: in POINT_SHADOW_RT shaders s15 is the traced result (a 2D texture, point sampled)
 		const bool rtStage = RtLampShadows::CompiledIn;
 		if (rtStage) bound[5] = RtLampShadows::Stage15Texture();
-		for (int k = 0; k < 6; k++)
+		for (int k = 0; k < 6; k++) {
+			if (ExteriorActive && k < 5) continue;	// outdoors the RT-only records have no cube stages (s8, s11-s14 are the sun's there)
 			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force, rtStage && k == 5);
+		}
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
@@ -642,7 +671,12 @@ namespace PointShadowForward {
 		LastPixelShaderShadowed = false;
 		if (!CompiledIn || !pixelShader) return;
 		ShaderRecordPixel* interiorRecord = pixelShader->GetShaderRecord(ShaderRecordType::Interior);
-		if (!interiorRecord || !interiorRecord->PointShadowForward || pixelShader->ShaderHandle != interiorRecord->ShaderHandle)
+		bool ours = interiorRecord && interiorRecord->PointShadowForward && pixelShader->ShaderHandle == interiorRecord->ShaderHandle;
+		if (!ours && ExteriorActive) {	// UNOFFICIAL 2026-10-30 ExteriorForward: the outdoor record
+			auto found = ExteriorRecords.find(pixelShader);
+			ours = found != ExteriorRecords.end() && pixelShader->ShaderHandle == found->second->ShaderHandle;
+		}
+		if (!ours)
 			return;	// only those records read c174-c187
 		Bound = true;
 		LastPixelShaderShadowed = Active;

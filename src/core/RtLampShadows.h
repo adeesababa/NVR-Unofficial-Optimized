@@ -99,6 +99,12 @@ namespace RtLampShadows {
 	inline IDirect3DTexture9* MaskTexture = nullptr;
 	inline IDirect3DSurface9* MaskSurface = nullptr;
 	inline bool ExteriorFrame = false, MaskThisFrame = false, ExteriorLive = false;
+	// UNOFFICIAL 2026-10-30 ExteriorForward ([Shaders.ShadowsInteriors.RT] ExteriorForward, off, needs a restart): outdoors the lamps'
+	// shadows inside each object's own lighting, as indoors: the lit pixel shaders get an outdoor record with INTERIOR_SHADOWS +
+	// POINT_SHADOW_RT_ONLY (ShaderManager::LoadShader, PointShadowForward::ExteriorRecords), the table holds ShadowManager's shadow
+	// lamps by their index (PointShadowForward::PublishExterior gives the draws the same ids) and the per-pixel trace runs as indoors.
+	inline bool ExteriorForwardFrame = false;
+	inline bool ExteriorForwardOn() { return TheSettingManager->GetSettingI(kSection, "ExteriorForward") != 0; }
 	// UNOFFICIAL 2026-10-30 Flashlight ([Shaders.ShadowsInteriors.RT] Flashlight, off): the flashlight's (Pip-Boy light's) shadow traced
 	// (RtFlashTrace.comp, 1 lit / 0 blocked, screen space); Flashlight's shadow pass reads it instead of its shadow map
 	// (FlashlightShadowsRT.frag), and the shadow map is not drawn meanwhile.
@@ -241,7 +247,8 @@ namespace RtLampShadows {
 		memcpy(c[5], slots, 4 * sizeof(float));
 		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = DebugLamp; c[6][3] = -1.0f;	// z: DebugView 3's lamp
 		if (force || !UploadedValid || memcmp(c, Uploaded, sizeof(c))) {
-			TheRenderManager->device->SetPixelShaderConstantF(206, &c[0][0], 4);
+			// (outdoors the forward records read it at c228: POINT_SHADOW_RT_ONLY; c206-c209 are the character shadow map's there)
+			TheRenderManager->device->SetPixelShaderConstantF(TheShaderManager->GameState.isExterior ? 228 : 206, &c[0][0], 4);
 			TheRenderManager->device->SetPixelShaderConstantF(215, &c[4][0], 3);
 			memcpy(Uploaded, c, sizeof(c));
 			UploadedValid = true;
@@ -273,7 +280,10 @@ namespace RtLampShadows {
 	// ones) into the table, with the mask's own radius (Spec.r x LightRadiusMult) and weight (luma x dimmer)
 	inline void SubmitExterior(ShadowSceneLight* const* shadowLights, int shadowCount, NiPointLight* const* lights, int lightCount) {
 		ExteriorFrame = false;
-		if (!CompiledIn || imageMask < 0 || exteriorShader < 0 || !TheSettingManager->GetSettingI(kSection, "Exteriors")) { ExteriorLive = false; return; }
+		ExteriorForwardFrame = false;
+		const bool forward = CompiledIn && ExteriorForwardOn();
+		const bool maskMode = !forward && imageMask >= 0 && exteriorShader >= 0 && TheSettingManager->GetSettingI(kSection, "Exteriors");
+		if (!CompiledIn || (!forward && !maskMode)) { ExteriorLive = false; return; }
 		const float mult = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.LightRadiusMult;
 		// outdoors the lamps' own heads are not told apart from other objects (LampFixtures is the interior cell's list): the rays stop
 		// this far short of each light, past a street lamp's or a lantern's own housing
@@ -290,6 +300,22 @@ namespace RtLampShadows {
 			list[n] = { n, at, reach, 1.0f, stop, weight, reach };
 			n++;
 		};
+		if (forward) {
+			// ExteriorForward: the shadow lamps only (the draws match them by pointer), each by its index in ShadowLights = its slot
+			for (int i = 0; i < shadowCount && i < TableSlots; i++) {
+				const NiPointLight* light = shadowLights[i] ? shadowLights[i]->sourceLight : nullptr;
+				if (!light) continue;
+				const float reach = light->Spec.r * mult;
+				const float intensity = (0.2126f * light->Diff.r + 0.7152f * light->Diff.g + 0.0722f * light->Diff.b) * light->Dimmer;
+				if (!(reach > 1.0f)) continue;
+				list[n++] = { i, D3DXVECTOR3(light->m_worldTransform.pos.x, light->m_worldTransform.pos.y, light->m_worldTransform.pos.z),
+					reach, 1.0f, stop, (std::max)(intensity, 0.001f), light->Spec.r };
+			}
+			Submit(list, n);	// keeps the reprojection and Mode: the lamp shaders read the trace as indoors
+			ExteriorForwardFrame = ExteriorFrame = LampsThisFrame && LampCount > 0;
+			ExteriorLive = false;
+			return;
+		}
 		for (int i = 0; i < shadowCount; i++) if (shadowLights[i]) add(shadowLights[i]->sourceLight);
 		for (int i = 0; i < lightCount; i++) add(lights[i]);
 		Submit(list, n);
@@ -442,7 +468,7 @@ namespace RtLampShadows {
 
 		if ((!inputsIn && (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals))) || !RtCore::CopyIn(imageTable, TableTexture)) return;
 		// Exteriors: the mask variant, its result copied out for ApplyExteriorMask this frame; nothing is reprojected
-		if (TheShaderManager->GameState.isExterior) {
+		if (TheShaderManager->GameState.isExterior && !ExteriorForwardFrame) {
 			static UINT maskWidth = 0, maskHeight = 0;
 			if (!MaskTexture || maskWidth != w || maskHeight != h) {
 				maskWidth = w; maskHeight = h;
