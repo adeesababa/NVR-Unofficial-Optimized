@@ -185,3 +185,11 @@ nothing here is pushed, released or installed unless the user says so.
   crash; Lucky 38 within 0.5 % of round 9; Vault 21 shows the same lamp change.
 - DLL CRC32 CDD6912E, NvrRtHelper 2304B910 (protocol 4), fork-0033c D58B4425. Not packaged until the Vault 21 lamp change is
   confirmed intended or fixed.
+
+## Round 10b (2026-10-30 13:25, merge of claude/motion-ring-fix aee0046c) - HELD, not packaged
+- + aee0046c: VisibleRanking weights each visible pixel by the lamp's attenuation (partly hidden lamp keeps its shadow, Rivet City).
+  The main session says this is installed in the user's game (DLL 626F9201).
+- Bench: 1070 RT off (20261030-131953-slotC): Goodsprings differs from round 10 only by a tumbleweed, bushes and clouds;
+  Vault 21 STILL has the floor-lamp pools gone (same as round 10). SHADOW FLIPS 5.1-5.5 gained / lost per second.
+  iGPU (132206-slotA): Lucky 38 within 0.5 % of round 9, protocol-4 helper ready, RT effects run, no crash.
+- DLL CRC32 9206EA8E, NvrRtHelper 2304B910 (protocol 4), fork-0033c. Not packaged.
