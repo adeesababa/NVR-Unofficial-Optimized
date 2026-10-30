@@ -71,6 +71,7 @@ namespace {
 		UInt32	lastSeen = 0;
 		bool	sent = false;		// a BUILD op went to the helper
 		bool	refused = false;	// the fork refused it (logged once): never again
+		bool	textured = false;	// skinned: its last build carried texcoords (hit textures)
 	};
 
 	// A diffuse texture's average colour (linear rgb), from its smallest mip, once per texture (protocol v2's instance records).
@@ -696,8 +697,17 @@ namespace {
 		// Bodies are alpha-tested (the hair and fringe edges): they go in opaque (rtsun-13: with them left out, only heads and hands were
 		// in the scene). Blended-only (glass, fx) stays out.
 		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; return; }
+		// The skin shader is not a "lighting property" by its shader index, but its class is BSShaderPPLightingProperty (the textures)
+		const UInt32 shaderType = static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType;
+		const bool ppLighting = shaderProperty->IsLightingProperty() || shaderType == NiShadeProperty::kProp_PPLighting || shaderType == NiShadeProperty::kProp_Lighting30;
 		static const Albedo grey = { { 0.5f, 0.5f, 0.5f }, false };
-		const Albedo& albedo = shaderProperty->IsLightingProperty() ? AlbedoOf(geo, shaderProperty) : grey;
+		const Albedo& albedo = ppLighting ? AlbedoOf(geo, shaderProperty) : grey;
+		IDirect3DBaseTexture9* diffuse = nullptr;	// hit textures: the body's diffuse texture
+		if (hitTextures && ppLighting) {
+			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
+			NiTexture* texture = textures ? *textures : nullptr;
+			if (texture && texture->rendererData) diffuse = texture->rendererData->dTexture;
+		}
 		const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		static std::vector<float> palette;
@@ -754,6 +764,12 @@ namespace {
 			s.IndicesFormat = NVR_EXT_RT_SKIN_INDICES_UBYTE4;
 			s.PaletteCount = part.Bones;
 			s.pPalette = palette.data();
+			// Hit textures: the texcoords go with the posed positions (fork 0033 stages them for skinned geometry too), the colour in the atlas
+			int slot = -1;
+			if (diffuse && e.uvStream == e.stream) {
+				slot = AlphaSlotOf(diffuse);
+				if (slot >= 0) desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)e.uvOffset - (int)e.offset, e.uvHalf);
+			}
 
 			GeometryEntry& entry = geometries[key];
 			if (entry.refused) continue;
@@ -765,6 +781,7 @@ namespace {
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
 			if (pose && FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
+			bool hasUv = entry.textured;	// what the helper has: decided by what the fork staged (an older 0033 drops skinned texcoords)
 			if (pose) {
 				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
 				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
@@ -776,7 +793,9 @@ namespace {
 					op.vertexCount = info.VertexCount;
 					op.triangleCount = info.TriangleCount;
 					op.arenaTexel = arenaUsed;
-					op.flags = NVR_RT_OP_FLAG_DYNAMIC;
+					hasUv = slot >= 0 && info.Texels == 3u * (info.VertexCount + info.TriangleCount) + 2u * info.VertexCount;
+					entry.textured = hasUv;
+					op.flags = NVR_RT_OP_FLAG_DYNAMIC | (hasUv ? NVR_RT_OP_FLAG_TEXCOORDS : 0u);
 					arenaUsed += info.Texels;
 					entry.sent = true;
 					actorPartitions++;
@@ -785,7 +804,7 @@ namespace {
 
 			NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 			extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
-			extra.flags = albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u;
+			extra.flags = (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (hasUv && slot >= 0 ? NVR_RT_RECORD_TEXTURED | ((UInt32)slot << 16) : 0u);
 			extra.geometryId = entry.id;
 			extra.vertexOffset = extra.indexOffset = 0;
 			NvrRtInstance& instance = record->instances[record->instanceCount++];

@@ -1,4 +1,4 @@
-From bb07a44dc9251fc5f53e0084a47dc842b4d22bcb Mon Sep 17 00:00:00 2001
+From b88d6bc94780995afcdb21f2b0e598cc3e4aba2a Mon Sep 17 00:00:00 2001
 From: adeesababa <rkwastavich@gmail.com>
 Date: Thu, 29 Oct 2026 18:34:32 -0400
 Subject: [PATCH] NVR extension 1.8-rt-skin:
@@ -7,8 +7,8 @@ Subject: [PATCH] NVR extension 1.8-rt-skin:
 
 ---
  src/d3d9/d3d9_nvr_ext.cpp                 |  8 ++
- src/d3d9/d3d9_nvr_ext_api.h               | 46 ++++++++++++
- src/d3d9/d3d9_nvr_rt.cpp                  | 92 ++++++++++++++++++++++-
+ src/d3d9/d3d9_nvr_ext_api.h               | 47 ++++++++++++
+ src/d3d9/d3d9_nvr_rt.cpp                  | 91 ++++++++++++++++++++++-
  src/d3d9/d3d9_nvr_rt.h                    | 23 +++++-
  src/d3d9/shaders/d3d9_nvr_rt_convert.comp | 49 +++++++++++-
  5 files changed, 210 insertions(+), 8 deletions(-)
@@ -33,10 +33,10 @@ index 19f0012..9c8a5c4 100644
      if (ppvObject != nullptr && riid == __uuidof(ID3D9NvrExtShare)) {
        *ppvObject = ref(static_cast<ID3D9NvrExtShare*>(this));
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 736d773..80b0864 100644
+index 736d773..31abf92 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -1171,3 +1171,49 @@ __CRT_UUID_DECL(ID3D9NvrExtRt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0
+@@ -1171,3 +1171,50 @@ __CRT_UUID_DECL(ID3D9NvrExtRt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0
  __CRT_UUID_DECL(ID3D9NvrExtRtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x31);
  __CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x32);
  #endif
@@ -47,7 +47,8 @@ index 736d773..80b0864 100644
 + * StageGeometry with the vertices posed: each position (float3 / float4) is blended from up to 4 bones of pPalette (3 x 4
 + * row-major matrices, p' = M (x, y, z, 1): straight into scene space) by the vertex's blend weights and indices, which sit
 + * in the position's stream at the given byte deltas. Texels and layout as StageGeometry (positions, then the triangle
-+ * list; no texcoords). Stage it again every frame the actor moves; the palette is copied at the call.
++ * list, then the texcoords when NVR_EXT_RT_TEXCOORD_FLAGS asks: they are not posed). Stage it again every frame the actor moves;
++ * the palette is copied at the call.
 + */
 +#define NVR_EXT_RT_SKIN_MAX_BONES 256u
 +
@@ -87,7 +88,7 @@ index 736d773..80b0864 100644
 +__CRT_UUID_DECL(ID3D9NvrExtRtSkin,     0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x33);
 +#endif
 diff --git a/src/d3d9/d3d9_nvr_rt.cpp b/src/d3d9/d3d9_nvr_rt.cpp
-index 939f5fe..eeb4b94 100644
+index 939f5fe..277f68e 100644
 --- a/src/d3d9/d3d9_nvr_rt.cpp
 +++ b/src/d3d9/d3d9_nvr_rt.cpp
 @@ -27,6 +27,8 @@ namespace dxvk {
@@ -164,7 +165,7 @@ index 939f5fe..eeb4b94 100644
      if (pInfo != nullptr)
        *pInfo = NVR_EXT_RT_GEOMETRY_INFO();
  
-@@ -641,6 +673,28 @@ namespace dxvk {
+@@ -641,6 +673,27 @@ namespace dxvk {
      if (FAILED(hr))
        return hr;
  
@@ -182,8 +183,7 @@ index 939f5fe..eeb4b94 100644
 +        Logger::warn(str::format("NVR ext rt: skinned geometry ", name, " refused: the skin description is out of range"));
 +        return D3DERR_INVALIDCALL;
 +      }
-+      job.skin = true;
-+      job.uv = false;
++      job.skin = true;   // texcoords (Flags) still welcome: posed positions + the static texcoords (textured actors, 2026-10-30)
 +      job.weightsOffset = uint32_t(weights);
 +      job.indicesOffset = uint32_t(indices);
 +      job.skinBits = pSkin->WeightCount | (pSkin->BonesPerVertex << 4u) | (uint32_t(pSkin->WeightsFormat) << 8u) | (uint32_t(pSkin->IndicesFormat) << 12u);
@@ -193,7 +193,7 @@ index 939f5fe..eeb4b94 100644
      const uint64_t texels = 3ull * (uint64_t(job.vertexCount) + job.triangles) + (job.uv ? 2ull * job.vertexCount : 0ull);
      const uint64_t capacity = uint64_t(arena.Width) * arena.Height;
  
-@@ -699,7 +753,28 @@ namespace dxvk {
+@@ -699,7 +752,28 @@ namespace dxvk {
      const uint32_t rowFirst = m_stagedMin / size.width;
      const uint32_t rowEnd = std::min<uint32_t>((m_stagedMax + size.width - 1u) / size.width, size.height);
  
@@ -222,7 +222,7 @@ index 939f5fe..eeb4b94 100644
        cJobs    = std::move(m_staged),
        cConvert = m_convert,
        cStaging = m_staging,
-@@ -708,10 +783,19 @@ namespace dxvk {
+@@ -708,10 +782,19 @@ namespace dxvk {
        cRows    = rowEnd - rowFirst,
        cWidth   = size.width
      ] (DxvkContext* ctx) {
