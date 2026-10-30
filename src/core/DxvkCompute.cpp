@@ -460,6 +460,7 @@ static const float			kDisplaceFarMargin = 256.0f;	// game units past FadeEnd (th
 static float				DisplaceFarHysteresis = 0.0f;
 struct DisplaceFarRecord { bool isFar; UInt32 frame; };
 static std::unordered_map<const NiGeometry*, DisplaceFarRecord> DisplaceFarPieces;
+static unsigned				DisplaceFarFlips = 0;	// pieces whose choice differs from the frame before (the pop itself), for the log
 
 static void DisplaceSend(const NVR_EXT_TESS_STATE& State, unsigned Family = DxvkCompute::kDisplaceLand) {
 	// 2026-10-28 far land: one off state for every far piece, so a run of them sends nothing more
@@ -825,12 +826,13 @@ void DxvkCompute::DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, int Co
 			const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y;
 			const float reach = DisplaceBase.ControlParams[4] + kDisplaceFarMargin + bound->Radius;
 			pieceFar = dx * dx + dy * dy > reach * reach;
-			if (DisplaceFarHysteresis > 0.0f) {	// UNOFFICIAL 2026-10-29 FarHysteresis: the piece's last decision, unless clearly past the other way
+			{	// UNOFFICIAL 2026-10-29 FarHysteresis: the piece's last decision, unless clearly past the other way (and the flips counted)
 				const UInt32 frame = TheFrameRateManager->FrameNumber;
 				auto known = DisplaceFarPieces.find(Geometry);
 				if (known != DisplaceFarPieces.end() && frame - known->second.frame <= 2) {
 					const float d = sqrtf(dx * dx + dy * dy);
-					pieceFar = known->second.isFar ? d > reach - DisplaceFarHysteresis : d > reach + DisplaceFarHysteresis;
+					if (DisplaceFarHysteresis > 0.0f) pieceFar = known->second.isFar ? d > reach - DisplaceFarHysteresis : d > reach + DisplaceFarHysteresis;
+					if (pieceFar != known->second.isFar && known->second.frame != frame) DisplaceFarFlips++;
 				}
 				DisplaceFarPieces[Geometry] = { pieceFar, frame };
 				if (DisplaceFarPieces.size() > 8192) {	// pieces long gone (cells unloaded): dropped
@@ -981,17 +983,17 @@ void DxvkCompute::DisplaceTick() {
 		NVR_EXT_TESS_STATS now = {};
 		if (frames && SUCCEEDED(DisplaceInterface->GetTessStats(&now))) {
 			const double f = (double)frames;
-			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | land passes (strip draws): world %.1f (%.1f), water reflection %.1f (%.1f), other %.1f (%.1f) | far land %s: %.1f passes (%.1f strip draws) untessellated (wholly past FadeEnd + %.0f), %.1f near/far switches | shaders %u VS, %u PS, %u refused by the interface check | ObjectBlend %s (%u of the %u land pixel shaders can: below 7 layers)",
+			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | land passes (strip draws): world %.1f (%.1f), water reflection %.1f (%.1f), other %.1f (%.1f) | far land %s: %.1f passes (%.1f strip draws) untessellated (wholly past FadeEnd + %.0f), %.1f near/far switches, %.2f pieces flipped since the frame before (FarHysteresis %.0f) | shaders %u VS, %u PS, %u refused by the interface check | ObjectBlend %s (%u of the %u land pixel shaders can: below 7 layers)",
 				state.Enable ? "on" : "off", (double)(now.TessellatedDraws - last.TessellatedDraws) / f, (double)(now.OtherTopologyDraws - last.OtherTopologyDraws) / f,
 				(double)(now.Bindings - last.Bindings) / f,
 				DisplaceLandPasses[kDisplaceWorld] / f, DisplaceLandStrips[kDisplaceWorld] / f, DisplaceLandPasses[kDisplaceReflection] / f,
 				DisplaceLandStrips[kDisplaceReflection] / f, DisplaceLandPasses[kDisplaceOther] / f, DisplaceLandStrips[kDisplaceOther] / f,
-				DisplaceFarOn ? "on" : "off", DisplaceFarPasses / f, DisplaceFarStrips / f, kDisplaceFarMargin, DisplaceFarSwitches / f,
+				DisplaceFarOn ? "on" : "off", DisplaceFarPasses / f, DisplaceFarStrips / f, kDisplaceFarMargin, DisplaceFarSwitches / f, DisplaceFarFlips / f, DisplaceFarHysteresis,
 				now.VertexShaders, now.PixelShaders, now.RefusedPairs, DisplaceObjectBlend > 0.0f ? "on" : "off", DisplaceDepthShaders, DisplaceRegistered[1]);
 			last = now;
 		}
 		for (int c = 0; c < 3; c++) DisplaceLandPasses[c] = DisplaceLandStrips[c] = 0;
-		DisplaceFarPasses = DisplaceFarStrips = DisplaceFarSwitches = 0;
+		DisplaceFarPasses = DisplaceFarStrips = DisplaceFarSwitches = DisplaceFarFlips = 0;
 	}
 }
 
