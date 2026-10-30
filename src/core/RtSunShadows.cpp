@@ -21,12 +21,13 @@ namespace {
 		float	rayLength = 30000.0f;
 		float	sunAngle = 0.0f;		// degrees across the sun's disc: 0 = one hard ray, > 0 = rays jittered inside it + the denoiser
 		bool	denoise = true;
+		bool	halfResolution = false;		// trace a quarter of the pixels (2 x 2 blocks), denoise and upsample
 		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
 	// The trace pass's uniform block (RtSunShadow.comp, std140)
 	struct PassConstants {
-		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4], alpha[4];
+		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4], alpha[4], full[4];
 	};
 
 	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1;
@@ -56,6 +57,7 @@ namespace {
 		S.debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
 		S.sunAngle = (std::min)((std::max)(TheSettingManager->GetSettingF(kSection, "SunAngle"), 0.0f), 10.0f);
 		S.denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
+		S.halfResolution = TheSettingManager->GetSettingI(kSection, "HalfResolution") != 0;
 	}
 
 	const D3DXVECTOR4* Constant(const char* name) {
@@ -83,7 +85,9 @@ namespace {
 	void Record(IDirect3DDevice9* Device) {
 		tracedThisFrame = false;
 		if (imageDepth < 0 || imageNormals < 0 || imageVisibility < 0 || shader < 0) return;
-		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
+		const UINT fw = TheRenderManager->width, fh = TheRenderManager->height;
+		const UINT scale = S.halfResolution ? 2u : 1u;
+		const UINT w = (std::max)(1u, fw / scale), h = (std::max)(1u, fh / scale);	// as RtDenoise's Downscale	// the traced size (the images stay full size: the top-left part)
 		if (!visibilityTexture || textureWidth != w || textureHeight != h) {
 			if (visibilitySurface) { visibilitySurface->Release(); visibilitySurface = nullptr; }
 			if (visibilityTexture) { visibilityTexture->Release(); visibilityTexture = nullptr; }
@@ -102,6 +106,7 @@ namespace {
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
 		PassConstants c = {};
 		c.size[0] = (float)w; c.size[1] = (float)h; c.size[2] = 1.0f / w; c.size[3] = 1.0f / h;
+		c.full[0] = (float)fw; c.full[1] = (float)fh;	// depth / normals are read at full size
 		// SunShadows.glsl toWorld(): the view matrix's columns are right (0), up (1) and forward (2)
 		c.forward[0] = view._13; c.forward[1] = view._23; c.forward[2] = view._33; c.forward[3] = cameraData->y;
 		c.right[0] = view._11 / proj._11; c.right[1] = view._21 / proj._11; c.right[2] = view._31 / proj._11;
@@ -121,7 +126,7 @@ namespace {
 		const int atlas = RtCore::AlphaAtlasImage();
 		const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
 		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
-		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface);
+		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface, w, h);
 		if (tracedThisFrame && frames++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows traced (%ux%u, Mode %d: %s, range %.0f, DebugView %d).", w, h, S.mode,
 				S.mode == 1 ? "replace the cascades inside the range" : "combine with the cascades", S.range, S.debugView);
@@ -176,8 +181,10 @@ namespace RtSunShadows {
 		signalTexture = visibilityTexture;
 		// Soft shadows: the jittered one-ray visibility through the shared denoiser (RtDenoise.h)
 		if (traced && visibilityTexture && S.sunAngle > 0.0f && S.denoise) {
-			const UINT w = TheRenderManager->width, h = TheRenderManager->height;
-			if (!denoisedTexture || textureWidth != w || textureHeight != h) {
+			const UINT w = textureWidth, h = textureHeight;	// the traced size (half with HalfResolution)
+			static UINT denoisedWidth = 0, denoisedHeight = 0;
+			if (!denoisedTexture || denoisedWidth != w || denoisedHeight != h) {
+				denoisedWidth = w; denoisedHeight = h;
 				if (denoisedSurface) { denoisedSurface->Release(); denoisedSurface = nullptr; }
 				if (denoisedTexture) { denoisedTexture->Release(); denoisedTexture = nullptr; }
 				Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &denoisedTexture, nullptr);
@@ -185,13 +192,14 @@ namespace RtSunShadows {
 			}
 			if (!denoiser) denoiser = RtDenoise::Create("RT sun shadows");
 			RtDenoise::Settings settings;
+			settings.Downscale = S.halfResolution ? 2 : 1;
 			if (denoisedSurface && RtDenoise::Run(denoiser, Device, visibilityTexture, denoisedSurface, settings)) signalTexture = denoisedTexture;
 		}
 		if (!traced || S.debugView == 2 || S.debugView >= 4 || !signalTexture) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		IDirect3DSurface9* target = shadows->Textures.ShadowPassSurface;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(S.debugView == 1 || S.debugView == 3 ? 1 : 0);
-		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+		ID3D9NvrExtSampler* point = S.halfResolution ? DxvkCompute::LinearClamp() : DxvkCompute::PointClamp();	// half: bilinear up
 		if (!pipeline || !point || !target) return;
 
 		static GpuTimer timer("  RT sun shadows combine");
@@ -226,7 +234,7 @@ namespace RtSunShadows {
 		tracedForDebug = false;
 		if (!traced || S.debugView < 4 || !signalTexture || !RenderTarget) return;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(2);
-		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+		ID3D9NvrExtSampler* point = S.halfResolution ? DxvkCompute::LinearClamp() : DxvkCompute::PointClamp();	// half: bilinear up
 		SunShadowsEffect* sunShadows = TheShaderManager->Effects.SunShadows;
 		if (!pipeline || !point || !sunShadows || !sunShadows->scratchSurface[0]) return;
 		IDirect3DSurface9* current = nullptr;

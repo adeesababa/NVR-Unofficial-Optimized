@@ -50,6 +50,7 @@ public:
 	static bool			AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize,
 							UINT GroupsX, UINT GroupsY);
 	static bool			CopyOut(int Image, IUnknown* Target);
+	static bool			CopyOut(int Image, IUnknown* Target, UINT Width, UINT Height);	// only the top-left Width x Height (a pass that wrote less)
 
 	static void			Frame(IDirect3DDevice9* Device);	// the RT point of the frame
 	// UNOFFICIAL 2026-10-28 (RT reflections) a second exchange of the frame, for one Point-1 user, where that user calls it (Reflections:

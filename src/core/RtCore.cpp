@@ -138,7 +138,7 @@ namespace {
 		int indexStream = -1; UInt32 indexOffset = 0, indexFormat = 0;
 	};
 
-	struct PendingCopy { int image; IUnknown* target; };
+	struct PendingCopy { int image; IUnknown* target; UINT width, height; };	// 0, 0: the image's registered size
 
 	struct Core {
 		enum State { Idle, Starting, Running, Off };
@@ -1048,7 +1048,13 @@ bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteM
 
 bool RtCore::CopyOut(int Image, IUnknown* Target) {
 	if (!TheCore.recording || Image <= 0 || Image >= (int)TheCore.images.size() || !Target) return false;
-	TheCore.copiesOut.push_back({ Image, Target });
+	TheCore.copiesOut.push_back({ Image, Target, 0, 0 });
+	return true;
+}
+
+bool RtCore::CopyOut(int Image, IUnknown* Target, UINT Width, UINT Height) {
+	if (!TheCore.recording || Image <= 0 || Image >= (int)TheCore.images.size() || !Target || !Width || !Height) return false;
+	TheCore.copiesOut.push_back({ Image, Target, (std::min)(Width, TheCore.imageSizes[Image].first), (std::min)(Height, TheCore.imageSizes[Image].second) });
 	return true;
 }
 
@@ -1122,7 +1128,8 @@ namespace {
 		c.share->SignalShared(c.inputsReady, n);
 		c.share->WaitShared(c.outputReady, n);
 		for (const PendingCopy& copy : c.copiesOut) {
-			const RECT used = { 0, 0, (LONG)c.imageSizes[copy.image].first, (LONG)c.imageSizes[copy.image].second };
+			const RECT used = { 0, 0, (LONG)(copy.width ? copy.width : c.imageSizes[copy.image].first),
+				(LONG)(copy.height ? copy.height : c.imageSizes[copy.image].second) };
 			c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], &used);
 		}
 		c.copiesOut.clear();
