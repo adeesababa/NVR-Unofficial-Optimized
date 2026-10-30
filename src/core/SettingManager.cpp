@@ -33,6 +33,34 @@ std::string SettingManager::ToString<int>(const int Value) {
 	return std::to_string(Value);
 }
 
+// UNOFFICIAL 2026-10-30: a setting is read only when the defaults file lists it (FillNode), so a line in the user's toml that
+// this build does not know (a key from a newer or an older build, a typo) silently did nothing. Each one is logged once per
+// load; a whole unknown section is one line. [_Unofficial] is NVR's own bookkeeping, never in the defaults.
+static void WarnUnknownKeys(const tomlValue& User, const tomlValue& Defaults) {
+	if (!User.is_table() || !Defaults.is_table()) return;
+	int logged = 0, more = 0;
+	auto name = [](const std::string& path, const std::string& key) {
+		std::string k = key[0] == '_' ? key.substr(1) : key;
+		return path.empty() ? k : path + "." + k;
+	};
+	auto walk = [&](auto& self, const tomlValue& user, const tomlValue& defaults, const std::string& path) -> void {
+		for (const auto& [key, value] : user.as_table()) {
+			if (path.empty() && key == "_Unofficial") continue;
+			const bool known = defaults.contains(key);
+			if (known && value.is_table() && defaults.at(key).is_table()) { self(self, value, defaults.at(key), name(path, key)); continue; }
+			if (known) continue;
+			if (logged >= 40) { more++; continue; }
+			logged++;
+			if (value.is_table())
+				Logger::Log("UNOFFICIAL settings: section [%s] in your toml isn't known to this build: ignored", name(path, key).c_str());
+			else
+				Logger::Log("UNOFFICIAL settings: setting %s in your toml isn't known to this build: ignored (a newer or older build's setting, or a typo)", name(path, key).c_str());
+		}
+	};
+	walk(walk, User, Defaults, "");
+	if (more) Logger::Log("UNOFFICIAL settings: %i more settings in your toml aren't known to this build (ignored)", more);
+}
+
 /*
 * The Config Class holds, accesses and maintains the current instance of config document and its keys.
 */
@@ -116,6 +144,7 @@ void SettingManager::Configuration::Init() {
 	// LoadSettings, and a read of a section the user config lacks writes the defaults into it -- so a migration that
 	// fills a new section from the user's old one (P63's Interiors) would find it already there and skip it.
 	UpdateOldDefaults();
+	WarnUnknownKeys(TomlConfig, DefaultConfig);
 }
 
 
