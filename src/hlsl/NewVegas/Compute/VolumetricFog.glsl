@@ -899,6 +899,19 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     fogMul = mix(vec3(1.0), fogMul, nightAmount);
     fogAdd *= nightAmount;
     nightAmountOut = nightAmount;
+
+    // UNOFFICIAL 2026-10-30 GameFogFloor (VolumetricFog.fx.hlsl ModernFogTerms): at least the game's own fog curve for the weather,
+    // times cb.fogSun.z, with the weather's raw near (w); toward NVR's fog colour without the sun's glow; not on the sky dome.
+    if (!classic && cb.fogSun.z > 0.0) {
+        float gameNear = cb.fogSun.w;
+        float gameFog = farFog > gameNear + 1.0 ? pows(saturate((length(eyeVector) - gameNear) / (farFog - gameNear)), FogPower) : 0.0;
+        float want = saturate(cb.fogSun.z * gameFog) * (1.0 - isSkyDome);
+        float kept = luma(fogMul);
+        float topUp = saturate((want - (1.0 - kept)) / max(kept, 0.0001));
+        vec3 haze = fogColor(ambientSkyColor, pureFogColor, strength, FogSkyColorCoeff, vec4(0.0), FogSaturation).rgb * mix(vec3(1.0), NightTint, nightFactor);
+        fogMul *= 1.0 - topUp;
+        fogAdd = mix(fogAdd, haze, topUp);
+    }
 }
 
 void FogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nightAmountOut, bool legacy, bool interior, bool classic) {

@@ -27,7 +27,8 @@ public:
 		D3DXVECTOR4		Night;           // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 		D3DXVECTOR4		NightScatter;    // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
 		D3DXVECTOR4		NightTint;       // xyz: multiplicative night fog color tint, w: NightAmbientStrength
-		D3DXVECTOR4		Sun;             // UNOFFICIAL 2026-10-15 x: SunGlow, the fog's glow round the sun (1 = as inherited, 0 interiors); 2026-10-30 y: WeatherFogColor (0 interiors)
+		D3DXVECTOR4		Sun;             // UNOFFICIAL 2026-10-15 x: SunGlow, the fog's glow round the sun (1 = as inherited, 0 interiors); 2026-10-30 y: WeatherFogColor (0 interiors);
+		                                 // 2026-10-30 z: GameFogFloor this frame (its Night scale faded in; 0 interiors / off), w: the weather's raw fog near (Sky, before the 0.17 x far stand-in)
 		// Custom build: the fog from before the rewrite, for old presets ([Shaders.VolumetricFog.Main] LegacyFog).
 		D3DXVECTOR4		Legacy;          // x: 1 = legacy fog (C++ only: picks the *Legacy techniques)
 		D3DXVECTOR4		LegacyLow;       // x: FogSaturation, y: WeatherImpact, z: DistantFogRange, w: SunPower
@@ -50,6 +51,8 @@ public:
 	bool	rainyDisablesSkyFilter;
 	bool	cloudyDisablesSkyFilter;
 	bool	weatherFilterWasActive; // edge-detect for the animator, mirrors RainAnimator.switched
+	// UNOFFICIAL 2026-10-30 GameFogFloor ([Shaders.VolumetricFog.Main] GameFogFloor, [Shaders.VolumetricFog.Night] GameFogFloorScale; UpdateConstants)
+	float	gameFogFloor = 0.0f, gameFogFloorNight = 1.0f;
 
 	// cached from UpdateSettings (Shaders.ShadowsExteriors.Main/NightMinDarkness), consumed by
 	// UpdateConstants to drive the moon-phase night-ambient ceiling

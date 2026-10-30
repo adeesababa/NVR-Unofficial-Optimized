@@ -81,6 +81,23 @@ void VolumetricFogEffect::UpdateConstants() {
 	float MoonPhase = (fmod(DaysPassed, 8 * Tes->sky->firstClimate->phaseLength & 0x3F)) / (Tes->sky->firstClimate->phaseLength & 0x3F);
 	MoonPhase = std::lerp(-D3DX_PI, D3DX_PI, MoonPhase / 8) - D3DX_PI / 4;
 	Constants.Global.z = std::lerp(0.0f, nightMinDarkness, cosf(MoonPhase) * 0.5f + 0.5f);
+
+	// UNOFFICIAL 2026-10-30 GameFogFloor (user: NVR's fog is nearly invisible in clear weather at noon; the game's own fog clearly hazes
+	// the hills): the shader tops NVR's fog up to the game's own fog curve for the weather, pow(saturate((d - near) / (far - near)), power),
+	// times this. NVR's density is fixed and thin (about 1 % of the colour at 20000 units in every weather by day, the game's 25 % in
+	// clear and 61 % in cloudy weather), and only ever saw the weather's distances as one number for the whole screen. Its Night scale
+	// fades in as the shader's nightFactor does (1 - smoothstep(0.4, 0.8, sun amount)). w: the weather's own near, as the game fogs
+	// with it (TESR_FogData.x holds 0.17 x far when the weather's near is negative, as most clear ones are: -10).
+	if (TheShaderManager->GameState.isExterior && gameFogFloor > 0.0f) {
+		const float t = std::clamp((TheShaderManager->ShaderConst.SunAmount.x - 0.4f) / 0.4f, 0.0f, 1.0f);
+		const float night = 1.0f - t * t * (3.0f - 2.0f * t);
+		Constants.Sun.z = gameFogFloor * (1.0f + (gameFogFloorNight - 1.0f) * night);
+		Constants.Sun.w = Tes->sky->fogNearPlane;
+	}
+	else {
+		Constants.Sun.z = 0.0f;
+		Constants.Sun.w = 0.0f;
+	}
 }
 
 void VolumetricFogEffect::UpdateSettings(){
@@ -140,6 +157,10 @@ void VolumetricFogEffect::UpdateSettings(){
 		// UNOFFICIAL 2026-10-30 WeatherFogColor (missing key, an older defaults toml = 1: the weather's fog colour, not silently the old look)
 		SettingManager::Configuration::ConfigNode weatherFogColor;
 		Constants.Sun.y = TheSettingManager->Config.FillNode(&weatherFogColor, SettingCategory, "WeatherFogColor") ? std::clamp(weatherFogColor.FloatValue, 0.0f, 1.0f) : 1.0f;
+		// UNOFFICIAL 2026-10-30 GameFogFloor (UpdateConstants; missing = 0, off) and its night scale (missing = 1: the same by night)
+		gameFogFloor = std::clamp(TheSettingManager->GetSettingF(SettingCategory, "GameFogFloor"), 0.0f, 2.0f);
+		SettingManager::Configuration::ConfigNode gameFogNight;
+		gameFogFloorNight = TheSettingManager->Config.FillNode(&gameFogNight, "Shaders.VolumetricFog.Night", "GameFogFloorScale") ? std::clamp(gameFogNight.FloatValue, 0.0f, 2.0f) : 1.0f;
 
 		Constants.Aerial.x = TheSettingManager->GetSettingF(SettingCategory, "AerialStrength");
 		Constants.Aerial.y = TheSettingManager->GetSettingF(SettingCategory, "AerialRangeStart");
@@ -170,6 +191,7 @@ void VolumetricFogEffect::UpdateSettings(){
 		Constants.Scatter.y = 0.0f;
 		Constants.Sun.x = 0.0f;
 		Constants.Sun.y = 0.0f;	// (the fog's sky colour indoors is the cell's fog colour already)
+		gameFogFloor = 0.0f;	// UNOFFICIAL 2026-10-30 GameFogFloor: outdoors only
 
 		Constants.Aerial = D3DXVECTOR4(0, 0, 0, 0);
 		Constants.AerialTintColor = D3DXVECTOR4(0, 0, 0, 0);
