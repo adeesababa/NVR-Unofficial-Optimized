@@ -362,3 +362,8 @@ helper's own timing).
   4 (~26-29 ms) is cheaper than full-rate GI either way (33-41 ms) and is the one that holds up in motion.
 - **GIReuse default 8** (DLL 69708BDC, commit below). Next: the GI pass's extra cost (the separate pass reads the input and does the
   reprojection for every texel; a texel without history traces even outside its tile), then spatial reuse.
+- **Reuse v2 (e6363499, shader only; bench rtgi16 = list rt-gi-11 again, 20261030-025100-slotA): PASS.** Outside the frame's
+  GIInterleave tiles nothing traces; a texel without history borrows a neighbour's reservoir or stays empty until its turn.
+  RtGITrace at GIInterleave 4, in motion: 8.5 / 10.8 / 9.2 / 8.5 / 9.1 ms (v1, rtgi15: 12.4 / 14.4). AO + GI 20.7-27 ms (v1 25.7-28.7).
+  The moving bounce-light views show no holes, blocks or stripes (a faint double outline round the player at most). Note: the
+  list's "r0" shots ran with reuse too (the DLL's default is now 8 and the list does not set 0), so all shots of this run are v2.
