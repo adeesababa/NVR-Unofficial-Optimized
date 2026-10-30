@@ -3252,15 +3252,10 @@ namespace SandstormGlass {
 	static HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* Device, D3DPRIMITIVETYPE Type, INT Base, UINT MinIndex, UINT Vertices, UINT Start, UINT Count) {
 		// UNOFFICIAL 2026-10-29 GlassMask (core/GlassMask.h): no storm hiding glass depth, glass reflections on: the see-through draw as
 		// the game does it, then once more into the glass mask.
-		if (InBlendedStage && !HideDepth && GlassOn) {
-			const bool glass = IsSeeThroughPass(Device, true);
-			// Glass: marked. An opaque depth-writing draw later in the stage over glass already marked: unmarked again (the mask
-			// otherwise keeps glass the camera no longer sees, e.g. a bottle behind something drawn after it).
-			if (glass || GlassMask::Occludes(Device)) {
-				const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
-				if (SUCCEEDED(result)) GlassMask::Redraw(Device, glass, [&]() { return Next(Device, Type, Base, MinIndex, Vertices, Start, Count); });
-				return result;
-			}
+		if (InBlendedStage && !HideDepth && GlassOn && IsSeeThroughPass(Device, true)) {
+			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+			if (SUCCEEDED(result)) GlassMask::Redraw(Device, [&]() { return Next(Device, Type, Base, MinIndex, Vertices, Start, Count); });
+			return result;
 		}
 		if (InBlendedStage && HideDepth && IsSeeThroughPass(Device)) {
 			HiddenDraws++;
