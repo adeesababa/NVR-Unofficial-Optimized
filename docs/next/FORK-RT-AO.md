@@ -398,8 +398,15 @@ iGPU (Radeon 610M-class), 720p, AlphaTested + HitTextures, helper per-pass GPU t
 | Goodsprings (20261030-042959-slotC) | AO | 4.8 | - | 4.0 | - | 6.3 |
 | Goodsprings | AO + GI full rate | 6.1 | 20.0 | 4.0 | 5.4 | 27.3 |
 | (rtgi16/19, Lucky 38 in motion) | AO + GI GIInterleave 4 | 12-17 | 8.5-11.7 | ~4 | ~5.4 | - |
+| Lucky 38 + Actors (rt-gi-15, 20261030-054434-slotA, fork-0033b) | AO + GI full rate | 8.9 | 28.0 | 3.9 | 5.4 | 41.1 |
+| Lucky 38 + Actors (rt-gi-15) | AO + GI GIInterleave 4 | 9.1 | 9.9 | 3.9 | 5.4 | 22.3 |
 
 GIInterleave 4's own row in rt-gi-14 is the trailing RT shot, so it has no per-pass print (lists from now on end with a spare RT
 shot). CPU frame intervals on the iGPU are dominated by 300-700 ms "Game render" spikes in these runs (Lucky 38: al 118 / ao 133 /
 aogi 162 / aogi-g4 156 ms; Goodsprings 127-191 ms) and are not used for verdicts. Recommended iGPU preset: AO on (RayCount 2),
 GI with GIInterleave 4 (reuse on): ~20-25 ms of helper GPU time at Lucky 38, ~11-13 at Goodsprings (estimate from the rows above).
+
+- **rt-gi-15 (fork-0033b, AlphaTested + HitTextures + Actors, 20261030-054434-slotA):** no crash with skinned actors in the scene
+  and textured in the hit atlas; the GI costs are as without actors (rows above). The game-side "Ray tracing" p50 at GIInterleave 4:
+  22.3 ms for 19.0 ms of helper passes (+ copies and waits ~3 ms). The bounce-light view shows no player or NPC in frame (Lucky 38's
+  still spot looks away from the player), so the actors' bounce colour is not judged yet: needs a spot facing an NPC.
