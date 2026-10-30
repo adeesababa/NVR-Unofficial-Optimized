@@ -211,6 +211,14 @@ float Reflectivity(vec2 uv, float depth, vec3 viewNormal, out float roughness) {
             if (material.b > 0.5) { roughness = max(material.r, 0.02); SurfaceMetal = material.g; return cb.weapon.z; }
         }
         roughness = cb.weapon.w;
+        // (2026-10-30: the first-person pass never writes MaterialAware's buffer (world scene only), so a gun has no metal data:
+        // WeaponMetal guesses it from the gun's own lit colour: grey steel (low saturation) metal, brown wood and coloured parts not.)
+        if (cb.material2.w > 0.0) {
+            vec3 lit = linearize(textureLod(sampler2D(t_rendered, POINT_S), uv, 0.0).rgb);
+            float top = max(lit.r, max(lit.g, lit.b));
+            float saturation = top > 1.0e-4 ? (top - min(lit.r, min(lit.g, lit.b))) / top : 0.0;
+            SurfaceMetal = cb.material2.w * (1.0 - smoothstep(0.12, 0.35, saturation));
+        }
         if (cb.material2.x > 0.5) {
             vec4 written = textureLod(sampler2D(t_matbuf, POINT_S), uv, 0.0);
             if (written.r > 0.5 && written.b >= 0.0) roughness = saturate(written.b);
