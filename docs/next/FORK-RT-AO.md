@@ -295,3 +295,8 @@ helper's own timing).
 - iGPU bulk run of rt-ao-1 in lucky22 + og-desert + a porch spot, read the shots, cost table (1-2 h incl. queue).
 - Tune Distance / the strength mapping against AmbientLight's look (RT occlusion is wider than AL's GTAO in creases) (1 h).
 - Requests for the core if the shots need them: skinned actors in the TLAS (darkening under NPCs), alpha-tested foliage.
+
+### rt-gi-8 (queued 2026-10-29 ~23:10, 79a6d04a): hit textures for the bounce albedo, Goodsprings + Lucky 38
+- The GI bounce's off-screen albedo now comes from `rtHitAlbedo` (RtHit.glsl: the hit texture's colour through the albedo atlas
+  when `[Main.Main.RayTracing] HitTextures` is on, else the record's average; a 256 x 256 RGBA8 stand-in at binding 7 when the core
+  has no atlas). Run toml rtao/run-toml-igpu-hit.toml (AlphaTested + HitTextures), fork-0033 + extra-p3, list rt-gi-8.
