@@ -351,6 +351,6 @@ helper's own timing).
   camera was moving). The GIInterleave 4 light view, taken while the camera drifts, shows two faint ghost silhouettes and vertical
   stripes at the left edge; there is no GIReuse 0 + GIInterleave 4 shot in motion to compare, so it is open whether reuse causes it.
   Final pictures r0 / r8 are different views (drift), not compared.
-- **Default GIReuse 0** for now (52fa…, see git log), the reuse path is opt-in until a motion A/B. Next: a bench list that pairs
+- **Default GIReuse 0** for now (029d3d56, DLL 3075BBC6), the reuse path is opt-in until a motion A/B. Next: a bench list that pairs
   GIReuse 0 / 8 at GIInterleave 4 back to back in the drifting shots, and a cheaper GI pass (history-only tiles skip the input
   reprojection maths; check why non-candidate tiles still trace).
