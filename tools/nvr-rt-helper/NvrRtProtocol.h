@@ -94,6 +94,10 @@ struct NvrRtImageDesc {
 #define NVR_RT_OP_FLAG_TEXCOORDS  0x1u   // 2 x vertexCount more texels: the texcoords after the triangle list (fork 1.8-rt-uv)
 #define NVR_RT_OP_FLAG_ALPHA      0x2u   // built non-opaque (alpha-tested: the rays test the candidates)
 #define NVR_RT_OP_FLAG_DYNAMIC    0x4u   // rebuilt every frame (skinned actors): fast build instead of fast trace
+// UNOFFICIAL 2026-10-30 ([Main.Main.RayTracing] Compact): static geometry built with ALLOW_COMPACTION; the helper reads the compacted
+// size once the build's frame is done and copies it into a structure of that size a frame later (typically half the memory). An older
+// helper ignores the flag (no compaction, nothing else changes).
+#define NVR_RT_OP_FLAG_COMPACT    0x8u
 
 struct NvrRtGeometryOp {             // 32 bytes
 	uint32_t	op;                  // NvrRtOp
