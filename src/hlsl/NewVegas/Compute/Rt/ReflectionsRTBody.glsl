@@ -42,6 +42,15 @@ layout(set = 0, binding = 6, rgba8) uniform readonly image2D albedoAtlas;   // R
 #endif
 #define RT_ALBEDO_ATLAS albedoAtlas
 #endif
+#ifdef RT_GLOW
+// 2026-10-30 glow maps (the core's [Main.Main.RayTracing] GlowTextures, RtHit.glsl rtHitGlow): the glow atlas, after the albedo atlas
+#ifdef RT_ALPHA
+layout(set = 0, binding = 8, rgba8) uniform readonly image2D glowAtlas;   // RtCore::GlowAtlasImage()
+#else
+layout(set = 0, binding = 7, rgba8) uniform readonly image2D glowAtlas;   // RtCore::GlowAtlasImage()
+#endif
+#define RT_GLOW_ATLAS glowAtlas
+#endif
 
 // Protocol v2 (tools/nvr-rt-helper/NvrRtProtocol.h): a record per instance, and the geometries' positions + triangle lists.
 struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
@@ -213,6 +222,15 @@ void main() {
 	if (rtHitHasTexcoords(hitInstance)) {
 		albedo = rtHitAlbedo(hitInstance, uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true)), rayQueryGetIntersectionBarycentricsEXT(q, true));
 		flags |= 2u;
+	}
+#endif
+#ifdef RT_GLOW
+	// 2026-10-30: a glowing draw glows only where its glow map is lit (sign letters, lamp globes): there the shade carries the glow
+	// colour and the glow flag stays (Resolve adds it x GlowBrightness); elsewhere on the mesh it is lit like any surface.
+	if ((flags & 8u) != 0u) {
+		const vec3 glow = rtHitGlow(hitInstance, uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true)), rayQueryGetIntersectionBarycentricsEXT(q, true));
+		if (max(glow.r, max(glow.g, glow.b)) > 0.02) albedo = glow;
+		else flags &= ~8u;
 	}
 #endif
 	imageStore(hitImage, pixel, vec4(t, float(flags), OctEncode(normal)));

@@ -200,6 +200,18 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 10:30 glow maps at hits (rtrefl-9 again; c42ddf9f = rt-sun-2 d40b6645, DLL 5FFC6D66; fork-0033c, helper extra-p3d)
+With the core's `[Main.Main.RayTracing] GlowTextures` (+ HitTextures) a glowing draw's glow map is in a shared RGBA8 atlas; the pass
+(`ReflectionsRTTexGlow` / `ReflectionsRTAlphaTexGlow`, glow atlas after the albedo atlas) reads `rtHitGlow` at the hit: where the
+map is lit the shade carries that colour and the glow flag stays (Resolve adds it x GlowBrightness as before); elsewhere on the mesh
+the glow flag is dropped and it is lit like any surface. Without the atlas: as before (the whole mesh glows).
+- luxe 20261030-101518-slotA: reflection alone GlowBrightness 3 vs 0: 1.74 % px (noise 0.03 %), 6977 brighter / 744 darker, full
+  max +27 levels. The whole-mesh run (20261030-005110) was 3.01 %: the out-of-view wall panels that glowed in full no longer do; only
+  their lit spots do.
+- lucky22 20261030-100806-slotA: 0.26 % alone (noise 0.01 %; whole-mesh 0.32 %), full picture in noise (its neon is on screen).
+- Cost: the helper pass ReflectionsRTAlphaTexGlow 7.2-7.9 ms a run at luxe (the helper's passes were 7.8 ms with textures alone).
+- Helper shader cap: NVR_RT_MAX_SHADERS is 16; reflections registers 6 (opaque, alpha, tex, alpha+tex, tex+glow, alpha+tex+glow).
+
 ### 2026-10-30 09:45 main's three items: clouds at misses, ambient at hits, cost
 **(1) Clouds where a reflection finds nothing: CloudSky ([Shaders.Reflections.Main], off): NOT PASSED, parked off.**
 - Finding (rtrefl-12, noon + rain + volumetric clouds, 20261030-080453-slotA, RT DebugView 6 = the fallbacks split): the clouds are
