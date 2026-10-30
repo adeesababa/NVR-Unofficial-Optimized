@@ -43,6 +43,7 @@ layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
 layout(set = 0, binding = 5, r16f) uniform readonly image2D alphaAtlas;   // the core's alpha atlas (RtCore::AlphaAtlasImage), or a stand-in
 layout(set = 0, binding = 6, rgba16f) uniform readonly image2D frameLight; // (GI v2) the game's lit frame at the trace grid's size (as rendered: gamma)
+layout(set = 0, binding = 7, rgba8) uniform readonly image2D albedoAtlas;  // (2026-10-29) the core's albedo atlas (HitTextures), or a stand-in
 
 // The core's protocol v2 hit data (FORK-RT-CORE.md): per-instance records and the geometry (positions float3 + triangle lists, as words).
 struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
@@ -51,6 +52,8 @@ layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; }
 #define RT_RECORDS_DECLARED
 #define RT_ALPHA_ATLAS alphaAtlas
 #include "RtAlpha.glsl"
+#define RT_ALBEDO_ATLAS albedoAtlas
+#include "RtHit.glsl"
 
 // Proceeds a ray query to its end, confirming alpha-tested candidates only where their alpha is solid. Opaque geometry commits by itself.
 // (A macro: a rayQueryEXT cannot be a function parameter.)
@@ -153,10 +156,13 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
         if (dot(face, face) > 1.0e-12) n = normalize(face);
     }
     if (dot(n, d) > 0.0) n = -n;
-    vec3 albedo = (r.flags & 0x10u) != 0u ? clamp(r.albedo.rgb, 0.0, 1.0) : vec3(0.5);
     vec3 hit = start + d * t;
     vec4 seen = ScreenLight(hit);
     if (seen.a > 0.5) return vec4(Clamped(seen.rgb), t / cb.gi.x);
+    // Off screen: the hit's diffuse colour from the core (2026-10-29: the texture's colour at the hit with [Main.Main.RayTracing]
+    // HitTextures, RtHit.glsl; else the record's average; grey 0.5 when unknown).
+    vec3 albedo = clamp(rtHitAlbedo(rayQueryGetIntersectionInstanceIdEXT(q, true), uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true)),
+                                    rayQueryGetIntersectionBarycentricsEXT(q, true)), 0.0, 1.0);
     vec3 lift = hit + n * (1.0 + 0.002 * t);
     vec3 e = cb.ambient.rgb * (cb.gi.w * (0.5 + 0.5 * n.z));   // GIAmbient (default 0: the game's ambient is already the indirect light)
     float sunCos = dot(n, cb.sunDir.xyz);
