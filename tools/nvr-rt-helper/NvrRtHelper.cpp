@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "NvrRtProtocol.h"
+#include "RtArenaGuard.h"	// kRtArenaGuardSpv (RtArenaGuard.comp)
 
 namespace {
 
@@ -618,6 +619,12 @@ namespace {
 		uint32_t		passRuns[NVR_RT_MAX_SHADERS] = {};
 		uint64_t		refits = 0, fullBuilds = 0;	// dynamic (actor) geometry: in-place updates / full builds
 		VkQueryPool		compactQueries = VK_NULL_HANDLE;	// compacted sizes, kCompactPerSlot a slot (2026-10-30)
+		// The arena guard (RtArenaGuard.comp, 2026-10-30): indices clamped before every build; a stale arena (sequence texel) emptied
+		VkPipelineLayout guardLayout = VK_NULL_HANDLE;
+		VkPipeline		guardPipeline = VK_NULL_HANDLE;
+		Buffer			guardResult;		// 2 uints a slot, host visible: [0] stale indices, [1] out-of-range indices
+		uint64_t		staleFrames = 0, rangeFrames = 0;
+		bool			toldStale = false, toldRange = false;
 		std::vector<CompactReady> compactReady;		// sizes read back, copied at the next frame
 		uint64_t		compactedCount = 0, compactedBefore = 0, compactedAfter = 0;
 		// Probe: the first build frame's first geometries read back from the staging (what the bottom levels were built from), logged once
@@ -813,6 +820,27 @@ namespace {
 				}
 			}
 		}
+		if (h.guardResult.mapped) {
+			uint32_t* counts = (uint32_t*)h.guardResult.mapped + (&s - h.slots) * 2;
+			if (counts[0]) {
+				h.staleFrames++;
+				if (!h.toldStale) {
+					h.toldStale = true;
+					Status("the arena held an earlier flush's data in frame %llu (%u indices): its new geometry was built empty instead of from stale "
+						"indices. The d3d9.dll orders its copy wrongly: use the NVR DXVK fork with 1.8-rt-seq (patch 0034) or later. Logged once.",
+						(unsigned long long)s.frame, counts[0]);
+				}
+			}
+			if (counts[1]) {
+				h.rangeFrames++;
+				if (!h.toldRange) {
+					h.toldRange = true;
+					Status("frame %llu: %u triangle indices past their geometry's vertex count were set to 0 before the build (logged once)",
+						(unsigned long long)s.frame, counts[1]);
+				}
+			}
+			counts[0] = counts[1] = 0;
+		}
 		if (h.compactQueries && !s.compactAsked.empty()) {
 			const uint32_t slot = (uint32_t)(&s - h.slots);
 			std::vector<uint64_t> sizes(s.compactAsked.size());
@@ -901,14 +929,38 @@ namespace {
 		const SharedImage& arena = h.images[NVR_RT_ARENA_IMAGE];
 		uint32_t builds = 0;
 		for (uint32_t i = 0; i < f.opCount; i++) if (f.ops[i].op == NVR_RT_OP_BUILD) builds++;
-		if (builds && f.arenaTexels) {
+		const bool sequence = (f.arenaTexels & NVR_RT_ARENA_SEQUENCE) != 0;
+		const uint32_t arenaTexels = f.arenaTexels & ~NVR_RT_ARENA_SEQUENCE;
+		if (builds && arenaTexels) {
 			const uint64_t capacity = (uint64_t)arena.width * arena.height;
-			const uint32_t rows = (uint32_t)std::min<uint64_t>((f.arenaTexels + arena.width - 1) / arena.width, arena.height);
+			const uint32_t rows = (uint32_t)std::min<uint64_t>((arenaTexels + (sequence ? 1u : 0u) + arena.width - 1) / arena.width, arena.height);
 			VkBufferImageCopy copy = {};
 			copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 			copy.imageExtent = { arena.width, rows, 1 };
 			vkCmdCopyImageToBuffer(cmd, arena.image, VK_IMAGE_LAYOUT_GENERAL, h.staging.buffer, 1, &copy);
 			FullBarrier(cmd);
+			if (h.guardPipeline && h.guardResult.buffer) {
+				struct { uint64_t staging, result; uint32_t first, count, vertices, check, seqTexel, seq; } push = {};
+				push.staging = h.staging.address;
+				push.result = h.guardResult.address + (uint64_t)slot * 8;
+				push.check = sequence ? 1u : 0u;
+				push.seqTexel = arenaTexels;
+				push.seq = NvrRtSequenceOf(f.frame);
+				vkCmdFillBuffer(cmd, h.guardResult.buffer, (VkDeviceSize)slot * 8, 8, 0);
+				FullBarrier(cmd);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, h.guardPipeline);
+				for (uint32_t i = 0; i < f.opCount; i++) {
+					const NvrRtGeometryOp& op = f.ops[i];
+					if (op.op != NVR_RT_OP_BUILD || !op.vertexCount || !op.triangleCount) continue;
+					if ((uint64_t)op.arenaTexel + 3ull * ((uint64_t)op.vertexCount + op.triangleCount) > std::min<uint64_t>(capacity, arenaTexels)) continue;
+					push.first = op.arenaTexel + 3u * op.vertexCount;
+					push.count = 3u * op.triangleCount;
+					push.vertices = op.vertexCount;
+					vkCmdPushConstants(cmd, h.guardLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+					vkCmdDispatch(cmd, (push.count + 63u) / 64u, 1u, 1u);
+				}
+				FullBarrier(cmd);
+			}
 
 			geoms.reserve(builds);
 			infos.reserve(builds);
@@ -922,10 +974,10 @@ namespace {
 				if (op.op != NVR_RT_OP_BUILD) continue;
 				const bool uv = (op.flags & NVR_RT_OP_FLAG_TEXCOORDS) != 0;
 				const uint64_t texels = 3ull * ((uint64_t)op.vertexCount + op.triangleCount) + (uv ? 2ull * op.vertexCount : 0ull);
-				if (!op.id || !op.vertexCount || !op.triangleCount || (uint64_t)op.arenaTexel + texels > std::min<uint64_t>(capacity, f.arenaTexels) ||
+				if (!op.id || !op.vertexCount || !op.triangleCount || (uint64_t)op.arenaTexel + texels > std::min<uint64_t>(capacity, arenaTexels) ||
 					op.triangleCount > h.vk.asProperties.maxPrimitiveCount) {
 					g_shared->failedOps++;
-					Log("geometry %u refused (%u vertices, %u triangles at texel %u, arena %u texels)", op.id, op.vertexCount, op.triangleCount, op.arenaTexel, f.arenaTexels);
+					Log("geometry %u refused (%u vertices, %u triangles at texel %u, arena %u texels)", op.id, op.vertexCount, op.triangleCount, op.arenaTexel, arenaTexels);
 					continue;
 				}
 				const bool dynamic = (op.flags & NVR_RT_OP_FLAG_DYNAMIC) != 0;
@@ -1337,6 +1389,31 @@ namespace {
 			queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
 			queryInfo.queryCount = kCmdRing * kQueriesPerSlot;
 			if (vkCreateQueryPool(h.vk.device, &queryInfo, nullptr, &h.queries) != VK_SUCCESS) h.queries = VK_NULL_HANDLE;
+			{
+				VkPushConstantRange range = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 40 };
+				VkPipelineLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+				layoutInfo.pushConstantRangeCount = 1;
+				layoutInfo.pPushConstantRanges = &range;
+				VkShaderModuleCreateInfo moduleInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+				moduleInfo.codeSize = sizeof(kRtArenaGuardSpv);
+				moduleInfo.pCode = kRtArenaGuardSpv;
+				VkShaderModule module = VK_NULL_HANDLE;
+				if (vkCreatePipelineLayout(h.vk.device, &layoutInfo, nullptr, &h.guardLayout) == VK_SUCCESS &&
+					vkCreateShaderModule(h.vk.device, &moduleInfo, nullptr, &module) == VK_SUCCESS) {
+					VkComputePipelineCreateInfo info = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+					info.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+					info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+					info.stage.module = module;
+					info.stage.pName = "main";
+					info.layout = h.guardLayout;
+					if (vkCreateComputePipelines(h.vk.device, VK_NULL_HANDLE, 1, &info, nullptr, &h.guardPipeline) != VK_SUCCESS) h.guardPipeline = VK_NULL_HANDLE;
+					vkDestroyShaderModule(h.vk.device, module, nullptr);
+				}
+				if (!CreateBuffer(h.vk, kCmdRing * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, h.guardResult))
+					h.guardResult = Buffer();
+				else memset(h.guardResult.mapped, 0, kCmdRing * 8);
+				Log("arena guard: %s", h.guardPipeline && h.guardResult.buffer ? "on (indices clamped before every build, sequence texel checked)" : "OFF (pipeline or buffer failed)");
+			}
 			if (h.vk.cmdWriteAsProperties && h.vk.cmdCopyAs) {
 				VkQueryPoolCreateInfo compactInfo = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 				compactInfo.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;

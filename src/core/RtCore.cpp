@@ -158,6 +158,7 @@ namespace {
 		ID3D9NvrExtShare*		share = nullptr;
 		ID3D9NvrExtRt*			rt = nullptr;
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
+		ID3D9NvrExtRtSeq*		rtSeq = nullptr;	// fork patch 0034 (the arena's sequence texel, 2026-10-30); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
@@ -388,6 +389,9 @@ namespace {
 			return false;
 		}
 		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSkin), (void**)&rtSkin))) rtSkin = nullptr;
+		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSeq), (void**)&rtSeq))) rtSeq = nullptr;
+		if (!rtSeq) Logger::Log("UNOFFICIAL NVR DXVK: RT: this d3d9.dll has no arena sequence check (fork patch 0034, 1.8-rt-seq); on some GPUs its "
+			"geometry copy can run before the geometry is converted (RTX GPU fault, 2026-10-30): update the NVR DXVK fork.");
 		actorsOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Actors") != 0;
 		if (actorsOn && !rtSkin) Logger::Log("UNOFFICIAL NVR DXVK: RT actors off: this d3d9.dll cannot pose skinned geometry (fork patch 0033, 1.8-rt-skin).");
 		NVR_EXT_SHARE_INFO info = {};
@@ -577,6 +581,7 @@ namespace {
 		DxvkCompute::Drop(outputReady);
 		DxvkCompute::Drop(rt);
 		DxvkCompute::Drop(rtSkin);
+		DxvkCompute::Drop(rtSeq);
 		DxvkCompute::Drop(share);
 		if (shared) { UnmapViewOfFile(shared); shared = nullptr; }
 		HANDLE* handles[] = { &mapping, &frameEvent, &statusEvent };
@@ -811,7 +816,7 @@ namespace {
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
 			bool hasUv = entry.textured;	// what the helper has: decided by what the fork staged (an older 0033 drops skinned texcoords)
 			if (pose) {
-				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; if (!entry.sent) continue; }
 				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 				else {
 					NvrRtGeometryOp& op = record->ops[record->opCount++];
@@ -931,7 +936,7 @@ namespace {
 				Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters off: this d3d9.dll does not stage texcoords (fork patch 0029, 1.8-rt-uv).");
 				return;
 			}
-			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; return; }	// next frame
+			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; return; }	// next frame (+1: the sequence texel)
 			if (buildBudget && !land && distance > buildNear && trianglesThisFrame && trianglesThisFrame + info.TriangleCount > buildBudget) {
 				waiting++; budgetWaits++; return;	// far: a later frame (BuildTrianglesPerFrame)
 			}
@@ -1230,7 +1235,12 @@ namespace {
 		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
 		if (c.gatheredFrame != now) {
 			c.Gather();
-			c.rt->FlushStagedGeometry(c.images[0]);
+			// 2026-10-30: with fork 0034 the texel after this frame's geometry gets the frame's sequence number, written after the
+			// conversions; the helper checks it before building (a reordered copy = an earlier flush's data: built empty, logged once)
+			if (c.rtSeq && f.arenaTexels && f.arenaTexels < c.arenaCapacity &&
+				SUCCEEDED(c.rtSeq->FlushStagedGeometrySeq(c.images[0], NvrRtSequenceOf(n), f.arenaTexels)))
+				f.arenaTexels |= NVR_RT_ARENA_SEQUENCE;
+			else c.rt->FlushStagedGeometry(c.images[0]);
 			c.frameInstances.assign(f.instances, f.instances + f.instanceCount);
 			c.frameRecords.assign(f.records, f.records + f.instanceCount);
 			c.gatheredFrame = now;
