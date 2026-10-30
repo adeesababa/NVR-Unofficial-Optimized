@@ -264,7 +264,8 @@ the glow flag is dropped and it is lit like any surface. Without the atlas: as b
 from the light grid at the hit (AmbientLight's world grid, SH toward the hit's normal) instead of the cube's blurriest mip near the
 camera; the cube stays outside the grid. rtrefl-14: lucky22 20261030-083535-slotA reflection alone 0.30 % px (noise 0.01 %, 444
 brighter / 226 darker), int23 20261030-090159-slotA 0.07 % (noise 0.02 %); full pictures in noise. Small because only the estimate
-tier (hits neither on screen nor in the cube) uses it. rt-ao-sky asked whether its GI leaves anything world-space to read at a hit.
+tier (hits neither on screen nor in the cube) uses it. rt-ao-sky (2026-10-30): its RT GI keeps nothing world-space (screen images only,
+no probes or cache), so the light grid stays the hit ambient; a shared probe grid fed by its GI rays would be the next step, if built.
 
 **(3) Cost:** already built and measured: see "Cost: resolution and the ray budget" above.
 
