@@ -274,6 +274,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 #define SKIN_LAMP_SET(k, d) SKIN_LAMP_SET_(k, d)
 #define SKIN_LAMP_SET_(k, d) ptShadow##k = POINT_SHADOW_LOOKUP(k, saturate(1.0f - dot(d, d)))
 #define SKIN_LAMP_SHADOW(k) POINT_SHADOW(k, 1.0f)
+// UNOFFICIAL 2026-10-30 ExteriorForward: how many of the draw's lamps get a shadow lookup (all; the outdoor record's fallback levels
+// ask for fewer when the sun's code beside them runs out of temp registers: SKIN2011, X4505)
+#ifndef SKIN_PT_LAMPS
+    #define SKIN_PT_LAMPS POINTS
+#endif
 
 struct PS_INPUT {
     float4 uv : TEXCOORD0;
@@ -420,16 +425,16 @@ PS_OUTPUT main(PS_INPUT IN) {
         const float ptValid = 1.0f;
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
-            #if POINTS > 0
+            #if POINTS > 0 && SKIN_PT_LAMPS > 0
                 SKIN_LAMP_SET(SKIN_LAMP0, IN.light1.xyz);
             #endif
-            #if POINTS > 1
+            #if POINTS > 1 && SKIN_PT_LAMPS > 1
                 SKIN_LAMP_SET(SKIN_LAMP1, IN.light2.xyz);
             #endif
-            #if POINTS > 2
+            #if POINTS > 2 && SKIN_PT_LAMPS > 2
                 SKIN_LAMP_SET(SKIN_LAMP2, IN.light3.xyz);
             #endif
-            #if POINTS > 3
+            #if POINTS > 3 && SKIN_PT_LAMPS > 3
                 SKIN_LAMP_SET(SKIN_LAMP3, float3(IN.light1.w, IN.light2.w, IN.light3.w));
             #endif
         }

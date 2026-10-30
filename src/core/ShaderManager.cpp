@@ -897,10 +897,22 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 	if (PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Interior]->PointShadowForward &&
 		PointShadowForward::Eligible(PixelShader->Name, Template) &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "Enabled") && TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "ExteriorForward")) {
-		static D3DXMACRO exteriorLamps[3] = { { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { NULL, NULL } };
+		// levels: every lamp; then (the skin shaders, SkinTemplate SKIN_PT_LAMPS) the first 2, the first 1 (SKIN2011 ran out of temp registers)
+		static D3DXMACRO exteriorLamps[3][4] = {
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "2" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "1" }, { NULL, NULL } } };
+		static const char* const exteriorCache[3] = { "ExteriorLamps\\", "ExteriorLamps\Fit1\\", "ExteriorLamps\Fit2\\" };
 		const bool customExterior = PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr;
-		ShaderRecordPixel* record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, customExterior ? "Exteriors\\" : NULL, Template,
-			"ExteriorLamps\\", exteriorLamps);
+		const bool skin = Template.Name && strstr(Template.Name, "SkinTemplate") == Template.Name;
+		ShaderRecordPixel* record = nullptr;
+		int exteriorLevel = 0;
+		for (; exteriorLevel < (skin ? 3 : 1) && !record; exteriorLevel++)
+			record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, customExterior ? "Exteriors\\" : NULL, Template,
+				exteriorCache[exteriorLevel], exteriorLamps[exteriorLevel]);
+		if (record && exteriorLevel > 1)
+			Logger::Log("UNOFFICIAL RT lamp shadows: %s's outdoor lamp-shadow record shadows only the first %d lamp(s) of a draw (the full one did not fit).",
+				PixelShader->Name, exteriorLevel == 2 ? 2 : 1);
 		if (record) {
 			record->PointShadowForward = true;
 			PointShadowForward::ExteriorRecords[PixelShader] = record;
