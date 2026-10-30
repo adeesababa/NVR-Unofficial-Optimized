@@ -608,8 +608,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// iGPU, rt-gi-10/14), which then binds 10 images (the RT core's passes take up to 12 since rt-sun-core 6b9784c3); interleaved GI keeps
 	// its own pass (its whole-grid dispatch and tiles).
 	const bool reuse = gi && rt.GIReuse > 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
-	static int rotationSign = 0;	// the quaternion convention that reproduces viewToWorld (checked once; -1: none did, no merging)
-	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1 && rotationSign >= 0;
+	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1;
 	const bool giPass = reuse && !merged && RtGIShader >= 0;
 	RtAmbient::GIConstants g = {};
 	if (reuse && (giPass || merged)) {
@@ -650,38 +649,22 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 			c.gi.y = 0.0f;	// (no GI rays in the AO pass)
 		}
 		else {
-			// The shader takes last frame's point as the rotation's inverse applied to p + the camera's move (RtAOTrace.comp: transpose(mat3(M))
-			// in the GI pass = M x v in D3DX's rows); here a quaternion (32 bytes of constants were free, a matrix is 64). D3DX's quaternion
-			// convention is checked once against the matrix with a test vector, both signs; if neither matches, no merging.
-			D3DXMATRIX m = last;
-			m._14 = m._24 = m._34 = m._41 = m._42 = m._43 = 0.0f;
-			m._44 = 1.0f;
-			D3DXQUATERNION q;
-			D3DXQuaternionRotationMatrix(&q, &m);
-			if (rotationSign == 0) {
-				const D3DXVECTOR3 a(0.3f, -0.5f, 0.8f);
-				const D3DXVECTOR3 want(m._11 * a.x + m._12 * a.y + m._13 * a.z, m._21 * a.x + m._22 * a.y + m._23 * a.z, m._31 * a.x + m._32 * a.y + m._33 * a.z);
-				for (int sign = 1; sign <= 2 && rotationSign == 0; sign++) {
-					const float s = sign == 1 ? 1.0f : -1.0f;
-					const D3DXVECTOR3 u(-s * q.x, -s * q.y, -s * q.z);	// the shader's u = -prevRot.xyz
-					D3DXVECTOR3 t, t2, got;
-					D3DXVec3Cross(&t, &u, &a);
-					t += a * q.w;
-					D3DXVec3Cross(&t2, &u, &t);
-					got = a + t2 * 2.0f;
-					const D3DXVECTOR3 d = got - want;
-					if (D3DXVec3Length(&d) < 1.0e-3f) rotationSign = sign;
-				}
-				if (rotationSign == 0) {
-					rotationSign = -1;
-					Logger::Log("UNOFFICIAL RT AO: GI reuse could not express the view's rotation as a quaternion; the GI keeps its own pass.");
-				}
-				else Logger::Log("UNOFFICIAL RT AO: GI reuse at full rate runs inside the AO pass (one pass; quaternion sign %d).", rotationSign);
-			}
-			const float s = rotationSign == 2 ? -1.0f : 1.0f;
-			c.prevRot = D3DXVECTOR4(s * q.x, s * q.y, s * q.z, q.w);
-			c.reuse = reuseNow;
-			c.gi3.z = rotationSign > 0 ? 1.0f : 0.0f;
+			// The shader takes last frame's point as M x (p + the camera's move), M = last frame's viewToWorld as stored (its rows, as the GI
+			// pass's transpose(mat3(M)) reads it). 32 bytes of constants were free, the matrix is 64: rows 0 and 1 go, row 2 is their cross
+			// x the determinant's sign (rt-gi-17: a quaternion could not hold the game's view; it need not be a pure rotation).
+			const D3DXMATRIX& m = last;
+			const D3DXVECTOR3 r0(m._11, m._12, m._13), r1(m._21, m._22, m._23), r2(m._31, m._32, m._33);
+			D3DXVECTOR3 x;
+			D3DXVec3Cross(&x, &r0, &r1);
+			const float sign = D3DXVec3Dot(&x, &r2) < 0.0f ? -1.0f : 1.0f;
+			c.prevRot = D3DXVECTOR4(r0.x, r0.y, r0.z, r1.x);
+			c.reuse = D3DXVECTOR4(r1.y, r1.z, reuseNow.x, reuseNow.y);
+			c.gi3.z = 1.0f;
+			c.gi3.w = reuseNow.z;
+			c.sky.z = reuseNow.w;
+			c.sky.w = sign;
+			static bool logged = false;
+			if (!logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: GI reuse at full rate runs inside the AO pass (one pass, 10 images; view determinant sign %+.0f).", sign); }
 		}
 		prevViewToWorld = c.viewToWorld;
 		prevCamera = camera;

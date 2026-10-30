@@ -58,9 +58,11 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 lampColor[8];  // rgb x dimmer
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
     vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; y AOAlpha (0 skip, 1 opaque, 2 test);
-                        // z 1 = GIReuse in this pass (2026-10-30), w unused
-    vec4 prevRot;       // (2026-10-30, gi3.z) last frame's viewToWorld rotation as a quaternion (xyz, w): v = its inverse applied to p + reuse.xyz
-    vec4 reuse;         // xyz this frame's camera minus last frame's, w the M cap + 64 x GISpatial (0: no history)
+                        // z 1 = GIReuse in this pass (2026-10-30), w (gi3.z) the camera's move z
+    // (2026-10-30, gi3.z) last frame's viewToWorld as stored, rows 0 and 1 (row 2 = their cross x sky.w, the determinant's sign: the
+    // game's view need not be a pure rotation, a quaternion could not hold it); the camera's move since; the M cap in sky.z.
+    vec4 prevRot;       // xyz row 0, w row 1 x
+    vec4 reuse;         // xy row 1 yz, zw the camera's move xy (z in gi3.w); sky.z the M cap + 64 x GISpatial (0: no history), sky.w the sign
 } cb;
 #endif
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
@@ -426,10 +428,11 @@ void main() {
                 : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
                 : true;
     if (cb.gi.y > 0.5 && cb.gi3.z > 0.5) {
-        // (2026-10-30) GIReuse at full rate, in this pass: last frame's view by the quaternion's inverse, then the shared reuse step.
-        vec3 a = p + cb.reuse.xyz, u = -cb.prevRot.xyz;
-        vec3 v = cb.reuse.w > 0.5 ? a + 2.0 * cross(u, cross(u, a) + cb.prevRot.w * a) : vec3(0.0);
-        ReuseGI(texel, p, n, viewZ, bias, true, v, cb.reuse.w);
+        // (2026-10-30) GIReuse at full rate, in this pass: last frame's view from its matrix's rows, then the shared reuse step.
+        vec3 a = p + vec3(cb.reuse.zw, cb.gi3.w);
+        vec3 r0 = cb.prevRot.xyz, r1 = vec3(cb.prevRot.w, cb.reuse.xy), r2 = cross(r0, r1) * cb.sky.w;
+        vec3 v = cb.sky.z > 0.5 ? vec3(dot(r0, a), dot(r1, a), dot(r2, a)) : vec3(0.0);
+        ReuseGI(texel, p, n, viewZ, bias, true, v, cb.sky.z);
     }
     else if (cb.gi.y > 0.5 && !giTile) {
         // (no GI ray this frame here: the image keeps its last value)
