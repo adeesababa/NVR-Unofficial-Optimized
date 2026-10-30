@@ -70,6 +70,14 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   0.68 % of pixels darker (repeats 0.02 / 0.09 %); trace 12.5-14 ms (helper, iGPU). Novac motel: 0 % traced (its lamps are far from
   that spot): needs a closer spot. Open: the left street lamp's own pool on the ground and the facade beside it go dark: the lamp's
   head shadowing its own light? rtlamp-27 tries ExteriorLampStop 40 / 100 / 200.
+- rtlamp-27: not the lamp head (darker pixels 0.67 / 0.64 / 0.58 % at stop 40 / 100 / 200). rtlamp-28 (each lamp alone, DebugView 3):
+  the traced shadows themselves are right (lamp 0 lights the street, the wreck's shadow sharp; each other lamp its own patch); OneSided
+  changes 0.12 %. Cause: far surfaces shadowing themselves (the fixed 0.5-unit start offset is less than the depth-rebuilt position's
+  error 1000s of units away). Fix 9c7d2b09 (DLL 63ADFB41): StartOffsetPerUnit 0.002, the offset grows with the view depth (all lamp
+  traces). rtlamp-29 (20261030-035748-slotA, PASS): darker pixels vs today 0.64 % (0) -> 0.23 % (0.002) -> 0.20 % (0.005); the facade
+  gets its lamp light back; coverage 35-36 %. Default 0.002 (0.005 gains little and leaks more at contacts).
+- Open: SKIN2011's outdoor record (constant table); a Novac spot near its lamps and a Strip spot; the cube fallback (not built: the
+  RT-only records are what fits beside the sun's code); iGPU frame cost (trace 12.5-14 ms in Freeside, the frame noisy).
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
