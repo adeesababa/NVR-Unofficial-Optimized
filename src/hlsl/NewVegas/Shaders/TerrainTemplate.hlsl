@@ -185,6 +185,55 @@ float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
 #endif
 
+#ifndef TERRAIN_LAMP_RT
+    #define TERRAIN_LAMP_RT 0
+#endif
+#if TERRAIN_LAMP_RT && defined(NUM_PT_LIGHTS)
+// UNOFFICIAL 2026-10-30 RT lamp shadows ExteriorForward on the LAND (core/PointShadowForward.h BindTerrain; docs/next/FORK-RT-LAMPS.md).
+// The land's lamps are the game's land light list (PointLightPosition, the land's own space), not lamps the DLL can name per draw. A
+// vector between two points is the same in every space, so a lamp's camera-relative position is the pixel's (shadowWorldPos) plus its
+// vector to the lamp; it is matched by position to the pixel's traced entries (RtLampTrace.comp: three slots + visibility, the traced
+// frame reprojected). Register audit (2026-10-30, the 28 land shaders): samplers 0-14 taken, s15 is TerrainBlending's (so this record
+// is made only with it off); c146-c166 and c168-c175 free.
+float4 NVR_TerrainLampSlot[20] : register(c146);            // the trace's slots 0-19: xyz camera-relative position, w 1 = traced
+row_major float4x4 NVR_TerrainLampReproject : register(c168); // camera-relative position (this frame) -> the traced frame's clip
+float4 NVR_TerrainLampRT : register(c172);                  // x 1 = on, y depth tolerance, z log2(farZ) / 4095, w strength
+sampler2D NVR_TerrainLampVis : register(s15);               // the traced result (point sampled, set by the DLL)
+
+// The pixel's three traced entries: their visibility and their lamps' positions (once a pixel; the slot table read in a loop, the
+// only way ps_3_0 indexes constants)
+void TerrainLampEntries(float3 worldPos, out float3 vis, out float3 p0, out float3 p1, out float3 p2, out float3 ok) {
+    vis = 1.0f; ok = 0.0f; p0 = 0.0f; p1 = 0.0f; p2 = 0.0f;
+    [branch] if (!(NVR_TerrainLampRT.x > 0.5f)) return;
+    float4 clip = mul(float4(worldPos, 1.0f), NVR_TerrainLampReproject);
+    [branch] if (!(clip.w > 1.0f)) return;
+    float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
+    [branch] if (any(abs(uv - 0.5f) > 0.5f)) return;
+    float2 traced = tex2Dlod(NVR_TerrainLampVis, float4(uv, 0.0f, 0.0f)).xy;
+    float code = floor(traced.y / 1024.0f);
+    float err = abs(exp2(code * NVR_TerrainLampRT.z) - clip.w) / clip.w;
+    [branch] if (!(err <= NVR_TerrainLampRT.y)) return;
+    float hi = floor(traced.x / 1024.0f);
+    float3 e = float3(traced.x - 1024.0f * hi, hi, traced.y - 1024.0f * code);
+    float3 v = floor(e / 64.0f);
+    float3 s = e - 64.0f * v;
+    vis = v / 15.0f;
+    [loop] for (int j = 0; j < 20; j++) {
+        float4 L = NVR_TerrainLampSlot[j];
+        [flatten] if (abs(s.x - j) < 0.5f) { p0 = L.xyz; ok.x = L.w; }
+        [flatten] if (abs(s.y - j) < 0.5f) { p1 = L.xyz; ok.y = L.w; }
+        [flatten] if (abs(s.z - j) < 0.5f) { p2 = L.xyz; ok.z = L.w; }
+    }
+}
+// A land lamp's shadow: the visibility of the traced entry at its position (within 8 units), else lit (not traced here, as before)
+float TerrainLampShadow(float3 lampPos, float3 vis, float3 p0, float3 p1, float3 p2, float3 ok) {
+    float3 m = ok * float3(length(p0 - lampPos) < 8.0f, length(p1 - lampPos) < 8.0f, length(p2 - lampPos) < 8.0f);
+    float c = dot(m, 1.0f);
+    return c > 0.5f ? lerp(1.0f, dot(m, vis) / c, NVR_TerrainLampRT.w) : 1.0f;
+}
+#endif
+
+
 // UNOFFICIAL 2026-10-27 displacement ObjectBlend ([Shaders.Terrain.Displacement], Compute/Tess/TerrainDisplace.tese): the world's
 // depth as the land starts (terrain blending's copy, TerrainShaders::PrepareDisplaceDepth), for the land's tessellation evaluation
 // shader, which may only read textures this pixel shader uses, in s0-s7 (NVR DXVK 1.7-displace). s6 is BaseMap[6]'s, free below 7
@@ -478,15 +527,24 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 lighting = getSunLighting(lightTS, LinColor(SunColor.rgb), eyeDir, combinedNormal, LinColor(AmbientColor.rgb), baseColor, gloss, specExponent, 1.0, parallaxShadowMultiplier, shadowNormal);
 
     #if defined(NUM_PT_LIGHTS)
+        #if TERRAIN_LAMP_RT
+            float3 tlVis, tlP0, tlP1, tlP2, tlOk;
+            TerrainLampEntries(shadowWorldPos, tlVis, tlP0, tlP1, tlP2, tlOk);
+        #endif
         [loop] for (int i = 0; i < PointLightCount; i++) {
             float3 pointlightDir = PointLightPosition[i].xyz - IN.lPosition.xyz;
             float att = vanillaAtt(pointlightDir, PointLightPosition[i].w);
         
             [branch]
             if (att > 0.001) {
+                #if TERRAIN_LAMP_RT
+                    float tlShadow = TerrainLampShadow(shadowWorldPos + pointlightDir, tlVis, tlP0, tlP1, tlP2, tlOk);
+                #else
+                    float tlShadow = 1.0f;
+                #endif
                 pointlightDir = mul(tbn, pointlightDir);
                 // UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl): att as before, the objects' decode (MatchEverywhere) or the shape.
-                lighting += getPointLightLighting(pointlightDir, LampAttOther(att), LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
+                lighting += tlShadow * getPointLightLighting(pointlightDir, LampAttOther(att), LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
             }
         }
     #endif

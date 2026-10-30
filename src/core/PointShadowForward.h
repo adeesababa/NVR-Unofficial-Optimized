@@ -3,6 +3,7 @@
 #include "PointShadowSchedule.h"
 #include "LampFixtures.h"
 #include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28
+#include <unordered_set>	// UNOFFICIAL 2026-10-30 TerrainRecords
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
 //
@@ -72,6 +73,7 @@ namespace PointShadowForward {
 	// LoadShader), chosen outdoors while ExteriorActive (NiD3DPixelShaderEx::SetupShader)
 	inline std::unordered_map<const void*, ShaderRecordPixel*> ExteriorRecords;
 	inline bool ExteriorActive = false;		// this frame: outdoors, ExteriorForward lamps published and the trace live
+	inline std::unordered_set<const void*> TerrainRecords;	// the land's records among ExteriorRecords (TERRAIN_LAMP_RT: their own constants)
 	inline int SlotCount = 0;
 	inline int Focus = -1;					// DebugView 3: the Slots entry of the lamp in cube slot 0 (red in views 1 and 2), -1 none
 	inline unsigned TraceDraws = 0, TraceDrawsWithLamp = 0;	// DebugView 3: draws that got the focus lamp, and of those the ones lit by it
@@ -668,6 +670,26 @@ namespace PointShadowForward {
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }
 	}
 
+	// UNOFFICIAL 2026-10-30 the land's outdoor lamp-shadow record (TerrainTemplate.hlsl TERRAIN_LAMP_RT): the traced slots' positions
+	// (camera-relative, slots 0-19) c146-c165, the reprojection c168-c171, c172 (on, depth tolerance, depth code unit, strength), the
+	// traced result on s15. The same for every land draw of the frame.
+	inline void BindTerrain() {
+		float c[27][4] = {};
+		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+		for (int j = 0; j < 20; j++) {
+			const D3DXVECTOR4& w = RtLampShadows::TracedLampWorld[j];
+			c[j][0] = w.x - camera.x; c[j][1] = w.y - camera.y; c[j][2] = w.z - camera.z; c[j][3] = w.w;
+		}
+		TheRenderManager->device->SetPixelShaderConstantF(146, &c[0][0], 20);
+		float r[5][4] = {};
+		memcpy(r, RtLampShadows::Reproject, sizeof(RtLampShadows::Reproject));
+		const bool on = RtLampShadows::Mode > 0.5f && RtLampShadows::Mode < 1.5f;	// traced (not the debug views)
+		r[4][0] = on ? 1.0f : 0.0f; r[4][1] = RtLampShadows::RtConstant[1]; r[4][2] = RtLampShadows::RtConstant[2]; r[4][3] = Params[0];
+		TheRenderManager->device->SetPixelShaderConstantF(168, &r[0][0], 5);
+		IDirect3DBaseTexture9* traced = RtLampShadows::Stage15Texture();
+		Bind(15, traced, true, true);
+	}
+
 	// SetShadersHook, after the game bound a pass's shaders and set its constants.
 	inline void SetForDraw(NiD3DPixelShaderEx* pixelShader, bool world, bool firstPerson) {
 		Bound = false;
@@ -679,6 +701,7 @@ namespace PointShadowForward {
 		if (!ours && ExteriorActive) {	// UNOFFICIAL 2026-10-30 ExteriorForward: the outdoor record
 			auto found = ExteriorRecords.find(pixelShader);
 			ours = found != ExteriorRecords.end() && pixelShader->ShaderHandle == found->second->ShaderHandle;
+			if (ours && TerrainRecords.count(pixelShader)) { BindTerrain(); return; }	// the land: its own constants, no per-object lamps
 		}
 		if (!ours)
 			return;	// only those records read c174-c187
