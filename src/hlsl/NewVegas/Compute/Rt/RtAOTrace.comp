@@ -39,6 +39,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 lampColor[8];
     vec4 gi2;           // x GIOffscreen, y depth tolerance, z GIClamp, w GIInterleave
     vec4 reuse;         // xyz this frame's camera minus last frame's (a scene point last frame = p + xyz), w the M cap (0: no history)
+                        // + 64 x GISpatial (the neighbours merged, 0-4)
 } cb;
 #else
 layout(set = 0, binding = 1, std140) uniform Constants {
@@ -380,13 +381,16 @@ void main() {
     // disocclusion, a screen edge) borrows a neighbour's last frame (2 texels round the reprojected point, depth within 15 %) instead
     // of tracing: v1 traced there, and one such texel made its whole wave pay for the bounce (rt-gi-10/11: GIInterleave 4 cost ~12-14
     // ms where a quarter of the full rate's 26 is 6.5). Nothing usable: empty (M 0) until its tile's turn.
-    float cap = cb.reuse.w, historyM = 0.0;
+    float cap = mod(cb.reuse.w, 64.0), historyM = 0.0;
+    int spatial = int(cb.reuse.w / 64.0);
     vec4 history = vec4(0.0);
+    vec3 v = vec3(0.0);
+    ivec2 qt = ivec2(-1);
     if (cap > 0.5) {
-        vec3 v = transpose(mat3(cb.prevViewToWorld)) * (p + cb.reuse.xyz);
+        v = transpose(mat3(cb.prevViewToWorld)) * (p + cb.reuse.xyz);
         if (v.z > 1.0) {
             vec2 q = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
-            ivec2 qt = ivec2(floor(q * cb.projection.zw));
+            qt = ivec2(floor(q * cb.projection.zw));
             const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2));
             int tries = giTile ? 1 : 5;
             for (int k = 0; k < tries && historyM < 0.5; k++) {
@@ -404,6 +408,31 @@ void main() {
     }
     vec3 chosen = history.a > 0.0 ? history.rgb / history.a : vec3(0.0);
     float weightSum = Luma(chosen) * history.a * historyM, m = historyM;
+
+    // (2026-10-30) GISpatial: ReSTIR's spatial step, from last frame's reservoirs: up to 4 neighbours (random, 3-12 texels round the
+    // reprojected point, turned each frame) whose surface matches (depth 5 %, normal ~18 deg) join with their weight sums, each M at
+    // most cap / 2. No visibility test and no Jacobian (a neighbour's sample is taken as light arriving here too): fine across a
+    // floor or a wall, can leak a little across contact shadows (that is what the depth / normal tests and the short radius limit).
+    if (spatial > 0 && qt.x >= 0 && v.z > 1.0) {
+        float frame = cb.origin.w;
+        float spin = 6.2831853 * fract(Ign(vec2(texel) + 211.0) + frame * 0.618034);
+        for (int k = 0; k < spatial; k++) {
+            float a = spin + float(k) * 2.3999632;  // the golden angle
+            float r = 3.0 + 9.0 * fract(0.5 + float(k) * 0.618034 + frame * 0.381966);
+            ivec2 at = qt + ivec2(round(vec2(cos(a), sin(a)) * r));
+            if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
+            vec4 b = imageLoad(prevB, at);
+            if (!(b.x > 0.5) || abs(b.y - v.z) > 0.05 * v.z + 2.0 || dot(OctDecode(b.zw), n) < 0.95) continue;
+            vec4 h = imageLoad(prevA, at);
+            if (!(h.a > 0.0) || any(isnan(h.rgb)) || any(isinf(h.rgb))) continue;
+            vec3 l = h.rgb / h.a;
+            float mk = min(b.x, max(cap * 0.5, 1.0));
+            float w = Luma(l) * h.a * mk;
+            weightSum += w;
+            m += mk;
+            if (fract(Ign(vec2(texel) + 257.0 + 31.0 * float(k)) + frame * 0.7548777) * weightSum < w) chosen = l;
+        }
+    }
 
     // The first frame of a reservoir (cap 0: no history at all) traces everywhere.
     if (giTile || cap < 0.5) {

@@ -613,7 +613,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
 		memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
 		g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
-		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (float)rt.GIReuse)
+		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (float)rt.GIReuse + 64.0f * rt.GISpatial)
 							  : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		prevViewToWorld = c.viewToWorld;
 		prevCamera = camera;
