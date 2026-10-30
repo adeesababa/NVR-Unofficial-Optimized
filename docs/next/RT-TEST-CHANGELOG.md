@@ -58,3 +58,16 @@ nothing here is pushed, released or installed unless the user says so.
   visible bounce (28 % px), reflections + AO trace, all on 157 ms; cube A/B 0.04 %.
 - DLL CRC32 3B5D85BB, NvrRtHelper 3B01C4F1 (protocol 3), fork d3d9 rtsun\fork-0033 B8CF2308 (0001-0029 + 0033).
   Package `H:\_NVR-pkg\rt-test-36b99651\`.
+
+## Round 4 (2026-10-29 ~21:55): bd4cd0b2
+- In (asked by the main session through the intshadow session): claude/rootplan-round3 e38ee863 = claude/material-buffer 9eb91a64
+  (MaterialBuffer, X4505 land fix, ObjectMotion, LightCommonLamps, ShadowPool; all off) + rootplan round 3:
+  [Main.Main.Quality] CapturedNormalsLeanHook default ON (their A/B: same pictures, Ultra-Luxe -0.16 ms CPU-bound, run
+  20261029-211101-slotB), [Shaders.Terrain.Displacement] FarHysteresis 0 (off, unproven), live FSR / DLSS switching fixes;
+  also brings the WaterGun demo (BloodFluid water tool, off) and the HDR latch as 73b55860 (same change as combo's f45d6c86).
+- Conflicts: PointShadowForward.h includes (kept RtLampShadows.h + ShadowPool.h), Reflections.cpp (kept the RT spread binding for
+  techniques 2/4 and ObjectMotion's Temporal flag for technique 3). DxvkCompute.cpp back to CRLF. Toml parses; includers of the
+  changed headers touched and rebuilt.
+- Bench PASS: 1070 RT off (20261029-212551-slotC) vs round 0 = 7/7 at noise level; iGPU interior (214436-slotA): RT as round 3
+  (lamp core p50 27 ms, GI bounce, all on 154 ms; cube A/B 0.04 %).
+- DLL CRC32 956D1566; helper 3B01C4F1 and fork-0033 B8CF2308 unchanged. Package `H:\_NVR-pkg\rt-test-bd4cd0b2\`.
