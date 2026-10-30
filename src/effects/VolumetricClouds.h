@@ -83,7 +83,7 @@ public:
 		IDirect3DSurface9* ShadowSurface = nullptr;
 		IDirect3DTexture9* ProbeTexture = nullptr;	// UNOFFICIAL: the layer probe's 1 x 1 target
 		IDirect3DSurface9* ProbeSurface = nullptr;
-		IDirect3DTexture9* SkyProbeTexture = nullptr;	// UNOFFICIAL 2026-10-30: the cloud sky probe (128 x 128 hemi-octahedral, TESR_CloudSkyProbe)
+		IDirect3DTexture9* SkyProbeTexture = nullptr;	// UNOFFICIAL 2026-10-30: the cloud sky probe (64 x 64 hemi-octahedral, TESR_CloudSkyProbe)
 		IDirect3DSurface9* SkyProbeSurface = nullptr;
 	};
 	TexturesStruct	Textures;
@@ -115,8 +115,9 @@ public:
 	// the whole upper sky (VolumetricCloudsSkyProbe.frag), drawn after this frame's clouds when Reflections asks. SkyProbeReady: drawn
 	// this frame or the one before.
 	void	RenderSkyProbe(IDirect3DDevice9* Device);
-	bool	SkyProbeReady() const { return skyProbeFrame != UINT_MAX && frame - skyProbeFrame <= 2; }
+	bool	SkyProbeReady() const { return skyProbeFrame != UINT_MAX && skyProbeBands >= 8 && frame - skyProbeFrame <= 2; }
 	UINT	skyProbeFrame = UINT_MAX;
+	UINT	skyProbeBands = 0;	// bands drawn since start (the probe is whole after 8; one 8-row band a frame)
 	float	ShadowStrengthForSunFar();
 	bool	shadowsViaSunFar = false;
 	// UNOFFICIAL 2026-10-21, test tool (SettingShots 'cloudcoverage'): puts the eased coverage away from the weather's, as right after a

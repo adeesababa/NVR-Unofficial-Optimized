@@ -106,8 +106,8 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_CloudHistory1", &Textures.HistoryTexture[1], &Textures.HistorySurface[1], lowWidth, lowHeight, D3DFMT_A16B16G16R16F);
 	Textures.HistoryRead = Textures.HistoryTexture[0];
 	TheTextureManager->RegisterTexture("TESR_CloudHistory", (IDirect3DBaseTexture9**)&Textures.HistoryRead);
-	// UNOFFICIAL 2026-10-30 the cloud sky probe for reflections (RenderSkyProbe): 128 x 128, 128 KB.
-	TheTextureManager->InitTexture("TESR_CloudSkyProbe", &Textures.SkyProbeTexture, &Textures.SkyProbeSurface, 128, 128, D3DFMT_A16B16G16R16F);
+	// UNOFFICIAL 2026-10-30 the cloud sky probe for reflections (RenderSkyProbe): 64 x 64, 32 KB.
+	TheTextureManager->InitTexture("TESR_CloudSkyProbe", &Textures.SkyProbeTexture, &Textures.SkyProbeSurface, 64, 64, D3DFMT_A16B16G16R16F);
 	// UNOFFICIAL 2026-10-14 ShadowResolution (read once, at start): the cloud shadow map's size, 256 (as before) to 2048. Over the
 	// same ShadowRange a bigger map gives crisper cloud shadow edges; its cost grows with the texel count (it is drawn every frame).
 	const int shadowResolution = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "ShadowResolution");
@@ -653,13 +653,14 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	frame++;
 }
 
-// UNOFFICIAL 2026-10-30: technique 12 into the 128 x 128 probe. Vulkan only (there is no D3D9 technique 12): ExtRender is called
-// itself, never through Render, so nothing can fall back to the .fx.
+// UNOFFICIAL 2026-10-30: technique 12 into the 64 x 64 probe, one 8-row band a frame (the whole sky every 8 frames: the clouds drift
+// slowly; the first whole map 8 frames after start). Vulkan only (there is no D3D9 technique 12): ExtRender is called itself, never
+// through Render, so nothing can fall back to the .fx. (The first try, every texel of 128 x 128 a frame at full steps: 12 ms on the iGPU.)
 void VolumetricCloudsEffect::RenderSkyProbe(IDirect3DDevice9* Device) {
 	if (!Textures.SkyProbeSurface || !DxvkCompute::PassesOn()) return;
 	static GpuTimer probeTimer("  Clouds sky probe");
 	GpuProfileScope gpu(probeTimer, Device);
-	if (ExtRender(Device, Textures.SkyProbeSurface, Textures.SkyProbeSurface, 12, false, Textures.SkyProbeSurface)) skyProbeFrame = frame;
+	if (ExtRender(Device, Textures.SkyProbeSurface, Textures.SkyProbeSurface, 12, false, Textures.SkyProbeSurface)) { skyProbeFrame = frame; skyProbeBands++; }
 }
 
 // UNOFFICIAL 2026-10-21: the cloud shadow map, once a frame. SunFar asks first (it runs before the clouds in the frame), so the
@@ -968,6 +969,11 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 
 	if (pass == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, ext.Pipeline, resources, count + 5, &push, sizeof(push), true);
+	if (pass == 4) {	// UNOFFICIAL 2026-10-30 the sky probe: this frame's band only (the rest keeps its texels)
+		const LONG band = (LONG)(skyProbeBands % 8) * 8;
+		const RECT rows = { 0, band, 64, band + 8 };
+		return ExtDrawTo(ext.Pipeline, &RenderTarget, 1, resources, count + 5, &push, sizeof(push), &rows);
+	}
 	if (!ExtDrawTo(ext.Pipeline, &RenderTarget, 1, resources, count + 5, &push, sizeof(push))) return false;
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
 	return true;
