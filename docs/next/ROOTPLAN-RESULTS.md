@@ -196,3 +196,32 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   texels in the shadow lookup itself, which a deeper shadow shows more). **Proposed:** default stays 0 (a look change, and the specks
   are their own fix: the lookup's filter, not the light balance); 0.5 as the suggested value for players who want deeper lamp shadows
   (specks no worse than today except Vault 21 +0.2 points). Handed to the RT merge train.
+
+## Round 6 (2026-10-29 23:58), claude/rootplan-round3
+- **16. The "lit specks" are not in the cube shadow lookup.** The holes % metric (cpucheck intshadow_holes, reused in rounds 4-5) sets
+  the darkening to 0 where the shadows-off picture is darker than 6/255, so near-black pixels inside a shadow counted as holes: that
+  was the saloon's whole 6.3 % and most of the bar's. With a brightness floor of 16 (scratch specks.py; also isolated dots = hole pixels
+  with at most 4 others in their 5x5): saloon 0.00 %, bar 0.04 %, Lucky 38 0.53 %, Vault 21 1.54 %. Mapped, the remaining isolated dots
+  are light through the Vault 21 catwalk's grating (correct) and lit silhouettes (chair / table edges, railings, lamp globes, pillars);
+  none on flat shadowed surfaces. No lookup change (filter / bias would only risk acne). Corrected numbers for ShadowContrast 0 / 0.5 /
+  1.0 (one pass): Lucky 38 0.53 / 0.54 / 0.74, Vault 21 1.54 / 1.51 / 1.64, saloon 0.00 / 0.08 / 0.08, bar 0.04 / 0.05 / 0.04 %.
+- **17. ShadowContrast for the game's lamp passes** (ManyLampsOnePass off, the release default; c50a4c1c, timer 54bee6ac, DLL 423B7B96;
+  needs MaterialBuffer). Base passes that have the ambient (the game's light pass with lamps 2-3, metal or not) darken in the shader
+  as the one-pass shader does; the added DIFFUSE lamp passes (plain and FoldHighlights fold) add the light their shadows took to
+  MaterialBuffer's alpha (alpha-only mask, only for ONE/ONE blends: measured ~400 such passes a frame in Lucky 38, 0 with another
+  blend), and one step after the main list multiplies the scene by 1 - strength x lost / (lit + lost) (a copy of the frame + a
+  full-screen multiply blend, MSAA-safe). Off: every shader as before (same instruction counts). Runs (toml look-scmp / -expo = the
+  user toml with ManyLampsOnePass false + MaterialBuffer true): 20261029-232933-slotB (specks), -232827-slotA (brightness),
+  -235502-slotA (cost).
+
+  | view | solid % today / 0.5 / 1.0 / P80 | specks@16 today / 1.0 | room after exposure 0.5 / 1.0 / P80 |
+  |---|---|---|---|
+  | Lucky 38 | 6.44 / 6.99 / 7.78 / 8.62 | 0.52 / 0.63 | -0.8 / -2.2 / +29.5 % |
+  | Vault 21 | 8.42 / 8.74 / 9.27 / 11.60 | 1.36 / 1.50 | -0.8 / -2.3 / +50.9 % |
+  | saloon | 2.57 / 3.50 / 4.92 / 4.13 | 0.03 / 0.09 | -0.8 / -2.0 / +21.6 % |
+  | bar | 26.1 / 32.7 / 36.6 / 30.1 | 0.00 / 0.02 | -5.0 / -14.1 / +19.8 % |
+
+  Cost: the step is 0.036-0.050 ms on the GTX 1070 (F10 "ShadowContrast step"); the lamp passes' alpha write is lost in the frame's
+  noise. **PASS** (under 0.1 ms, same look as the one-pass version). The bar view darkens more (-14 % at 1.0) because much of it lies
+  in lamp shadow. **Proposed defaults:** ShadowContrast stays 0 (a look change; the user / Conor decide); 0.5 the suggested value
+  (rooms -1..-5 %); with ManyLampsOnePass off it also needs MaterialBuffer on.
