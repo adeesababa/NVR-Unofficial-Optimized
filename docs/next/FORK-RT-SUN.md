@@ -160,7 +160,14 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   head, hands in place, torso and legs posed wrong: the game's skin shaders read the indices as `blendIndices.zyxw * 765.01`
   (EnvTemplate.hlsl), i.e. bone k = byte k in memory; NVR had un-swizzled the D3DCOLOR again -> c9e185d8 (plain bytes). rtsun-14
   also posed 135 partitions a frame (the town's NPCs within 8192): RT 15.5 ms p50 at 720p on the iGPU -> `ActorRadius` 3000
-  (live). rtsun-15 checks both (results below).
+  (live). rtsun-15 (20261029-200755-slotC): ActorRadius works (20 partitions a frame, RT 9.0 ms), head / forearms / hips right, but
+  torso, upper arms, lower legs missing. rtsun-16 (logging): the player's only skinned meshes in the scene were meathead01,
+  meatneck01, MeatCapLimbs, MeatCapBody: the hidden dismemberment gore caps; the real body was dropped because its skin shader is
+  not a lighting property -> 4743a567: any shader for skinned meshes, skins that do not render (BSDismemberSkinInstance
+  IsRenderable) and disabled dismember partitions stay out. **rtsun-17 (20261029-203927-slotC): the whole body (Arms01,
+  FaceGenFace, hands, torso, legs) is in the scene and matches the screen silhouette exactly in DebugView 6; its traced shadow
+  and self-shadowing show in DebugView 4.** The helper refit (1e0612a6) is in since rtsun-16: RT p50 9.0 -> 6.7 ms for the same
+  actors (helper builds 6.8 -> 4.6 ms); rtsun-17 with the whole body: 7.7 ms p50 (alpha casters + actors + sun, 720p, iGPU).
 - **Soft sun shadows** (`SunAngle` degrees, 0 = hard by default; `Denoise` on): each pixel traces toward a different point of the
   sun's disc each frame (interleaved gradient noise + a golden-ratio step), then the shared denoiser. rtsun-13: SunAngle 2 gives
   soft, plausible penumbrae on the ground shadows and smooth foliage shadows from one ray a pixel; with Denoise 0 the same edges
