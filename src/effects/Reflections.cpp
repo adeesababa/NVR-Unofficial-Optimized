@@ -8,6 +8,7 @@
 #include "../core/PixelInspector.h"
 #include "../core/RtCoreClient.h"	// UNOFFICIAL 2026-10-28 (RT reflections)
 #include "../core/RtCore.h"
+#include "../core/GlassMask.h"	// UNOFFICIAL 2026-10-29 glass reflections
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -42,6 +43,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
 	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h)
+	Settings.GlassReflect = std::clamp(TheSettingManager->GetSettingF(section, "GlassReflect"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-29 (core/GlassMask.h)
 	// UNOFFICIAL 2026-10-25 Reflectivity: the PBR section's one reflectivity control reaches the floor reflections too (a missing key: 1).
 	SettingManager::Configuration::ConfigNode node;
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
@@ -586,6 +588,7 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,   FALSE, 16 },	// LINEAR, CLAMP
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,   FALSE, 20 },	// POINT, CLAMP
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
+		{ 1, 23, NVR_EXT_BIND_SAMPLED_IMAGE, 22, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-29 TESR_GlassMask (index 20: after the samplers)
 	};
 	const UINT ReflTextureCount = 16;
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 1).
@@ -755,6 +758,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	uniforms.grid2 = Constants.Grid2;
 	uniforms.grid3 = Constants.Grid3;
 	uniforms.material = Constants.Material;
+	uniforms.material.w = GlassMask::ThisFrame() ? Settings.GlassReflect * (TheShaderManager->GameState.isExterior ? Settings.ReflectivityExterior : Settings.ReflectivityInterior) : 0.0f;	// UNOFFICIAL 2026-10-29
 	uniforms.depthConstants = *depthConstants;
 	uniforms.cameraData = *cameraData;
 	uniforms.cameraPosition = *cameraPosition;
@@ -776,6 +780,9 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
 	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = point;
 	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	// UNOFFICIAL 2026-10-29 glass reflections: the glass mask (core/GlassMask.h), or the depth as a placeholder (never read: material.w 0).
+	IDirect3DTexture9* glass = GlassMask::ThisFrame();
+	resources[20].Slot = 22; resources[20].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[20].pResource = glass ? (IUnknown*)glass : (IUnknown*)depth;
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
 		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
