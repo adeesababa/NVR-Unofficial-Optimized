@@ -140,3 +140,12 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   **PASS** -- one TAA line + one "switched live" line per change, FSR 2 / FSR 3.1 textures remade each time, no crash, the RenderScale 1.0
   case logged as native "-- was upscaled before: each ... has its own RenderScale". The slot has no NvrDlssHelper.exe, so DLSS fell back
   to FSR 2 (logged; one redundant "FSR 2.2.1 -> FSR 2.2.1 (DLSS not running)" line): the helper itself is untested here.
+
+## Round 4 (2026-10-29 21:50), claude/rootplan-round3
+- **11. SharedDrawState** (`[Main.Main.Quality]`, live, NVR DXVK, with the lean hook; f2c92ecd, DLL 80473250): LinearScene's per-draw
+  hook reads the render target / pixel shader / blend states CapturedNormals tracks (core/DrawState.h) instead of up to six device Get
+  calls. ObjectMotion has no per-draw device hook (it notes geometry from the game's pass hooks, 0.03 ms), so there was nothing of its
+  to merge. **PASS**, run 20261029-213536-slotA (Ultra-Luxe, the user's toml, CPU-bound, ABAB x4): 7.13 -> 6.88 ms (-0.25 ms, 4 of 4
+  rounds) on top of the lean hook; the same decisions (970 draws in linear light, 299 in the stored curve, on and off; ~1070 of ~1270
+  draws read the shared state); pictures equal (<=0.03% >16 levels). Default on (toml only).
+- **13.** Asked the RT merge session to take claude/rootplan-round3 (lean hook default on: its A/B was clean).
