@@ -688,6 +688,7 @@ RayLength = 1.0                       # Multiplier for the length of rays.
 RayVisibility = 50.0                  # Exponent for the godrays contrast.
 SunGlareEnabled = true                # Strength of the effect will be scaled with the weather sunglare setting.
 TimeEnabled = false                    # Strength of the effect will be strongest around sunset/sunrise and not at all during noon.
+SunsetGlareFix = true                 # UNOFFICIAL (2026-10-29), CHANGES THE IMAGE: the sun glare the god rays start from gets the sunset colour boost ([Shaders.Sky.Main] SunsetR / G / B, red by default) at sunrise and sunset only, as the sun itself does. false = as before: the whole boost with the sun high and none at sunset (a red tint in the glare and the rays all day). Applies immediately.
 
 [_Shaders.GodRays.Coloring]
 RayR = 1.0                            # Red channel for custom coloring of the godrays. Use Saturate setting to tweak the global influence.

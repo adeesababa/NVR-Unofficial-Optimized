@@ -24,7 +24,8 @@ void main() {
     if (depth * horizon == 0.0) { o_color = vec4(0.0, 0.0, 0.0, 1.0); return; }
 
     float sunset = pows(sunHeight, 8.0);
-    vec3 sunColor = linearize(cb.sunColor).rgb + mix(linearize(cb.sunsetColor.rgb), vec3(0.0), sunset);
+    // UNOFFICIAL 2026-10-29 SunsetGlareFix (godRaysRay.w 1): the sunset boost at the horizon, as GlareSunColor in the .fx; 0: as before
+    vec3 sunColor = linearize(cb.sunColor).rgb + linearize(cb.sunsetColor.rgb) * (cb.godRaysRay.w > 0.5 ? sunset : 1.0 - sunset);
     float glarePower = mix(0.1, 8.0, sunset);
 
     vec3 sunGlare = vec3(pows(dot(cb.viewSpaceLightDir.xyz, normalize(reconstructPositionFromDepth(uv, rawDepth))), 180.0) * glarePower);

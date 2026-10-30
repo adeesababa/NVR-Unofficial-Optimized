@@ -10,7 +10,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     mat4 invProjectionTransform;   // TESR_InvProjectionTransform
     vec4 reciprocalResolution;     // TESR_ReciprocalResolution
     vec4 sunColor;                 // TESR_SunColor
-    vec4 godRaysRay;               // TESR_GodRaysRay: x intensity, y length, z density, w visibility
+    vec4 godRaysRay;               // TESR_GodRaysRay: x intensity, y length, z density, w SunsetGlareFix (UNOFFICIAL 2026-10-29)
     vec4 godRaysRayColor;          // TESR_GodRaysRayColor: rgb, w saturate
     vec4 godRaysData;              // TESR_GodRaysData: x passes, y luminance, z multiplier, w time enabled
     vec4 viewSpaceLightDir;        // TESR_ViewSpaceLightDir

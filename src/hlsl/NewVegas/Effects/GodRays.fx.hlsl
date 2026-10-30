@@ -37,7 +37,7 @@ static const float multiplier = TESR_GodRaysData.z;
 static const float intensity = TESR_GodRaysRay.x;
 static const float stepLengthMult = TESR_GodRaysRay.y;
 static const float glareReduction = TESR_GodRaysRay.z;
-static const float godrayCurve = TESR_GodRaysRay.w;
+static const float godrayCurve = TESR_GodRaysRay.w;	// (UNOFFICIAL 2026-10-29: w is SunsetGlareFix now; this was never used)
 static const float sunHeight = 1 - shade(TESR_SunPosition.xyz, blue.xyz);
 
 struct VSOUT {
@@ -57,13 +57,23 @@ VSOUT FrameVS(VSIN IN) {
 	return OUT;
 }
 
+// UNOFFICIAL 2026-10-29 [Shaders.GodRays.Main] SunsetGlareFix (TESR_GodRaysRay.w 1; a tester: a red tint "from the sky" whatever the sky
+// colour settings, the user: red in the cloud reflections on water): the sun glare of the sky mask gets the sunset colour boost
+// ([Shaders.Sky.Main] SunsetR / G / B, red by default) near the horizon, as GetSunColor gives the sun its boost. sunHeight here is
+// 1 - the sun's height, so sunset = pows(sunHeight, 8) is 1 at the horizon and 0 overhead; the old lerp(boost, 0, sunset) added the
+// whole boost with the sun high and none at sunset. 0: as before.
+float3 GlareSunColor(float sunset) {
+	float3 boost = linearize(TESR_SunsetColor.rgb);
+	return linearize(TESR_SunColor).rgb + boost * (TESR_GodRaysRay.w > 0.5f ? sunset : 1.0f - sunset);
+}
+
 float4 SkyMask(VSOUT IN) : COLOR0 {
 	
 	float2 uv = IN.UVCoord / scale;
 	clip((uv <= 1) - 1);
 
 	float sunset = pows(sunHeight, 8);
-    float3 sunColor = linearize(TESR_SunColor).rgb + lerp(linearize(TESR_SunsetColor.rgb), 0, sunset); // linearise
+    float3 sunColor = GlareSunColor(sunset);	// UNOFFICIAL 2026-10-29 SunsetGlareFix (was linearize(TESR_SunColor).rgb + lerp(linearize(TESR_SunsetColor.rgb), 0, sunset))
 
 	float glarePower = lerp(0.1, 8.0, sunset); // increase flare boost during sunrise/sunset
 
@@ -279,7 +289,7 @@ float4 DedicatedSkyMask(VSOUT IN) : COLOR0 {
 	[branch] if (depth * horizon == 0.0f) return float4(0.0f, 0.0f, 0.0f, 1.0f);
 
 	float sunset = pows(sunHeight, 8);
-	float3 sunColor = linearize(TESR_SunColor).rgb + lerp(linearize(TESR_SunsetColor.rgb), 0, sunset);
+	float3 sunColor = GlareSunColor(sunset);	// UNOFFICIAL 2026-10-29 SunsetGlareFix (as SkyMask)
 	float glarePower = lerp(0.1, 8.0, sunset);
 
 	float3 sunGlare = pows(dot(TESR_ViewSpaceLightDir.xyz, normalize(reconstructPositionFromDepth(uv, rawDepth))), 180) * glarePower;
