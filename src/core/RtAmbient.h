@@ -41,6 +41,7 @@ namespace RtAmbient {
 		int		DenoiseKernel = 3;		// (2026-10-30) RtDenoise's a-trous kernel for both denoisers: 3 (9 taps) or 5 (25 taps)
 		int		GIInterleave = 1;		// 1, 2 or 4 (2026-10-29): the GI rays in every / every 2nd / every 4th 8 x 8 tile a frame			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
+		float	GlowGI = 0.0f;			// [0-4] (2026-10-30) glow-mapped surfaces (neon, lit windows, screens) light the bounce: their colour x this; 0 = off
 		int		GISpatial = 0;			// [0-4] (2026-10-30) ReSTIR GI's spatial step: neighbours' reservoirs merged (GIReuse > 0)
 		int		GIReuse = 8;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
 										// texel, at most this many frames of samples behind it; 0 = the bounce inside the AO pass as before
@@ -69,6 +70,7 @@ namespace RtAmbient {
 		Current.DenoiseKernel = TheSettingManager->GetSettingI(s, "DenoiseKernel") >= 5 ? 5 : 3;
 		Current.GIReuse = std::clamp(TheSettingManager->GetSettingI(s, "GIReuse"), 0, 32);
 		Current.GISpatial = std::clamp(TheSettingManager->GetSettingI(s, "GISpatial"), 0, 4);
+		Current.GlowGI = std::clamp(TheSettingManager->GetSettingF(s, "GlowGI"), 0.0f, 4.0f);
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -84,7 +86,7 @@ namespace RtAmbient {
 		D3DXVECTOR4	gi;				// x distance, y rays (0 or 1), z the lamps given, w GIAmbient
 		D3DXVECTOR4	sunDir;			// xyz toward the sun (scene = world axes), w 1 = the sun lights (exteriors, above the horizon)
 		D3DXVECTOR4	sunColor;		// rgb the sun's light on a surface facing it
-		D3DXVECTOR4	ambient;		// rgb the ambient (sky) light, the upper hemisphere's
+		D3DXVECTOR4	ambient;		// rgb the ambient (sky) light, the upper hemisphere's; w GlowGI (2026-10-30)
 		D3DXVECTOR4	lampPos[GILampsMax];	// xyz scene space, w reach
 		D3DXVECTOR4	lampColor[GILampsMax];	// rgb x dimmer
 		D3DXVECTOR4	gi2;			// (GI v2) x GIOffscreen, y the on-screen depth tolerance (share), z GIClamp, w Interleave

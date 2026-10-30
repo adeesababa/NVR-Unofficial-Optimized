@@ -53,7 +53,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 gi;            // x distance, y rays (0 or 1), z lamps given (0-8), w GIAmbient (the ambient's share at the hit, 0-1)
     vec4 sunDir;        // xyz toward the sun, w 1 = the sun lights
     vec4 sunColor;      // rgb the sun's light on a surface facing it
-    vec4 ambient;       // rgb the ambient (sky) light from above
+    vec4 ambient;       // rgb the ambient (sky) light from above, w GlowGI (2026-10-30: glow-mapped hits' own light, 0 = off)
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
@@ -234,7 +234,16 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
             if (Visible(lift, l / dist, max(dist - 16.0, 0.0))) e += lampLight[chosen] * (total / weights[chosen]);
         }
     }
-    return vec4(Clamped(albedo * e * cb.gi2.x), t / cb.gi.x);
+    // (2026-10-30) GlowGI (ambient.w, 0 = off): a hit on a draw with a glow map (record flag 0x04: neon, lit windows, lamp globes,
+    // screens) also sends its own light, its colour (the hit texture's) x GlowGI. The flag covers the whole mesh while the glow map
+    // marks only parts of it (a facade's windows), so only the bright parts of the colour count (its strongest channel from 0.35 up to
+    // 0.8): the dark wall round a window stays dark. On-screen hits returned above already carry their glow (the lit frame).
+    vec3 glow = vec3(0.0);
+    if (cb.ambient.w > 0.0 && (r.flags & 0x04u) != 0u) {
+        float peak = max(albedo.r, max(albedo.g, albedo.b));
+        glow = albedo * (smoothstep(0.35, 0.8, peak) * cb.ambient.w);
+    }
+    return vec4(Clamped(albedo * e * cb.gi2.x + glow), t / cb.gi.x);
 }
 
 #ifndef RT_GI_PASS

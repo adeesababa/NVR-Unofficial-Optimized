@@ -577,7 +577,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		auto lin = [](float v) { return powf((std::max)(v, 0.0f), 2.2f); };
 		c.sunDir = D3DXVECTOR4(sunDir.x, sunDir.y, sunDir.z, sunUp ? 1.0f : 0.0f);
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
-		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
+		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), rt.GlowGI);	// (w: GlowGI, 2026-10-30)
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
 		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, rt.GIClamp, (float)rt.Interleave);
 		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
