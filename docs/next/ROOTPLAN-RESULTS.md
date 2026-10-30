@@ -312,3 +312,51 @@ Runs 20261030-072313-slotC (road-2, clean) and -075309-slotC (road-3; overlap do
 every 100-500 frames while walking, and FarHysteresis 256 takes that to 0. On the Strip approach no far land is drawn. A pop players
 would see is not there at these spots, so the hysteresis default is left alone (no picture A/B was needed). If a tester names a
 road where land pops, run the same list there.
+
+## Round 9
+
+**Step 21: the dedicated full-screen interior shadow pass.** effects/ShadowsInteriors.cpp (D3D9 technique DedicatedInteriorShadows,
+Vulkan ShadowsInteriorsBlur/Apply.frag), called from ShaderManager.cpp (interiorApply, about line 2024).
+
+When it runs:
+- **Forward lamp shadows on** (`[Shaders.ShadowsInteriors.Forward] Enabled`, default, and PBR drawing this frame): the pass is only
+  `KeepDarkening` (default true): the lamp mask (PointShadows.fx) is drawn with its cube-map lookups switched off
+  (TESR_ShadowFade.z = 0) and applied unblurred (no DarkeningBlur) in one pass, darkening (Darkness 0.65) what no lamp in the mask's
+  list reaches. It is not a shadow. The mask's list = 12 shadow lamps + 12 tracked + the extra list (the 40 nearest lamps).
+  With KeepDarkening off, neither the mask nor the pass is drawn (the buffer is cleared once).
+- **Forward off, or PBR off**: the old full path: PointShadows.fx with the live cube slots 0-11, both blurs on the two G16R16 targets,
+  then the apply. That path reads the same live cube maps, so TwoSidedCasters reaches it (it changes how the cubes are drawn); the
+  ShadowPool does not (pool cubes are published to the forward shaders only), and ShadowContrast does not (forward shaders only).
+
+So with forward on there is nothing of the rework's (pool lamps, two-sided, contrast) to bring to it: those are about lamp shadows,
+and this pass draws none. What is left is its cost and its look.
+
+Run 20261030-084344-slotB (list rootplan-int-1, user toml, 600 frames, GPU profile, 2 rounds forward + reversed; overlapped rtlamp,
+so the GPU timer per pass is the number to read). GPU ms per pass (GTX 1070, FSR 3.1 at 0.67), mean of the 2 rounds:
+
+| room | base mask + apply | KeepDarkening off | InteriorShadowFold | MaskHalfRes |
+|---|---|---|---|---|
+| Lucky 38 | 0.071 + 0.022 = 0.093 | 0 | 0.071 + 0 (fog +0.019) = 0.090 | 0.044 + 0.017 = 0.061 |
+| Vault 21 | 0.068 + 0.023 = 0.091 | 0 | 0.070 + 0 (fog +0.020) = 0.090 | 0.048 + 0.018 = 0.066 |
+| saloon | 0.075 + 0.021 = 0.096 | 0 | 0.075 + 0 (fog +0.012) = 0.087 | 0.047 + 0.019 = 0.066 |
+| bar | 0.084 + 0.028 = 0.112 | 0 | 0.065 + 0 (fog +0.015) = 0.080 | 0.053 + 0.024 = 0.077 |
+
+Pictures (960x540; base vs base is 9-10 % of pixels > 2, 0.00-0.01 % > 16):
+
+| room | KeepDarkening off: > 16 / mean | Fold: > 16 / mean | MaskHalfRes: > 16 / mean |
+|---|---|---|---|
+| Lucky 38 | 0.01 % / +0.08 | 0.01 % / +0.08 | 0.00 % / +0.01 |
+| Vault 21 | 0.33 % / +0.42 | 0.01 % / +0.22 | 0.00 % / +0.04 |
+| saloon | 0.00 % / +0.16 | 0.00 % / +0.17 | 0.00 % / +0.03 |
+| bar | 0.00 % / +0.10 | 0.00 % / +0.09 | 0.00 % / +0.01 |
+
+What the darkening still adds with forward on: almost nothing. Its only visible part (Vault 21, 1781 pixels, 101 -> 119 of 255) is
+not unlit corners but distant rooms lit by their OWN lamps (the window room upper left, the far doorways: rootplan\round9\
+v21-dark-diff.png): those lamps are not among the mask's 40 nearest, so the pass darkens light that is really there. Everywhere else
+it is within base vs base. Cost 0.09-0.11 ms GPU per room (the old "about 0.8 ms" in the toml text predates LampMaskScissor and
+MaskSkipFar). MaskHalfRes saves ~0.03 ms with the same picture; Fold saves 0.01-0.03 ms but still differs next to the void.
+
+**Proposal: retire the darkening with forward on: KeepDarkening default false** (the switch already exists; no new code). It
+removes 0.09-0.11 ms GPU and one full-screen pass, and its only visible effect is a wrong one (far lamp-lit rooms darkened). Not
+flipped here: it changes the image (Vault 21), so it is the user's call. The full old path stays for forward off / PBR off (it is the
+only lamp shadow there). If the darkening is kept, MaskHalfRes on is the free part (-0.03 ms, same picture).
