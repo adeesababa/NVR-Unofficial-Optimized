@@ -115,6 +115,20 @@ in Parallax.hlsl. Those are the 6-layer land shaders built with terrain blending
 - Not the cause: the game's MSAA. The large dark patches seen over cell (23,22) from 6000+ units up are the same on native
   MSAA 4x and on the fork without MSAA. They are shadows.
 
+**Native D3D9 on NVIDIA with the game's MSAA off: the near ground white (found 2026-10-30, fixed).** Runs 20261030-171859
+(one effect off per shot: only VolumetricFog off cures it), 20261030-172205 (fog switches: DistantFogBlend 0 cures it),
+20261030-173015 / -173135 (both fixes: no band, distant fog no longer reaches the near ground).
+- Cause 1, depth: on native D3D9 an NVIDIA card has no RESZ, so the depth comes through NVAPI StretchRectEx, which copied the
+  game's whole depth surface into the depth texture. Here that surface is 1280x1024 for a 1280x720 picture, so the depth was
+  squashed: below 720/1024 of the screen (row 506 of 720) every pixel read far. Every depth effect was wrong there. Fixed:
+  only the picture's own top-left area is copied (log: "UNOFFICIAL depth (NVAPI): the game's depth surface is ...").
+- Cause 2, fog: the distant fog's height fade `exp(-z / (80000 * DistantFogHeight))` passes 1 below z 0, so the lerp toward
+  the sky ran past the sky colour to white and then inf, which TAA kept (a frozen picture). Clamped to 0..1 in
+  VolumetricFog.fx.hlsl. The Vulkan copy (Compute/VolumetricFog.glsl, lines 701 and 842) has the same formula and still
+  needs the clamp plus an .spv rebuild (WSL).
+- Who it hits: NVIDIA cards on native D3D9 (no DXVK) with the game's MSAA off, when the game's depth surface is bigger
+  than the picture. With MSAA the game's depth is a separate surface the size of the picture.
+
 **Bench notes.**
 - Native D3D9 cannot use the iGPU here: it has no monitor, so it is not in D3D9's adapter list and the game quits at start
   when sD3DDevice names it. Native runs use the GTX 1070.
