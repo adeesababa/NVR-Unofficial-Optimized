@@ -402,6 +402,8 @@ namespace {
 		uint32_t					indexOffset = NVR_RT_NO_DATA;
 		uint32_t					uvOffset = NVR_RT_NO_DATA;		// the texcoords (float2), alpha-tested geometry only
 		uint32_t					dataWords = 0;
+		uint32_t					vertices = 0;
+		bool						dynamic = false;				// built with ALLOW_UPDATE: later frames refit it in place
 	};
 
 	// The geometry data's words: first fit.
@@ -588,6 +590,7 @@ namespace {
 		uint64_t		gpuUs[64] = {}, buildUs[64] = {}, sceneUs[64] = {}, traceUs[64] = {}, responseUs[64] = {};
 		uint32_t		gpuCount = 0, buildCount = 0, sceneCount = 0, traceCount = 0, responseCount = 0;
 		bool			loggedFirst = false;
+		uint64_t		refits = 0, fullBuilds = 0;	// dynamic (actor) geometry: in-place updates / full builds
 		// Probe: the first build frame's first geometries read back from the staging (what the bottom levels were built from), logged once
 		Buffer			probe;
 		uint32_t		probeIds[3] = {}, probeVertices[3] = {}, probeTriangles[3] = {}, probeCount = 0;
@@ -842,7 +845,13 @@ namespace {
 					Log("geometry %u refused (%u vertices, %u triangles at texel %u, arena %u texels)", op.id, op.vertexCount, op.triangleCount, op.arenaTexel, f.arenaTexels);
 					continue;
 				}
-				ReleaseGeometry(h, op.id, frameNumber);	// rebuilt under the same id: the old one goes
+				const bool dynamic = (op.flags & NVR_RT_OP_FLAG_DYNAMIC) != 0;
+				auto existing = h.geometries.find(op.id);
+				// Actors: the same partition again (same counts) is refit in place (UPDATE: far cheaper than a build; the topology is the
+				// same, only the posed positions move). Anything else is rebuilt under the same id: the old one goes.
+				const bool refit = dynamic && existing != h.geometries.end() && existing->second.dynamic &&
+					existing->second.vertices == op.vertexCount && existing->second.triangles == op.triangleCount;
+				if (!refit) ReleaseGeometry(h, op.id, frameNumber);
 				VkAccelerationStructureGeometryKHR g = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
 				g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
 				g.flags = (op.flags & NVR_RT_OP_FLAG_ALPHA) ? 0u : VK_GEOMETRY_OPAQUE_BIT_KHR;	// alpha-tested: the rays see the candidates
@@ -855,14 +864,32 @@ namespace {
 				g.geometry.triangles.indexData.deviceAddress = h.staging.address + ((VkDeviceSize)op.arenaTexel + 3ull * op.vertexCount) * 4;
 				VkAccelerationStructureBuildGeometryInfoKHR b = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
 				b.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-				b.flags = (op.flags & NVR_RT_OP_FLAG_DYNAMIC) ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
-					: VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;	// actors: rebuilt every frame
+				b.flags = dynamic ? (VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR)
+					: VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;	// actors: posed every frame, refit after the first build
 				b.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 				b.geometryCount = 1;
 				b.pGeometries = &g;
 				VkAccelerationStructureBuildSizesInfoKHR sizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
 				h.vk.buildSizes(h.vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &b, &op.triangleCount, &sizes);
+				if (refit) {
+					Geometry& old = existing->second;
+					b.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+					b.srcAccelerationStructure = old.as;
+					b.dstAccelerationStructure = old.as;
+					if (old.vertexOffset != NVR_RT_NO_DATA)	// the posed positions for the shaders too (the triangle list is the same)
+						dataCopies.push_back({ (VkDeviceSize)op.arenaTexel * 4, (VkDeviceSize)old.vertexOffset * 4, (VkDeviceSize)op.vertexCount * 12 });
+					geoms.push_back(g);
+					infos.push_back(b);
+					ranges.push_back({ op.triangleCount, 0, 0, 0 });
+					scratchOffsets.push_back(scratchTotal);
+					scratchTotal += AlignUp(sizes.updateScratchSize, align);
+					h.refits++;
+					continue;
+				}
+				if (dynamic) h.fullBuilds++;
 				Geometry geo;
+				geo.vertices = op.vertexCount;
+				geo.dynamic = dynamic;
 				geo.size = sizes.accelerationStructureSize;
 				geo.triangles = op.triangleCount;
 				if (!h.structures.Allocate(h.vk, geo.size, geo.block, geo.offset)) { g_shared->failedOps++; continue; }
@@ -1112,6 +1139,9 @@ namespace {
 				(unsigned long long)frameNumber, g_shared->geometries, (unsigned long long)g_shared->triangles, (unsigned long long)(g_shared->geometryBytes >> 20),
 				g_shared->lastInstances, g_shared->gpuTimeUsAvg / 1000.0, g_shared->buildUsAvg / 1000.0, g_shared->sceneUsAvg / 1000.0, g_shared->traceUsAvg / 1000.0,
 				g_shared->responseUsAvg / 1000.0, g_shared->responseUsMax / 1000.0);
+		if (frameNumber % 600 == 0 && (h.refits || h.fullBuilds))
+			Log("frame %llu: dynamic (actor) geometry: %llu refits in place, %llu full builds so far", (unsigned long long)frameNumber,
+				(unsigned long long)h.refits, (unsigned long long)h.fullBuilds);
 		return true;
 	}
 
