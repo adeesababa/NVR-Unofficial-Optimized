@@ -84,6 +84,10 @@ RayGen pass on top. The 1070 never gets that far: `RtCoreClient::Ready()` is fal
 **Denoising** for rough surfaces is the existing chain: one GGX-jittered ray per half-resolution pixel per frame (the same
 direction the march used), then temporal history (Temporal 0.85) and the edge-aware blur (wider when rough), then the firefly cap.
 Rougher than MaxRoughness gets no rays: blurred reflections gain little from exact hits and cost the same.
+2026-10-30: the shared RtDenoise (rt-sun-core) is NOT used here, on purpose: its RGB mode reprojects by the surface's depth (right for
+diffuse GI, not for a reflection, whose image moves with the reflected thing), and it costs 3.9 ms half-res 3x3 / 14.6 ms full 3x3 on
+the iGPU, more than this chain; repeat shots of the reflection alone already agree to 0.00-0.02 % of pixels. Revisit only with a
+specular mode (hit-distance reprojection) and a visible noise problem.
 
 **Roughness** comes from what the trace already uses: MaterialAware's `_rmaos` buffer where a surface has a map, else the
 Dry/WetRoughness of the floor guess.
