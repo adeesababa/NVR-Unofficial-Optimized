@@ -360,3 +360,42 @@ MaskSkipFar). MaskHalfRes saves ~0.03 ms with the same picture; Fold saves 0.01-
 removes 0.09-0.11 ms GPU and one full-screen pass, and its only visible effect is a wrong one (far lamp-lit rooms darkened). Not
 flipped here: it changes the image (Vault 21), so it is the user's call. The full old path stays for forward off / PBR off (it is the
 only lamp shadow there). If the darkening is kept, MaskHalfRes on is the free part (-0.03 ms, same picture).
+
+## Round 10 (bugs on the installed round 9, a93b6f18): FSR blur ring, Vault 21 shadow pops
+
+Branch claude/motion-ring-fix (on a93b6f18). Bench aid 7be29d14 / 74c4db9c: setting-shot lists take `walk <units/s> [seconds]` (the
+player glides forward and back; it pauses after the list's own moveto / setpos).
+
+**FSR blur circle round the player (FSR + LowResEffects): ObjectMotion's sky layers. Fixed, on by default (6abf22e1).** With low-res
+effects the upscale runs after ObjectMotion's buffer is made, so FSR read it. While walking, the sky layers (AtmosphereDome, CloudDome,
+HorizonLayerClear/Overcast, LowerLayer: radius 450-1060 units, centred on the camera) moved by exactly the camera's move (log, run
+20261030-121733-slotA: `move 0.00 -3.20 0.00, camera 0.00 -3.20 0.00`), were drawn as "moved", and their depth matched the ground's along
+a ring 7-15 m round the player (the 2 % + 4 unit depth test): that ground got the camera's move as its own and FSR reprojected it as if it
+walked along. ObjectMotionSkipCameraFollow (3fc982fc): a geometry whose move equals the camera's counts as still. With it on, nothing
+was drawn as moved for 1300 frames of walking in Primm (no 600-frame line at all); off, 6-8 a frame. Workaround on a93b6f18: ObjectMotion off.
+
+**Vault 21 shadow pops: the live slots went to lamps that light nothing visible.** New SHADOW FLIPS log line (F10 profile): lamps
+gaining / losing a shadow per second, live vs pool, and (VisibleRanking 2 = measure only) those lighting something visible.
+- ShadowHold (8dbf90d2, off): pool members held N s, a pool map kept until redrawn, flicker under 2 % not redrawn, FadeIn continuous
+  across live / pool. In the pool runs (20261030-121229-slotA) it held nothing: the pool flips (3-5/s at PoolLamps 64) were not rank-edge.
+- VisibleRanking (f5b2bdae, 40ac4c92, off; 0 / 1 / 2 = off / on / measure only): after the depth combine, one occlusion-queried 160x90
+  pass per candidate lamp keeps the pixels whose visible surface lies within its reach (walls hide what is behind); answers read a few
+  frames later without a flush, smoothed; ranking = brightness x that share, unmeasured next, lighting nothing visible last. ShadowHold
+  above 0 then also holds a slot holder (still lighting something visible) for N s. Cost 0.07-0.10 ms GPU (128 lamps measured a frame).
+
+Run 20261030-123241-slotA (lamp-pop-6, Vault 21 casino floor, walking back and forth 100 u/s, PoolLamps 0, 2 rounds):
+
+| variant | lamps with a shadow that light something visible | flips/s (visible) |
+|---|---|---|
+| LightPoints 24, today's ranking | 7.2 of 24 | 0.00 |
+| 24, VisibleRanking | 24.0 | 2.07 |
+| 24, VisibleRanking + ShadowHold 2 | 23.9 | 0.00 |
+| 24, today's + LampSwitchMargin 0.5 | 7.8 | 0.32 |
+| LightPoints 64, today's ranking | 19.2 of 64 | 0.00 |
+| 64, VisibleRanking | 64.0 | 6.86 |
+| 64, VisibleRanking + ShadowHold 2 | 62.3 | 0.15 |
+
+Lucky 38 (20261030-122534-slotA): no flips in any variant; visible shadowed lamps 11.8 -> 19.6 at LightPoints 24 with VisibleRanking.
+The pops were not reproduced at these spots with today's ranking (0 flips); what the numbers show is that 2/3 of the slots were spent on
+lamps behind walls. **Proposal: VisibleRanking 1 + ShadowHold 2 (+ FadeIn 0.25)**: three times the visible lamp shadows at LightPoints
+24, no churn. Not defaulted: it changes the picture (more lamp shadows where the player looks). Not done: fade-out of a lost live slot.
