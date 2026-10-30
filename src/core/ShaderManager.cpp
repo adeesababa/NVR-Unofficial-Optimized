@@ -2214,7 +2214,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			RenderEffectToRT(Effects.FlashlightBeam->Textures.VolumetricSurface, Effects.FlashlightBeam, true);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		{ Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface); PixelInspector::AfterFrame(Effects.Flashlight); }
+		{ Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->TechniqueThisFrame(), true, SourceSurface); PixelInspector::AfterFrame(Effects.Flashlight); }
 		// Specular's two quarter-resolution steps (the blocks' normals, then the light they reflect) into its own buffers,
 		// then its main technique adds that to the image in the chain.
 		if (specularRenders) {

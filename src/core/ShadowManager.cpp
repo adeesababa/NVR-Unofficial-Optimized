@@ -2688,7 +2688,9 @@ void ShadowManager::RenderShadowMaps() {
 		}
 	}
 
-	if (TheShaderManager->Effects.Flashlight->Enabled && TheShaderManager->Effects.Flashlight->spotLightActive && TheShaderManager->Effects.Flashlight->Settings.renderShadows) {
+	// (UNOFFICIAL 2026-10-30: not while the RT lamp shadows' traced flashlight shadow stands in for the map)
+	if (TheShaderManager->Effects.Flashlight->Enabled && TheShaderManager->Effects.Flashlight->spotLightActive && TheShaderManager->Effects.Flashlight->Settings.renderShadows &&
+		!RtLampShadows::FlashlightReplacing()) {
 		GpuProfileScope gpu(flashlightMapsTimer, Device);
 		// render shadow maps for spotlights
 		

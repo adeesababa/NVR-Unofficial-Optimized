@@ -99,6 +99,23 @@ namespace RtLampShadows {
 	inline IDirect3DTexture9* MaskTexture = nullptr;
 	inline IDirect3DSurface9* MaskSurface = nullptr;
 	inline bool ExteriorFrame = false, MaskThisFrame = false, ExteriorLive = false;
+	// UNOFFICIAL 2026-10-30 Flashlight ([Shaders.ShadowsInteriors.RT] Flashlight, off): the flashlight's (Pip-Boy light's) shadow traced
+	// (RtFlashTrace.comp, 1 lit / 0 blocked, screen space); Flashlight's shadow pass reads it instead of its shadow map
+	// (FlashlightShadowsRT.frag), and the shadow map is not drawn meanwhile.
+	inline int imageFlash = -1, flashShader = -1;
+	inline IDirect3DTexture9* FlashTexture = nullptr;
+	inline IDirect3DSurface9* FlashSurface = nullptr;
+	inline bool FlashThisFrame = false, FlashLive = false;
+	inline bool FlashWanted() {
+		FlashlightEffect* flash = TheShaderManager->Effects.Flashlight;
+		return CompiledIn && imageFlash >= 0 && flashShader >= 0 && flash && flash->Enabled && flash->spotLightActive &&
+			TheShaderManager->SpotLightPosition[0].w > 0.0f && TheSettingManager->GetSettingI(kSection, "Flashlight") &&
+			TheSettingManager->GetSettingI(kSection, "Live");
+	}
+	// Flashlight.cpp ExtRender: this frame's traced flashlight shadow, or null (then its shadow map, as before)
+	inline IDirect3DBaseTexture9* FlashlightShadow() { return FlashThisFrame && FlashTexture ? FlashTexture : nullptr; }
+	// ShadowManager: the flashlight's shadow map is not drawn while the trace stands in for it
+	inline bool FlashlightReplacing() { return FlashLive && RtCore::Running(); }
 	inline IDirect3DTexture9* TableTexture = nullptr;		// the lamp table as the GPU sees it (copied into imageTable each frame)
 	inline IDirect3DSurface9* TableSurface = nullptr;
 	inline IDirect3DTexture9* TableStaging = nullptr;		// written by the CPU (system memory), UpdateSurface into TableTexture
@@ -249,7 +266,7 @@ namespace RtLampShadows {
 
 	// --- The RT core user -----------------------------------------------------------------------------------------------------------
 	inline bool Wants() {
-		return CompiledIn && LampsThisFrame && LampCount > 0 && (!TheShaderManager->GameState.isExterior || ExteriorFrame);
+		return (CompiledIn && LampsThisFrame && LampCount > 0 && (!TheShaderManager->GameState.isExterior || ExteriorFrame)) || FlashWanted();
 	}
 
 	// Exteriors: ShadowManager, every frame outdoors right after GetNearbyLights: the mask's lamps (the shadow lamps, then the tracked
@@ -295,6 +312,7 @@ namespace RtLampShadows {
 		const bool denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
 		for (int i = 0; i < 4; i++) imageSplit[i] = denoise ? RtCore::AddImage(splitNames[i], w, h, NVR_EXT_SHARED_R32F) : -1;
 		imageMask = TheSettingManager->GetSettingI(kSection, "Exteriors") ? RtCore::AddImage("NVR RT lamps mask", w, h, NVR_EXT_SHARED_R32F) : -1;
+		imageFlash = TheSettingManager->GetSettingI(kSection, "Flashlight") ? RtCore::AddImage("NVR RT flashlight", w, h, NVR_EXT_SHARED_R32F) : -1;
 	}
 
 	// The lamp table into its GPU texture (scene space = world minus CameraPosition), for the copy into imageTable
@@ -344,7 +362,43 @@ namespace RtLampShadows {
 		IDirect3DBaseTexture9* depth = Texture("TESR_DepthBuffer");
 		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
 		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
-		if (!depth || !normals || !cameraData) return;
+		FlashThisFrame = false;
+		if (!depth || !normals || !cameraData) { FlashLive = false; return; }
+		// Flashlight: its own pass, before (and without) the lamps
+		bool inputsIn = false;
+		if (FlashWanted()) {
+			static UINT flashWidth = 0, flashHeight = 0;
+			if (!FlashTexture || flashWidth != w || flashHeight != h) {
+				flashWidth = w; flashHeight = h;
+				if (FlashSurface) { FlashSurface->Release(); FlashSurface = nullptr; }
+				if (FlashTexture) { FlashTexture->Release(); FlashTexture = nullptr; }
+				Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &FlashTexture, nullptr);
+				if (FlashTexture) FlashTexture->GetSurfaceLevel(0, &FlashSurface);
+			}
+			if (FlashSurface && RtCore::CopyIn(imageDepth, depth) && RtCore::CopyIn(imageNormals, normals)) {
+				inputsIn = true;
+				const D3DXMATRIX& fv = TheRenderManager->viewMatrix;
+				const D3DXMATRIX& fp = TheRenderManager->projMatrix;
+				const D3DXVECTOR3 feye = RtCore::Eye();
+				const D3DXVECTOR4& fcam = TheRenderManager->CameraPosition;
+				const D3DXVECTOR4& spot = TheShaderManager->SpotLightPosition[0];
+				struct { float size[4], forward[4], right[4], up[4], origin[4], light[4], params[4]; } f = {};
+				f.size[0] = (float)w; f.size[1] = (float)h;
+				f.forward[0] = fv._13; f.forward[1] = fv._23; f.forward[2] = fv._33; f.forward[3] = cameraData->y;
+				f.right[0] = fv._11 / fp._11; f.right[1] = fv._21 / fp._11; f.right[2] = fv._31 / fp._11;
+				f.up[0] = fv._12 / fp._22; f.up[1] = fv._22 / fp._22; f.up[2] = fv._32 / fp._22;
+				f.origin[0] = feye.x; f.origin[1] = feye.y; f.origin[2] = feye.z;
+				f.light[0] = spot.x - fcam.x; f.light[1] = spot.y - fcam.y; f.light[2] = spot.z - fcam.z; f.light[3] = spot.w;
+				f.params[0] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffset"), 0.0f);
+				f.params[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "FlashlightStop"), 0.0f);
+				f.params[2] = (float)(0xFF & ~MaskAlphaTested & ~MaskGlass);	// people (0x20) block it; lamp glass never does
+				const int flashImages[3] = { imageDepth, imageNormals, imageFlash };
+				if (RtCore::AddPass(flashShader, flashImages, 3, 0x4, &f, sizeof(f), (w + 7) / 8, (h + 7) / 8))
+					FlashThisFrame = RtCore::CopyOut(imageFlash, FlashSurface);
+			}
+		}
+		FlashLive = FlashThisFrame;
+		if (!(CompiledIn && LampsThisFrame && LampCount > 0)) return;
 
 		const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
@@ -386,7 +440,7 @@ namespace RtLampShadows {
 			return;
 		}
 
-		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals) || !RtCore::CopyIn(imageTable, TableTexture)) return;
+		if ((!inputsIn && (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals))) || !RtCore::CopyIn(imageTable, TableTexture)) return;
 		// Exteriors: the mask variant, its result copied out for ApplyExteriorMask this frame; nothing is reprojected
 		if (TheShaderManager->GameState.isExterior) {
 			static UINT maskWidth = 0, maskHeight = 0;
@@ -617,6 +671,7 @@ namespace RtLampShadows {
 		shader = RtCore::AddShader("RtLampTrace");
 		splitShader = RtCore::AddShader("RtLampTraceSplit");
 		exteriorShader = RtCore::AddShader("RtLampTraceExterior");
+		flashShader = RtCore::AddShader("RtFlashTrace");
 		filterShader = RtCore::AddShader("RtLampFilter");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}

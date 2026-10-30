@@ -1,5 +1,6 @@
 #include "Flashlight.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RtLampShadows.h"	// UNOFFICIAL 2026-10-30 RT lamp shadows Flashlight
 
 
 void FlashlightEffect::RegisterConstants() {
@@ -397,6 +398,14 @@ namespace {
 	}
 }
 
+// UNOFFICIAL 2026-10-30 RT lamp shadows Flashlight: with a traced shadow this frame the shadowed technique runs (its NVR DXVK passes read
+// the trace, ExtRender), RenderShadows on or not; otherwise the technique UpdateConstants chose.
+int FlashlightEffect::TechniqueThisFrame() {
+	if (!RtLampShadows::FlashlightShadow()) return selectedPass;
+	if (Settings.edgeFix > 0 && edgeFixShadowsIndex >= 0) return edgeFixShadowsIndex;
+	return selectedPass == 0 ? 1 : selectedPass;
+}
+
 bool FlashlightEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	// 0 / 1: without / with shadows; the EdgeFix techniques run the same passes with Combine(true).
 	const bool edgeFixShadows = edgeFixShadowsIndex >= 0 && techniqueIndex == (UINT)edgeFixShadowsIndex;
@@ -430,6 +439,9 @@ bool FlashlightEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	IDirect3DBaseTexture9* cookie = ExtFileTexture("TESR_SpotLightTexture");
 	IDirect3DBaseTexture9* volumetric = FlashlightSlotTexture("TESR_VolumetricBuffer");
 	const bool beamOn = volumetricControl->x > 0.0f;
+	// UNOFFICIAL 2026-10-30 RT lamp shadows Flashlight: the traced shadow (screen space) in the shadow map's place, read by FlashlightShadowsRT
+	IDirect3DBaseTexture9* traced = shadows ? RtLampShadows::FlashlightShadow() : nullptr;
+	if (traced) shadowMap = traced;
 	if (!depth || !normals || !cookie || (shadows && !shadowMap) || (beamOn && !volumetric)) return false;
 
 	// Every pipeline this technique needs, and the samplers, before anything is drawn: a refusal leaves the frame as it was.
@@ -439,9 +451,9 @@ bool FlashlightEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, FlashlightBindings, _countof(FlashlightBindings), sizeof(FlashlightPush), true);
 	};
 	if (shadows) {
-		make(extShadows, "FlashlightShadows");
+		make(traced ? extShadowsRt : extShadows, traced ? "FlashlightShadowsRT" : "FlashlightShadows");
 		make(extDepthBlur, "FlashlightDepthBlur");
-		if (!extShadows.Pipeline || !extDepthBlur.Pipeline) return false;
+		if (!(traced ? extShadowsRt : extShadows).Pipeline || !extDepthBlur.Pipeline) return false;
 	}
 	make(extLight, "FlashlightLight");
 	make(extBoxBlur, "FlashlightBoxBlur");
@@ -503,7 +515,7 @@ bool FlashlightEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 	const D3DXVECTOR2 none(0.0f, 0.0f);
 	if (shadows) {
-		if (!draw(extShadows, 0, none, false)) return false;									// Shadows
+		if (!draw(traced ? extShadowsRt : extShadows, 0, none, false)) return false;			// Shadows (traced: RT lamp shadows Flashlight)
 		if (!draw(extDepthBlur, 0, D3DXVECTOR2(1.0f, 0.0f), false)) return false;				// DepthBlur, OffsetMaskH
 		if (!draw(extDepthBlur, 0, D3DXVECTOR2(0.0f, 1.0f), false)) return false;				// DepthBlur, OffsetMaskV
 	}
