@@ -222,7 +222,9 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   (their run is its check).
 - **Cell-change hardening** (3ec9d99f): all actor partitions released at once when the player's cell changes. rtlamp-19's Freeside
   crash showed no NVR frame (main thread, the game's own code, "Blackjack Dealer"); rtlamp-20 (Actors off + no tai) passed; the
-  Actors-on / no-tai split is rt-lamp-shadows' next run.
+  Actors-on / no-tai split (rtlamp-24, 20261030-022109-slotA: the crash run's exact toml, 1810 partitions posed, same route) PASSED:
+  the crash came with `tai` + the cross-world moveto (MultithreadedAI in the slot), not the RT actors. One run each way: a rare
+  crash is not ruled out; the hardening stays.
 
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
