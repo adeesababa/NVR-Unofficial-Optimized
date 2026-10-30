@@ -130,6 +130,15 @@ namespace {
 		return found->second;
 	}
 
+	// UNOFFICIAL 2026-10-30 the glow / emissive flag (NVR_RT_RECORD_GLOW; rt-reflections' GlowBrightness reads it): the draw's shader has
+	// a glow map (BSShaderPPLightingProperty texture slot 2: neon, lit signs and windows, lamp globes).
+	bool HasGlowMap(BSShaderProperty* shaderProperty) {
+		const UInt32 type = static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType;
+		if (!shaderProperty->IsLightingProperty() && type != NiShadeProperty::kProp_PPLighting && type != NiShadeProperty::kProp_Lighting30) return false;
+		NiSourceTexture** glow = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2];
+		return glow && *glow && (*glow)->rendererData && (*glow)->rendererData->dTexture;
+	}
+
 	// Where a vertex declaration keeps the position (cached per declaration).
 	struct PositionElement {
 		int stream = -1; UInt32 offset = 0; NVR_EXT_RT_POSITION_FORMAT format = NVR_EXT_RT_POSITION_FLOAT3;
@@ -930,7 +939,7 @@ namespace {
 		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
 		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
-		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u);
+		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (HasGlowMap(shaderProperty) ? NVR_RT_RECORD_GLOW : 0u);
 		if (alphaTested) extra.flags |= NVR_RT_RECORD_ALPHA_TESTED | ((UInt32)alpha->alphaTestRef << 8) | ((UInt32)alphaSlot << 16);
 		else if (textured) extra.flags |= NVR_RT_RECORD_TEXTURED | ((UInt32)alphaSlot << 16);
 		extra.geometryId = entry.id;
