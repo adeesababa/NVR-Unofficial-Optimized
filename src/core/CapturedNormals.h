@@ -22,6 +22,7 @@
 #include <d3d9.h>
 #include <unordered_set>
 #include "DxvkCompute.h"
+#include "PassSums.h"	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
 
 namespace CapturedNormals {
 
@@ -298,50 +299,131 @@ namespace CapturedNormals {
 		Unbinds++;
 	}
 
+	// UNOFFICIAL 2026-10-29 CapturedNormalsLeanHook ([Main.Main.Quality], live; ROOTPLAN round 3 step 8, work\NVR-p84cpu docs\next\
+	// CPU-P79-VS-P84.md: BeforeDraw cost 1.5 ms of the Ultra-Luxe's main thread): the hook asked the device for render targets 0 / 2 / 3,
+	// the pixel shader and up to six render states on every draw (each a call through DXVK's device lock) and set COLORWRITEENABLE3 on
+	// every draw. Lean: those values are kept from the device's own Set calls (SetRenderTarget / SetRenderState / SetPixelShader hooks,
+	// installed with the setting), read from the device once at the span's start (Resync) and again after a state block's Apply
+	// (PassSums' fold-in, the one place in the list that changes state without them), and the write masks are set only when they change.
+	// The same decisions from the same values: the picture is unchanged. Off: the per-draw device queries as before.
+	struct TrackedState { IDirect3DSurface9* rt[4]; IDirect3DPixelShader9* ps; DWORD colorWrite, blend, src, dst, colorWrite2, colorWrite3; };
+	inline TrackedState T = {};
+	inline bool LeanWanted = false, LeanHooked = false, Tracked = false;
+	inline UInt32 LeanFrames = 0, LeanSkippedSets = 0;
+	typedef HRESULT(STDMETHODCALLTYPE* SetRTFn)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
+	typedef HRESULT(STDMETHODCALLTYPE* SetRSFn)(IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
+	typedef HRESULT(STDMETHODCALLTYPE* SetPSFn)(IDirect3DDevice9*, IDirect3DPixelShader9*);
+	inline SetRTFn NextSetRT = nullptr;  inline SetRSFn NextSetRS = nullptr;  inline SetPSFn NextSetPS = nullptr;
+	inline HRESULT STDMETHODCALLTYPE SetRTHook(IDirect3DDevice9* d, DWORD i, IDirect3DSurface9* s) {
+		const HRESULT r = NextSetRT(d, i, s);
+		if (i < 4 && SUCCEEDED(r)) T.rt[i] = s;
+		return r;
+	}
+	inline HRESULT STDMETHODCALLTYPE SetRSHook(IDirect3DDevice9* d, D3DRENDERSTATETYPE st, DWORD v) {
+		switch (st) {
+		case D3DRS_COLORWRITEENABLE: T.colorWrite = v; break;
+		case D3DRS_ALPHABLENDENABLE: T.blend = v; break;
+		case D3DRS_SRCBLEND: T.src = v; break;
+		case D3DRS_DESTBLEND: T.dst = v; break;
+		case D3DRS_COLORWRITEENABLE2: T.colorWrite2 = v; break;
+		case D3DRS_COLORWRITEENABLE3: T.colorWrite3 = v; break;
+		default: break;
+		}
+		return NextSetRS(d, st, v);
+	}
+	inline HRESULT STDMETHODCALLTYPE SetPSHook(IDirect3DDevice9* d, IDirect3DPixelShader9* ps) {
+		const HRESULT r = NextSetPS(d, ps);
+		if (SUCCEEDED(r)) T.ps = ps;
+		return r;
+	}
+	// Everything tracked, from the device itself (the span's start; after a state block).
+	inline void Resync(IDirect3DDevice9* d) {
+		for (DWORD i = 0; i < 4; i++) { IDirect3DSurface9* s = nullptr; if (SUCCEEDED(d->GetRenderTarget(i, &s)) && s) s->Release(); T.rt[i] = s; }
+		IDirect3DPixelShader9* ps = nullptr; d->GetPixelShader(&ps); if (ps) ps->Release(); T.ps = ps;
+		d->GetRenderState(D3DRS_COLORWRITEENABLE, &T.colorWrite); d->GetRenderState(D3DRS_ALPHABLENDENABLE, &T.blend);
+		d->GetRenderState(D3DRS_SRCBLEND, &T.src); d->GetRenderState(D3DRS_DESTBLEND, &T.dst);
+		d->GetRenderState(D3DRS_COLORWRITEENABLE2, &T.colorWrite2); d->GetRenderState(D3DRS_COLORWRITEENABLE3, &T.colorWrite3);
+		Tracked = true;
+	}
+	inline void AfterStateBlock(IDirect3DDevice9* d) { if (InSpan && Tracked) Resync(d); }
+	inline void HookTracking(IDirect3DDevice9* d) {
+		if (LeanHooked || !d) return;
+		void** table = *(void***)d;
+		DWORD old = 0;
+		const int slots[3] = { 37, 57, 107 };	// SetRenderTarget, SetRenderState, SetPixelShader
+		for (int k = 0; k < 3; k++) if (!VirtualProtect(&table[slots[k]], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) return;
+		NextSetRT = (SetRTFn)table[37]; table[37] = (void*)&SetRTHook;
+		NextSetRS = (SetRSFn)table[57]; table[57] = (void*)&SetRSHook;
+		NextSetPS = (SetPSFn)table[107]; table[107] = (void*)&SetPSHook;
+		LeanHooked = true;
+		PassSums::AfterStateBlock = &AfterStateBlock;
+		Logger::Log("CapturedNormals: lean draw hook on (render targets, pixel shader and blend states tracked from the device's Set calls)");
+	}
+	// DXVK only: the native runtime puts its own device-table entries back now and then (EnsureHooked), and a Set call that slipped past
+	// the tracking would leave a stale record; there the hook keeps asking the device.
+	inline bool Lean() { return LeanHooked && Tracked && LeanWanted && DxvkCompute::Available(); }
+	inline IDirect3DSurface9* TargetNow(IDirect3DDevice9* d, DWORD i) {
+		if (Lean()) return T.rt[i];
+		IDirect3DSurface9* s = nullptr;
+		if (SUCCEEDED(d->GetRenderTarget(i, &s)) && s) s->Release();
+		return s;
+	}
+	inline DWORD StateNow(IDirect3DDevice9* d, D3DRENDERSTATETYPE st, DWORD fallback) {
+		if (Lean()) switch (st) {
+			case D3DRS_COLORWRITEENABLE: return T.colorWrite;
+			case D3DRS_ALPHABLENDENABLE: return T.blend;
+			case D3DRS_SRCBLEND: return T.src;
+			case D3DRS_DESTBLEND: return T.dst;
+			default: break;
+		}
+		DWORD v = fallback;
+		if (FAILED(d->GetRenderState(st, &v))) v = fallback;
+		return v;
+	}
+	// A write mask: lean, only when the tracked value differs (our own Set call keeps the record right).
+	inline void SetMask(IDirect3DDevice9* d, D3DRENDERSTATETYPE st, DWORD v) {
+		if (Lean() && (st == D3DRS_COLORWRITEENABLE3 ? T.colorWrite3 : T.colorWrite2) == v) { LeanSkippedSets++; return; }
+		d->SetRenderState(st, v);
+	}
+
 	inline void BeforeDraw(IDirect3DDevice9* d) {
 		if (!InSpan) return;
 		// Is it bound now? Read every draw: LinearScene's conversion takes targets 1-3 off and puts them back itself.
-		IDirect3DSurface9* rt3 = nullptr;
-		if (SUCCEEDED(d->GetRenderTarget(3, &rt3)) && rt3) rt3->Release();
+		IDirect3DSurface9* rt3 = TargetNow(d, 3);
 		Bound = rt3 && rt3 == DrawSurface();
-		IDirect3DSurface9* rt0 = nullptr;
-		d->GetRenderTarget(0, &rt0);
-		if (rt0) rt0->Release();	// a key only
+		IDirect3DSurface9* rt0 = TargetNow(d, 0);	// a key only
 		if (rt0 != SpanTarget) { if (Bound) Unbind(d); return; }	// a copy, a shadow map, a mask: never with ours bound
 		IDirect3DPixelShader9* ps = nullptr;
-		d->GetPixelShader(&ps);
-		if (ps) ps->Release();
+		if (Lean()) ps = T.ps;
+		else { d->GetPixelShader(&ps); if (ps) ps->Release(); }
 		if (ps != LastPS) { LastPS = ps; LastWriter = ps && Writers.count(ps) != 0; LastMaterialWriter = ps && MaterialWriters.count(ps) != 0; }
 		bool write = LastWriter;
 		if (write) {
-			DWORD mask = 0xF, blend = FALSE, src = D3DBLEND_ONE, dst = D3DBLEND_ZERO;
-			d->GetRenderState(D3DRS_COLORWRITEENABLE, &mask);
-			d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
-			if (blend) { d->GetRenderState(D3DRS_SRCBLEND, &src); d->GetRenderState(D3DRS_DESTBLEND, &dst); }
+			const DWORD mask = StateNow(d, D3DRS_COLORWRITEENABLE, 0xF), blend = StateNow(d, D3DRS_ALPHABLENDENABLE, FALSE);
+			const DWORD src = blend ? StateNow(d, D3DRS_SRCBLEND, D3DBLEND_ONE) : D3DBLEND_ONE, dst = blend ? StateNow(d, D3DRS_DESTBLEND, D3DBLEND_ZERO) : D3DBLEND_ZERO;
 			// opaque, or a SRCALPHA / INVSRCALPHA fade (the land over objects): the templates write alpha 1 there, a plain replace
 			write = (mask & 7) && (!blend || (src == D3DBLEND_SRCALPHA && dst == D3DBLEND_INVSRCALPHA));
 		}
 		if (write) {
 			if (!Bound) Bind(d);
-			d->SetRenderState(D3DRS_COLORWRITEENABLE3, 0xF);
+			SetMask(d, D3DRS_COLORWRITEENABLE3, 0xF);
 			Writes++;
 			Drawn = true;
 		}
 		else if (Bound) {
-			d->SetRenderState(D3DRS_COLORWRITEENABLE3, 0);
+			SetMask(d, D3DRS_COLORWRITEENABLE3, 0);
 			Masked++;
 		}
 		// UNOFFICIAL 2026-10-29 MaterialBuffer: stage 2 when it is free (or ours), for the material writers' opaque draws; masked otherwise
 		if (MaterialTexture && MaterialCompiled) {
-			IDirect3DSurface9* rt2 = nullptr;
-			if (SUCCEEDED(d->GetRenderTarget(2, &rt2)) && rt2) rt2->Release();
+			IDirect3DSurface9* rt2 = TargetNow(d, 2);
 			const bool ours = rt2 && rt2 == MaterialDrawSurface();
 			if (write && LastMaterialWriter) {
 				if (!rt2) { D3DVIEWPORT9 vp; d->GetViewport(&vp); d->SetRenderTarget(2, MaterialDrawSurface()); d->SetViewport(&vp); }
-				if (!rt2 || ours) { d->SetRenderState(D3DRS_COLORWRITEENABLE2, 0xF); MaterialBound = true; MaterialDrawn = true; MaterialWrites++; }
+				if (!rt2 || ours) { SetMask(d, D3DRS_COLORWRITEENABLE2, 0xF); MaterialBound = true; MaterialDrawn = true; MaterialWrites++; }
 				else MaterialBusy++;
 			}
-			else if (ours) d->SetRenderState(D3DRS_COLORWRITEENABLE2, 0);
+			else if (ours) SetMask(d, D3DRS_COLORWRITEENABLE2, 0);
 		}
 	}
 
@@ -399,6 +481,15 @@ namespace CapturedNormals {
 		struct Slot { int i; void* ours; void* next; };
 		const Slot slots[5] = { { 43, (void*)&ClearHook, (void*)NextClear }, { 81, (void*)&DPHook, (void*)NextDP }, { 82, (void*)&DIPHook, (void*)NextDIP },
 			{ 83, (void*)&DPUPHook, (void*)NextDPUP }, { 84, (void*)&DIPUPHook, (void*)NextDIPUP } };
+		const Slot tracking[3] = { { 37, (void*)&SetRTHook, (void*)NextSetRT }, { 57, (void*)&SetRSHook, (void*)NextSetRS }, { 107, (void*)&SetPSHook, (void*)NextSetPS } };
+		for (int k = 0; LeanHooked && k < 3; k++) {	// UNOFFICIAL 2026-10-29 lean hook (DXVK only, see Lean; kept in step anyway)
+			const Slot& s = tracking[k];
+			if (table[s.i] == s.ours || table[s.i] != s.next) continue;
+			DWORD old = 0;
+			if (!VirtualProtect(&table[s.i], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) continue;
+			table[s.i] = s.ours;
+			VirtualProtect(&table[s.i], sizeof(void*), old, &old);
+		}
 		for (const Slot& s : slots) {
 			if (table[s.i] == s.ours || table[s.i] != s.next) continue;
 			DWORD old = 0;
@@ -446,6 +537,10 @@ namespace CapturedNormals {
 		}
 		if (!Ensure(d, t)) { rt0->Release(); return; }
 		EnsureHooked(d);	// (native D3D9 puts its own table entries back; see EnsureHooked)
+		// UNOFFICIAL 2026-10-29 CapturedNormalsLeanHook: the tracked state from the device, once per span
+		LeanWanted = TheSettingManager->GetSettingI("Main.Main.Quality", "CapturedNormalsLeanHook") != 0;
+		if (LeanWanted && DxvkCompute::Available()) { HookTracking(d); Resync(d); }
+		else Tracked = false;
 		SpanTarget = rt0;	// (holds the reference until EndSpan)
 		d->ColorFill(DrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// "nothing here": readers keep the depth-rebuilt normal
 		if (MaterialTexture && MaterialCompiled) d->ColorFill(MaterialDrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// UNOFFICIAL MaterialBuffer: class 0
@@ -470,6 +565,7 @@ namespace CapturedNormals {
 		if (SUCCEEDED(d->GetRenderTarget(3, &rt3)) && rt3) rt3->Release();
 		if ((rt3 && rt3 == DrawSurface()) || MaterialBound) Unbind(d);
 		InSpan = false;
+		Tracked = false;	// UNOFFICIAL lean hook: resynced at the next span
 		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);	// the game's MSAA: resolved for the readers
 		if (MaterialMsaa && MaterialSurface) d->StretchRect(MaterialMsaa, NULL, MaterialSurface, NULL, D3DTEXF_NONE);	// UNOFFICIAL MaterialBuffer
