@@ -135,6 +135,7 @@ namespace {
 
 	const uint32_t kCmdRing = 4;
 	const uint32_t kQueriesPerSlot = 4 + NVR_RT_MAX_PASSES;	// start, after the builds, after the scene, end; then one after each pass
+	const uint32_t kCompactPerSlot = 512;	// compacted-size queries a frame (more new static geometries wait for a later rebuild: none)
 	const VkDeviceSize kPoolBlock = 64ull << 20;
 	const uint32_t kDataWords = 32u << 20;	// the geometry data (binding 11): 128 MB of positions and indices
 
@@ -160,6 +161,8 @@ namespace {
 		PFN_vkGetAccelerationStructureBuildSizesKHR	buildSizes = nullptr;
 		PFN_vkGetAccelerationStructureDeviceAddressKHR asAddress = nullptr;
 		PFN_vkCmdBuildAccelerationStructuresKHR		cmdBuildAs = nullptr;
+		PFN_vkCmdWriteAccelerationStructuresPropertiesKHR cmdWriteAsProperties = nullptr;	// compaction (2026-10-30)
+		PFN_vkCmdCopyAccelerationStructureKHR		cmdCopyAs = nullptr;
 	};
 
 	// Whether a physical device can run the helper; why not in `why`.
@@ -290,6 +293,8 @@ namespace {
 		vk.buildSizes = (PFN_vkGetAccelerationStructureBuildSizesKHR)vkGetDeviceProcAddr(vk.device, "vkGetAccelerationStructureBuildSizesKHR");
 		vk.asAddress = (PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetDeviceProcAddr(vk.device, "vkGetAccelerationStructureDeviceAddressKHR");
 		vk.cmdBuildAs = (PFN_vkCmdBuildAccelerationStructuresKHR)vkGetDeviceProcAddr(vk.device, "vkCmdBuildAccelerationStructuresKHR");
+		vk.cmdWriteAsProperties = (PFN_vkCmdWriteAccelerationStructuresPropertiesKHR)vkGetDeviceProcAddr(vk.device, "vkCmdWriteAccelerationStructuresPropertiesKHR");
+		vk.cmdCopyAs = (PFN_vkCmdCopyAccelerationStructureKHR)vkGetDeviceProcAddr(vk.device, "vkCmdCopyAccelerationStructureKHR");
 		if (!vk.importSemaphoreWin32Handle || !vk.createAs || !vk.destroyAs || !vk.buildSizes || !vk.asAddress || !vk.cmdBuildAs) {
 			Status("Vulkan: entry points missing");
 			return false;
@@ -348,13 +353,15 @@ namespace {
 
 	// The memory of every bottom-level structure: 64 MB blocks, first fit, 256-byte aligned pieces.
 	struct StructurePool {
-		struct Block { Buffer buffer; std::map<VkDeviceSize, VkDeviceSize> free; };
+		struct Block { Buffer buffer; std::map<VkDeviceSize, VkDeviceSize> free; VkDeviceSize size = 0; };
 		std::vector<Block> blocks;
-		VkDeviceSize used = 0;
+		VkDeviceSize used = 0, total = 0;	// in structures / in blocks
+		uint32_t returned = 0;				// empty blocks given back (2026-10-30)
 
 		bool Allocate(const VulkanDevice& vk, VkDeviceSize size, uint32_t& block, VkDeviceSize& offset) {
 			size = AlignUp(size, 256);
 			for (uint32_t b = 0; b < blocks.size(); b++) {
+				if (!blocks[b].buffer.buffer) continue;	// given back (Free): reused below
 				for (auto it = blocks[b].free.begin(); it != blocks[b].free.end(); ++it) {
 					if (it->second < size) continue;
 					block = b;
@@ -370,15 +377,18 @@ namespace {
 			const VkDeviceSize blockSize = std::max(kPoolBlock, size);
 			if (!CreateBuffer(vk, blockSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false, nb.buffer)) return false;
 			if (blockSize > size) nb.free[size] = blockSize - size;
-			blocks.push_back(nb);
-			block = (uint32_t)blocks.size() - 1;
+			nb.size = blockSize;
+			block = (uint32_t)blocks.size();
+			for (uint32_t b = 0; b < blocks.size(); b++) if (!blocks[b].buffer.buffer) { block = b; break; }
+			if (block == blocks.size()) blocks.push_back(nb); else blocks[block] = nb;
+			total += blockSize;
 			offset = 0;
 			used += size;
 			Log("structure memory: block %u of %llu MB", block, (unsigned long long)(blockSize >> 20));
 			return true;
 		}
 
-		void Free(uint32_t block, VkDeviceSize offset, VkDeviceSize size) {
+		void Free(const VulkanDevice& vk, uint32_t block, VkDeviceSize offset, VkDeviceSize size) {
 			size = AlignUp(size, 256);
 			auto& free = blocks[block].free;
 			auto it = free.emplace(offset, size).first;
@@ -389,6 +399,14 @@ namespace {
 				if (prev->first + prev->second == it->first) { prev->second += it->second; free.erase(it); }
 			}
 			used -= size;
+			// a block with nothing in it goes back to the driver (not the first: the usual scene keeps it busy anyway)
+			if (block > 0 && free.size() == 1 && free.begin()->first == 0 && free.begin()->second == blocks[block].size) {
+				total -= blocks[block].size;
+				DestroyBuffer(vk, blocks[block].buffer);
+				blocks[block].free.clear();
+				blocks[block].size = 0;
+				returned++;
+			}
 		}
 	};
 
@@ -404,6 +422,7 @@ namespace {
 		uint32_t					dataWords = 0;
 		uint32_t					vertices = 0;
 		bool						dynamic = false;				// built with ALLOW_UPDATE: later frames refit it in place
+		bool						compacted = false;
 	};
 
 	// The geometry data's words: first fit.
@@ -561,7 +580,10 @@ namespace {
 		bool			measured[3] = {};	// which sections had work (build, scene, trace) in that frame
 		uint32_t		passShaders[NVR_RT_MAX_PASSES] = {};	// the shader of each timed pass (timestamp 4 + i after it)
 		uint32_t		passesStamped = 0;
+		std::vector<std::pair<uint32_t, VkAccelerationStructureKHR>> compactAsked;	// query i = this geometry (id, the structure asked about)
 	};
+
+	struct CompactReady { uint32_t id; VkAccelerationStructureKHR as; VkDeviceSize size; };
 
 	struct PendingFree { uint64_t frame; Geometry geometry; };
 
@@ -595,6 +617,9 @@ namespace {
 		uint64_t		passUs[NVR_RT_MAX_SHADERS] = {};		// per shader: GPU time of its passes, summed until the next report
 		uint32_t		passRuns[NVR_RT_MAX_SHADERS] = {};
 		uint64_t		refits = 0, fullBuilds = 0;	// dynamic (actor) geometry: in-place updates / full builds
+		VkQueryPool		compactQueries = VK_NULL_HANDLE;	// compacted sizes, kCompactPerSlot a slot (2026-10-30)
+		std::vector<CompactReady> compactReady;		// sizes read back, copied at the next frame
+		uint64_t		compactedCount = 0, compactedBefore = 0, compactedAfter = 0;
 		// Probe: the first build frame's first geometries read back from the staging (what the bottom levels were built from), logged once
 		Buffer			probe;
 		uint32_t		probeIds[3] = {}, probeVertices[3] = {}, probeTriangles[3] = {}, probeCount = 0;
@@ -739,7 +764,7 @@ namespace {
 		auto it = std::remove_if(h.pendingFrees.begin(), h.pendingFrees.end(), [&](const PendingFree& p) {
 			if (p.frame > done) return false;
 			h.vk.destroyAs(h.vk.device, p.geometry.as, nullptr);
-			h.structures.Free(p.geometry.block, p.geometry.offset, p.geometry.size);
+			h.structures.Free(h.vk, p.geometry.block, p.geometry.offset, p.geometry.size);
 			h.dataWords.Free(p.geometry.vertexOffset, p.geometry.dataWords);
 			return true;
 		});
@@ -788,6 +813,15 @@ namespace {
 				}
 			}
 		}
+		if (h.compactQueries && !s.compactAsked.empty()) {
+			const uint32_t slot = (uint32_t)(&s - h.slots);
+			std::vector<uint64_t> sizes(s.compactAsked.size());
+			if (vkGetQueryPoolResults(h.vk.device, h.compactQueries, slot * kCompactPerSlot, (uint32_t)sizes.size(), sizes.size() * sizeof(uint64_t),
+				sizes.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+				for (size_t i = 0; i < sizes.size(); i++)
+					if (sizes[i]) h.compactReady.push_back({ s.compactAsked[i].first, s.compactAsked[i].second, sizes[i] });
+			s.compactAsked.clear();
+		}
 		if (h.probeSlot == (int)(&s - h.slots) && h.probe.mapped) {
 			for (uint32_t k = 0; k < h.probeCount; k++) {
 				const float* v = (const float*)((const uint8_t*)h.probe.mapped + k * 4096);
@@ -820,6 +854,44 @@ namespace {
 		s.measured[0] = s.measured[1] = s.measured[2] = false;
 		s.passesStamped = 0;
 		FullBarrier(cmd);	// the previous frame's builds / passes and the game's writes (the semaphore makes them visible)
+
+		// 0. compaction (NVR_RT_OP_FLAG_COMPACT): the structures whose compacted size came back are copied into one of that size; the
+		//    old one is freed once this frame is done (its data words stay with the geometry). Rebuilt or released since: skipped.
+		bool compactedNow = false;
+		for (const CompactReady& c : h.compactReady) {
+			auto it = h.geometries.find(c.id);
+			if (it == h.geometries.end() || it->second.as != c.as || it->second.compacted || c.size >= it->second.size) continue;
+			Geometry& geo = it->second;
+			Geometry fresh = geo;
+			if (!h.structures.Allocate(h.vk, c.size, fresh.block, fresh.offset)) break;
+			fresh.size = c.size;
+			VkAccelerationStructureCreateInfoKHR info = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+			info.buffer = h.structures.blocks[fresh.block].buffer.buffer;
+			info.offset = fresh.offset;
+			info.size = fresh.size;
+			info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+			if (h.vk.createAs(h.vk.device, &info, nullptr, &fresh.as) != VK_SUCCESS) { h.structures.Free(h.vk, fresh.block, fresh.offset, fresh.size); continue; }
+			VkCopyAccelerationStructureInfoKHR copy = { VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR };
+			copy.src = geo.as;
+			copy.dst = fresh.as;
+			copy.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+			h.vk.cmdCopyAs(cmd, &copy);
+			VkAccelerationStructureDeviceAddressInfoKHR addressInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+			addressInfo.accelerationStructure = fresh.as;
+			fresh.address = h.vk.asAddress(h.vk.device, &addressInfo);
+			fresh.compacted = true;
+			Geometry old = geo;
+			old.vertexOffset = NVR_RT_NO_DATA;	// the data words move to the compacted one
+			old.dataWords = 0;
+			h.pendingFrees.push_back({ frameNumber, old });
+			h.compactedCount++;
+			h.compactedBefore += geo.size;
+			h.compactedAfter += fresh.size;
+			geo = fresh;
+			compactedNow = true;
+		}
+		h.compactReady.clear();
+		if (compactedNow) FullBarrier(cmd);
 
 		// 1. new geometry: the arena's rows into the staging buffer, then every build in one call
 		std::vector<VkAccelerationStructureBuildGeometryInfoKHR> infos;
@@ -880,6 +952,8 @@ namespace {
 				b.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 				b.flags = dynamic ? (VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR)
 					: VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;	// actors: posed every frame, refit after the first build
+				const bool compact = !dynamic && (op.flags & NVR_RT_OP_FLAG_COMPACT) && h.compactQueries && s.compactAsked.size() < kCompactPerSlot;
+				if (compact) b.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
 				b.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 				b.geometryCount = 1;
 				b.pGeometries = &g;
@@ -913,7 +987,7 @@ namespace {
 				info.size = geo.size;
 				info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 				if (h.vk.createAs(h.vk.device, &info, nullptr, &geo.as) != VK_SUCCESS) {
-					h.structures.Free(geo.block, geo.offset, geo.size);
+					h.structures.Free(h.vk, geo.block, geo.offset, geo.size);
 					g_shared->failedOps++;
 					continue;
 				}
@@ -931,6 +1005,7 @@ namespace {
 				else geo.dataWords = 0;
 				h.geometries[op.id] = geo;
 				h.triangles += geo.triangles;
+				if (compact) s.compactAsked.push_back({ op.id, geo.as });
 				geoms.push_back(g);
 				b.dstAccelerationStructure = geo.as;
 				infos.push_back(b);
@@ -964,6 +1039,13 @@ namespace {
 					h.probeDone = true;
 				}
 				FullBarrier(cmd);
+				if (!s.compactAsked.empty()) {	// the compacted sizes, read back once this frame is done (WaitSlot)
+					std::vector<VkAccelerationStructureKHR> asked;
+					for (const auto& a : s.compactAsked) asked.push_back(a.second);
+					vkCmdResetQueryPool(cmd, h.compactQueries, slot * kCompactPerSlot, (uint32_t)asked.size());
+					h.vk.cmdWriteAsProperties(cmd, (uint32_t)asked.size(), asked.data(), VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+						h.compactQueries, slot * kCompactPerSlot);
+				}
 				s.measured[0] = true;
 			}
 		}
@@ -1183,6 +1265,10 @@ namespace {
 			}
 			if (any) Status("%s", line);
 		}
+		if (frameNumber % 600 == 0)
+			Log("frame %llu: structure memory %llu MB in use of %llu MB in blocks (%u empty blocks given back); compacted %llu structures, %llu -> %llu MB",
+				(unsigned long long)frameNumber, (unsigned long long)(h.structures.used >> 20), (unsigned long long)(h.structures.total >> 20),
+				h.structures.returned, (unsigned long long)h.compactedCount, (unsigned long long)(h.compactedBefore >> 20), (unsigned long long)(h.compactedAfter >> 20));
 		if (frameNumber % 600 == 0 && (h.refits || h.fullBuilds))
 			Log("frame %llu: dynamic (actor) geometry: %llu refits in place, %llu full builds so far", (unsigned long long)frameNumber,
 				(unsigned long long)h.refits, (unsigned long long)h.fullBuilds);
@@ -1251,6 +1337,12 @@ namespace {
 			queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
 			queryInfo.queryCount = kCmdRing * kQueriesPerSlot;
 			if (vkCreateQueryPool(h.vk.device, &queryInfo, nullptr, &h.queries) != VK_SUCCESS) h.queries = VK_NULL_HANDLE;
+			if (h.vk.cmdWriteAsProperties && h.vk.cmdCopyAs) {
+				VkQueryPoolCreateInfo compactInfo = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+				compactInfo.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+				compactInfo.queryCount = kCmdRing * kCompactPerSlot;
+				if (vkCreateQueryPool(h.vk.device, &compactInfo, nullptr, &h.compactQueries) != VK_SUCCESS) h.compactQueries = VK_NULL_HANDLE;
+			}
 		}
 		const SharedImage& arena = h.images[NVR_RT_ARENA_IMAGE];
 		if (!CreateBuffer(h.vk, (VkDeviceSize)arena.width * arena.height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -1269,7 +1361,7 @@ namespace {
 		{
 			uint32_t block = 0;
 			VkDeviceSize offset = 0;
-			if (h.structures.Allocate(h.vk, 256, block, offset)) h.structures.Free(block, offset, 256);
+			if (h.structures.Allocate(h.vk, 256, block, offset)) h.structures.Free(h.vk, block, offset, 256);
 			if (!EnsureScratch(h, 16ull << 20)) return fail(nullptr);
 		}
 		Status("ready: ray tracing on %s, the game's GPU (found by %s; %u shared images, arena %ux%u)", h.vk.properties.deviceName, h.vk.matchedBy,
