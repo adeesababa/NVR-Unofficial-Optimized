@@ -49,6 +49,28 @@ shadow ray anyway). The rustle is small rotations of each card about its own cen
 not where the bush's shadow lies, so a still card set would be acceptable. A session or two of work; a separate
 step if wanted. Mode 0 sun shadows keep the leaves' (swaying) cascade shadows meanwhile.
 
+### LeafCards: SpeedTree leaves in the traced scene (`[Main.Main.RayTracing] LeafCards`, default 0 = off; branch claude/rt-leaves)
+Built 2026-10-30 on the round 11 merge e4e76fdd.
+- **How:** a leaf mesh's vertices are the cards' centres (4 per leaf, same position) with BLENDINDICES z = corner-table index,
+  w = corner scale; the leaf shader moves each corner out by `leafBase[int(z)] * w` (y along the camera's right, z along its up).
+  The corner table is on the CPU (`SpeedTreeLeafShaderProperty::leafData->leafBase`, 48 float4), so nothing is captured at draw
+  time. Each tree model's leaf mesh is read back once (read-only locks of its managed vertex / index buffers, pool 1), every corner
+  moved out along fixed axes (2 = two crossed upright cards, x-z and y-z; 3 = and a level x-y card), written to our own managed
+  buffers (float3 position + float2 texcoord) and staged by the fork like any mesh. One BLAS per model (the CPU buffers are freed a
+  few frames after the build), one instance per tree, alpha-tested with the tree's leaves texture (`TreeModel->LeavesTexture`) at
+  its atlas slot and the draw's alpha ref, mask NVR_RT_MASK_ALPHA (0x10): rays with mask 0xEF still skip them. No wind (the rustle
+  turns cards about their own centres: the dappling moves, the bush's shadow does not). The texcoords run v 0..-1: the atlas
+  lookup's `fract` wraps them as the game's sampler does.
+- **The walk fix:** a TREE ref's root fade node reads FadeAlpha 0 on (nearly) every tree the game draws (rtleaf-4 tree probe: 630,
+  later 668 of 668 leaf meshes under a faded root), and the RT walk dropped faded nodes, so only ~22 leaf meshes a frame reached
+  it. The cascades' walk never fade-tests a ref's root; with LeafCards on, the RT walk no longer does for tree refs either (one LOD
+  of each tree's two leaf meshes stays out by its APP_CULLED flag).
+- **Debug:** `LeafCardsOpaque` (traces the cards as opaque objects) and an RT CORE `tree probe` line (one frame at each scene log
+  with LeafCards on: tree refs, their leaf meshes by what would stop the walk) next to the `leaf cards` line.
+- **Sun:** the default sun (Mode 0) multiplies traced visibility with the cascades, which already hold the (swaying) leaf shadows;
+  the traced cards add the same silhouettes, so the sun picture moves within noise (below). LeafCards pays off in RT AO / GI /
+  reflections, where the leaves were missing.
+
 ## 2. The player and far LODs
 
 - **Third-person body**: walked every frame with `Actors` on (`Walk(Player->GetNode())`), **in first person too**:
@@ -99,3 +121,21 @@ one for this game.
   the phases were too close to tell apart. Cost: RT sun pass 21.4 ms (on) vs 21.8 ms (off) in DebugView 6 = the same (the shear is a
   transform; nothing is rebuilt).
 - Verdict: PlantSway works and costs nothing; ship it on (it does nothing unless plant wind is on).
+
+### LeafCards runs (iGPU, fork-0033c, helper rtmerge/extra-r11 protocol 4, run toml rtao/run-toml-igpu-hit-actors.toml)
+- **rtleaf-1** 20261030-184153-slotC (og-goodsprings 15:00): no crash; leaf buffers readable (pool 1), 6 models built, 5.5 leaf meshes
+  a frame. No SpeedTree bush in this camera (the bushes in view are static alpha plants, traced already): no verdict on the look.
+- **rtleaf-2** 20261030-185141-slotC (FFEU57 bush view, plantwind-B's setpos, 13:00): traced view LeafCards 0 vs 2 / 3 within noise
+  (0.20 / 0.37 % vs 0.40 %): the bushes in view absent from the traced scene.
+- **rtleaf-3** 20261030-191200-slotC: LeafCardsOpaque 1 shows no cards either; the logged cards are right (corners +-30..60 units on the
+  tree's bound) but the ~5 trees met a frame are 2600-5600 units away: the walk never reaches the near bushes.
+- **rtleaf-4** 20261030-192150-slotC: tree probe: 334 tree refs, 668 leaf meshes, 630 under a faded root, 304 under APP_CULLED (the other
+  LOD), 22 reachable. Cause found (above).
+- **rtleaf-5** 20261030-193840-slotC (after the walk fix, DLL 38C2A430): **PASS**. 243 leaf meshes traced a frame (was 22), 10 models.
+  Traced view (RT sun DebugView 6) LeafCards 0 vs 2: 6.0 % px, vs 3: 6.3 % (noise 0.64 %): the near bush and the bushes to the right
+  appear with their leaf shapes (alpha-tested). RT AO (DebugView 1) 0 vs 2 / 3: 13.1 / 13.0 % px, ~12 % darker (noise 2.8 %): the bushes
+  occlude their insides and the ground under them. Final picture with RT sun: 2.3 / 6.0 % vs 8.6 % noise (the cascades hold the
+  leaf shadows already). Cost: RT sun pass 4.5-5.1 ms through the run (as without); RT AO pass 5.3 -> 5.7-5.8 ms (~+0.5 ms on the
+  iGPU at this bush-heavy view). No crash, no helper errors.
+- Verdict: LeafCards works; ship it off by default (as asked), worth turning on with RT AO / GI / reflections. 2 planes look the same
+  as 3 here.

@@ -117,19 +117,58 @@ namespace {
 		return a;
 	}
 
-	const Albedo& AlbedoOf(NiGeometry* geo, BSShaderProperty* shaderProperty) {
-		static const Albedo unknown = { { 0.5f, 0.5f, 0.5f }, false };
-		if (!shaderProperty->IsLightingProperty()) return unknown;
-		NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
-		NiTexture* texture = textures ? *textures : nullptr;
-		if (!texture || !texture->rendererData || !texture->rendererData->dTexture) return unknown;
-		IDirect3DBaseTexture9* d3d = texture->rendererData->dTexture;
+	const Albedo& AlbedoOfTexture(IDirect3DBaseTexture9* d3d) {
 		auto found = albedoCache.find(d3d);
 		if (found == albedoCache.end()) {
 			if (albedoCache.size() > 65536) albedoCache.clear();	// textures come and go with the cells: keep it bounded
 			found = albedoCache.emplace(d3d, ReadAlbedo(d3d)).first;
 		}
 		return found->second;
+	}
+
+	const Albedo& AlbedoOf(NiGeometry* geo, BSShaderProperty* shaderProperty) {
+		static const Albedo unknown = { { 0.5f, 0.5f, 0.5f }, false };
+		if (!shaderProperty->IsLightingProperty()) return unknown;
+		NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
+		NiTexture* texture = textures ? *textures : nullptr;
+		if (!texture || !texture->rendererData || !texture->rendererData->dTexture) return unknown;
+		return AlbedoOfTexture(texture->rendererData->dTexture);
+	}
+
+	float HalfToFloat(UInt16 h) {
+		const UInt32 sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1Fu, mantissa = h & 0x3FFu;
+		if (!exponent) return (sign ? -1.0f : 1.0f) * mantissa * (1.0f / 16777216.0f);	// zero and denormals
+		const UInt32 bits = exponent == 31 ? sign | 0x7F800000u | (mantissa << 13) : sign | ((exponent + 112u) << 23) | (mantissa << 13);
+		float f;
+		memcpy(&f, &bits, 4);
+		return f;
+	}
+
+	// A leaf mesh's vertex layout (cached per declaration): position, TEXCOORD0, BLENDINDICES (float4: x wind blend, y wind matrix,
+	// z corner index + light scale, w corner scale); all in one stream or not used
+	struct LeafLayout { bool ok = false; int stream = -1; UInt32 position = 0, uv = 0, blend = 0; bool position4 = false, uvHalf = false; BYTE types[3] = {}; };
+	std::unordered_map<const void*, LeafLayout> leafLayouts;
+	const LeafLayout& LeafLayoutOf(IDirect3DVertexDeclaration9* declaration) {
+		auto found = leafLayouts.find(declaration);
+		if (found != leafLayouts.end()) return found->second;
+		LeafLayout l;
+		D3DVERTEXELEMENT9 elements[MAXD3DDECLLENGTH + 1];
+		UINT count = 0;
+		int ps = -1, us = -1, bs = -1;
+		if (declaration && SUCCEEDED(declaration->GetDeclaration(nullptr, &count)) && count <= MAXD3DDECLLENGTH + 1 && SUCCEEDED(declaration->GetDeclaration(elements, &count))) {
+			for (UINT i = 0; i < count && elements[i].Stream != 0xFF; i++) {
+				const D3DVERTEXELEMENT9& e = elements[i];
+				if (e.UsageIndex != 0) continue;
+				if (e.Usage == D3DDECLUSAGE_POSITION && ps < 0) { ps = e.Stream; l.position = e.Offset; l.types[0] = e.Type; l.position4 = e.Type == D3DDECLTYPE_FLOAT4; }
+				else if (e.Usage == D3DDECLUSAGE_TEXCOORD && us < 0) { us = e.Stream; l.uv = e.Offset; l.types[1] = e.Type; l.uvHalf = e.Type == D3DDECLTYPE_FLOAT16_2; }
+				else if (e.Usage == D3DDECLUSAGE_BLENDINDICES && bs < 0) { bs = e.Stream; l.blend = e.Offset; l.types[2] = e.Type; }
+			}
+			l.ok = ps >= 0 && ps == us && ps == bs && (l.types[0] == D3DDECLTYPE_FLOAT3 || l.types[0] == D3DDECLTYPE_FLOAT4) &&
+				(l.types[1] == D3DDECLTYPE_FLOAT2 || l.types[1] == D3DDECLTYPE_FLOAT16_2) && l.types[2] == D3DDECLTYPE_FLOAT4;
+			l.stream = ps;
+		}
+		if (leafLayouts.size() > 256) leafLayouts.clear();
+		return leafLayouts.emplace(declaration, l).first->second;
 	}
 
 	// UNOFFICIAL 2026-10-30 the glow / emissive flag (NVR_RT_RECORD_GLOW; rt-reflections' GlowBrightness reads it): the draw's shader has
@@ -260,6 +299,27 @@ namespace {
 		UInt32		grassFate[12] = {};
 		double		grassNoteMs = 0.0, grassGatherMs = 0.0;	// CPU time (exchanges 1-60)
 		void		AddGrass();
+		// UNOFFICIAL 2026-10-30 SpeedTree leaf cards ([Main.Main.RayTracing] LeafCards: 0 off, 2 two crossed upright cards a leaf, 3 and a
+		// level one; needs AlphaTested; live): a leaf mesh holds the card's centre at each corner and the leaf shader moves it out along
+		// the camera's right / up by the tree model's corner table (SpeedTreeLeafShaderProperty::leafData->leafBase). Here each tree
+		// model's leaves are expanded once on the CPU into fixed cards (the corner table along world-fixed axes, no wind), in buffers of
+		// our own the fork stages like any mesh; one BLAS per model, an alpha-tested instance per tree (NVR_RT_MASK_ALPHA).
+		struct LeafCards { IDirect3DVertexBuffer9* vb = nullptr; IDirect3DIndexBuffer9* ib = nullptr; UInt32 vertices = 0, triangles = 0, made = 0; bool failed = false; };
+		std::unordered_map<GeometryKey, LeafCards, GeometryKeyHash> leafCards;
+		UInt32		leafPlanes = 0;						// LeafCards (read each frame)
+		bool		leafOpaque = false;					// LeafCardsOpaque (debug, live): the cards as opaque objects (mask 0x02), no alpha test
+		// leaves by fate (exchanges 1-60 / 600): [0] met, [1] AlphaTested off, [2] no corner table / tree model / texture, [3] no alpha
+		// slot, [4] waited, [5] not described / layout not understood, [6] buffers unreadable, [7] instances taken, [8] models built
+		UInt32		leafFate[9] = {};
+		void		AddLeaves(NiGeometry* geo, BSShaderProperty* shaderProperty, float distance);
+		bool		BuildLeafCards(NiGeometry* geo, const float* leafBase, UInt32 planes, LeafCards& out);
+		void		FreeLeafCards(bool all);
+		// (2026-10-30) tree probe, one frame at the scene log (LeafCards on): every TREE ref of the loaded cells walked without culling, its
+		// leaf meshes counted by what would stop the scene walk. [0] tree refs, [1] NotCastShadows, [2] no node, [3] in SceneRadius,
+		// [4] leaf meshes, [5] under APP_CULLED, [6] under a faded node, [7] in a switch child not taken, [8] no buffer data, [9] reachable
+		bool		treeProbe = false;
+		UInt32		treeFate[10] = {};
+		void		ProbeTree(TESObjectREFR* ref);
 		void		Release(UInt32 id) { pendingReleases.push_back(id); released++; }
 		std::vector<NiAVObject*> stack;
 
@@ -270,6 +330,7 @@ namespace {
 		void		Gather();
 		void		WalkCell(TESObjectCELL* cell);
 		void		Walk(NiAVObject* root, bool land, bool lod = false);
+		bool		walkTree = false;	// (2026-10-30) Walk of a TREE ref: its root's FadeAlpha is not the game's (0 on most drawn trees, rtleaf-4)
 		void		AddGeometry(NiGeometry* geo, bool land, bool lod = false);
 		void		AddSkinned(NiGeometry* geo);
 		bool		DescribeData(NiGeometryBufferData* data, const char* name, NVR_EXT_RT_GEOMETRY_DESC& desc, std::vector<NVR_EXT_RT_RANGE>& ranges, GeometryKey& key);
@@ -597,6 +658,7 @@ namespace {
 		state = Starting;
 		lastSerial = 0;
 		geometries.clear();
+		FreeLeafCards(true);
 		pendingReleases.clear();
 		nextId = 1;
 		_snprintf_s(status, sizeof(status), _TRUNCATE, "starting on %s", info.DeviceName);
@@ -641,6 +703,7 @@ namespace {
 		HANDLE* handles[] = { &mapping, &frameEvent, &statusEvent };
 		for (HANDLE* h : handles) if (*h) { CloseHandle(*h); *h = nullptr; }
 		geometries.clear();
+		FreeLeafCards(true);
 		pendingReleases.clear();
 		alphaSlots.clear();
 		if (alphaUpload) { alphaUpload->Release(); alphaUpload = nullptr; }
@@ -907,6 +970,245 @@ namespace {
 		}
 	}
 
+	// The leaf mesh's vertices and triangles, read back once (read-only locks of the game's buffers), each vertex moved out to its card
+	// corner along fixed axes per plane: plane 0 along x and z, plane 1 along y and z, plane 2 along x and y. The corner is the leaf
+	// shader's at rest (Speedtree.hlsl SpeedTreeTransform with no rustle, rock or wind): leafBase[int(z)] * w, its y along the card's
+	// right and its z along its up.
+	bool Core::BuildLeafCards(NiGeometry* geo, const float* leafBase, UInt32 planes, LeafCards& out) {
+		NiGeometryBufferData* bd = geo->geomData->m_pkBuffData;
+		const LeafLayout& l = LeafLayoutOf(bd->VertexDeclaration);
+		static int told = 0;
+		if (!l.ok || bd->FVF || (UInt32)l.stream >= bd->StreamCount || !bd->VBChip[l.stream] || !bd->VBChip[l.stream]->VB || !bd->IB) {
+			if (told < 4) {
+				told++;
+				Logger::Log("RT CORE leaves: '%s' layout not understood: FVF %X, stream %d of %u, element types %u %u %u (position, texcoord, blend indices)",
+					geo->m_pcName ? geo->m_pcName : "", bd->FVF, l.stream, bd->StreamCount, l.types[0], l.types[1], l.types[2]);
+			}
+			leafFate[5]++;
+			return false;
+		}
+		static std::vector<NVR_EXT_RT_RANGE> ranges;
+		NVR_EXT_RT_GEOMETRY_DESC desc;
+		GeometryKey key;
+		if (!Describe(geo, desc, ranges, key)) { leafFate[5]++; return false; }
+		const UInt32 stride = bd->VertexStride[l.stream], V = bd->VertCount;
+		IDirect3DVertexBuffer9* vb = bd->VBChip[l.stream]->VB;
+		D3DVERTEXBUFFER_DESC vd = {};
+		D3DINDEXBUFFER_DESC id = {};
+		vb->GetDesc(&vd);
+		bd->IB->GetDesc(&id);
+		const UInt32 first = bd->BaseVertexIndex * stride;
+		if (first + V * stride > vd.Size) { leafFate[6]++; return false; }
+
+		struct Corner { float p[3]; float uv[2]; float corner[2]; };	// corner: the card offset's right and up amounts
+		static std::vector<Corner> corners;
+		corners.resize(V);
+		void* bits = nullptr;
+		if (FAILED(vb->Lock(first, V * stride, &bits, D3DLOCK_READONLY)) || !bits) { leafFate[6]++; return false; }
+		const UInt8* base = (const UInt8*)bits;
+		bool sane = true;
+		const NiBound& bound = geo->geomData->m_kBound;
+		const float reach = bound.Radius * 4.0f + 512.0f;
+		for (UInt32 i = 0; i < V && sane; i++) {
+			const UInt8* v = base + i * stride;
+			Corner& c = corners[i];
+			memcpy(c.p, v + l.position, 12);
+			if (l.uvHalf) { c.uv[0] = HalfToFloat(*(const UInt16*)(v + l.uv)); c.uv[1] = HalfToFloat(*(const UInt16*)(v + l.uv + 2)); }
+			else memcpy(c.uv, v + l.uv, 8);
+			float b[4];
+			memcpy(b, v + l.blend, 16);
+			const int leaf = (int)floorf(b[2]);
+			if (!(leaf >= 0 && leaf < 48) || !std::isfinite(b[3])) { sane = false; break; }
+			c.corner[0] = leafBase[leaf * 4 + 1] * b[3];
+			c.corner[1] = leafBase[leaf * 4 + 2] * b[3];
+			const float dx = c.p[0] - bound.Center.x, dy = c.p[1] - bound.Center.y, dz = c.p[2] - bound.Center.z;
+			if (!std::isfinite(dx + dy + dz + c.corner[0] + c.corner[1]) || dx * dx + dy * dy + dz * dz > reach * reach ||
+				fabsf(c.corner[0]) > reach || fabsf(c.corner[1]) > reach) sane = false;
+		}
+		vb->Unlock();
+
+		static std::vector<UInt32> triangles;
+		triangles.clear();
+		if (sane) {
+			const bool wide = id.Format == D3DFMT_INDEX32;
+			void* ibits = nullptr;
+			if (FAILED(bd->IB->Lock(0, 0, &ibits, D3DLOCK_READONLY)) || !ibits) { leafFate[6]++; return false; }
+			const UInt32 indexCount = id.Size / (wide ? 4u : 2u);
+			auto index = [&](UInt32 k) { return wide ? ((const UInt32*)ibits)[k] : (UInt32)((const UInt16*)ibits)[k]; };
+			for (const NVR_EXT_RT_RANGE& r : ranges) {
+				const bool strip = r.Topology == NVR_EXT_RT_TRIANGLE_STRIP;
+				const UInt32 needed = r.StartIndex + (strip ? r.PrimitiveCount + 2 : r.PrimitiveCount * 3);
+				if (needed > indexCount) { sane = false; break; }
+				for (UInt32 t = 0; t < r.PrimitiveCount; t++) {
+					const UInt32 k = r.StartIndex + (strip ? t : t * 3);
+					const UInt32 a = index(k), b = index(k + 1), c = index(k + 2);
+					if (a >= V || b >= V || c >= V || a == b || b == c || a == c) continue;	// strip joins
+					triangles.push_back(a); triangles.push_back(b); triangles.push_back(c);
+				}
+			}
+			bd->IB->Unlock();
+		}
+		if (told < 3) {	// the first vertices as read: position, texcoord, corner
+			for (UInt32 i = 0; i < V && i < 4; i++)
+				Logger::Log("RT CORE leaves:   vertex %u: %.1f %.1f %.1f uv %.3f %.3f corner %.1f %.1f", i, corners[i].p[0], corners[i].p[1], corners[i].p[2],
+					corners[i].uv[0], corners[i].uv[1], corners[i].corner[0], corners[i].corner[1]);
+		}
+		if (told < 3 || !sane) {
+			if (told < 6) {
+				told++;
+				float size = 0.0f;
+				for (UInt32 i = 0; i < V; i++) size += fabsf(corners[i].corner[0]) + fabsf(corners[i].corner[1]);
+				Logger::Log("RT CORE leaves: '%s': %u vertices (stride %u, pool %u, usage %X), %u triangles from %u ranges, mean corner offset %.1f, "
+					"bound r %.0f, %s", geo->m_pcName ? geo->m_pcName : "", V, stride, (unsigned)vd.Pool, (unsigned)vd.Usage, (unsigned)triangles.size() / 3,
+					(unsigned)ranges.size(), V ? size / (2.0f * V) : 0.0f, bound.Radius, sane ? "built" : "NOT SANE (unreadable buffer?): left out");
+			}
+		}
+		if (!sane || triangles.empty()) { leafFate[6]++; return false; }
+
+		static const float right[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 1, 0, 0 } }, up[3][3] = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 1, 0 } };
+		const UInt32 T = (UInt32)triangles.size() / 3;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (FAILED(device->CreateVertexBuffer(planes * V * 20u, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &out.vb, nullptr)) ||
+			FAILED(device->CreateIndexBuffer(planes * T * 12u, D3DUSAGE_WRITEONLY, D3DFMT_INDEX32, D3DPOOL_MANAGED, &out.ib, nullptr))) {
+			if (out.vb) { out.vb->Release(); out.vb = nullptr; }
+			leafFate[6]++;
+			return false;
+		}
+		float* vout = nullptr;
+		UInt32* iout = nullptr;
+		if (FAILED(out.vb->Lock(0, 0, (void**)&vout, 0)) || FAILED(out.ib->Lock(0, 0, (void**)&iout, 0))) {
+			if (vout) out.vb->Unlock();
+			out.vb->Release(); out.ib->Release(); out.vb = nullptr; out.ib = nullptr;
+			leafFate[6]++;
+			return false;
+		}
+		for (UInt32 p = 0; p < planes; p++) {
+			for (UInt32 i = 0; i < V; i++) {
+				const Corner& c = corners[i];
+				for (int k = 0; k < 3; k++) *vout++ = c.p[k] + right[p][k] * c.corner[0] + up[p][k] * c.corner[1];
+				*vout++ = c.uv[0];
+				*vout++ = c.uv[1];
+			}
+			for (UInt32 k = 0; k < T * 3; k++) *iout++ = triangles[k] + p * V;
+		}
+		out.vb->Unlock();
+		out.ib->Unlock();
+		out.vertices = planes * V;
+		out.triangles = planes * T;
+		out.made = sceneFrame;
+		leafFate[8]++;
+		return true;
+	}
+
+	void Core::FreeLeafCards(bool all) {
+		for (auto it = leafCards.begin(); it != leafCards.end(); ) {
+			LeafCards& lc = it->second;
+			// a built model's buffers are needed only until its BUILD was staged and flushed (a few frames); a failed model stays (not re-read)
+			if (all || (!lc.failed && sceneFrame - lc.made > 8)) {
+				if (lc.vb) lc.vb->Release();
+				if (lc.ib) lc.ib->Release();
+				it = leafCards.erase(it);
+			}
+			else ++it;
+		}
+	}
+
+	void Core::AddLeaves(NiGeometry* geo, BSShaderProperty* shaderProperty, float distance) {
+		UInt32* skip = skips[0];
+		leafFate[0]++;
+		if (!alphaOn) { leafFate[1]++; skip[kLeaf]++; return; }
+		const SpeedTreeLeafShaderProperty* st = (const SpeedTreeLeafShaderProperty*)shaderProperty;
+		const float* leafBase = st->leafData ? st->leafData->leafBase : nullptr;
+		// the tree's node: geometry -> leaves node -> BSTreeNode (as SpeedTreeShadowRenderPass)
+		const BSTreeNode* tree = geo->m_parent && geo->m_parent->m_parent ? (const BSTreeNode*)geo->m_parent->m_parent : nullptr;
+		const NiSourceTexture* leaves = tree && tree->TreeModel ? tree->TreeModel->LeavesTexture : nullptr;
+		IDirect3DBaseTexture9* texture = leaves && leaves->rendererData ? leaves->rendererData->dTexture : nullptr;
+		if (!leafBase || !texture) { leafFate[2]++; skip[kLeaf]++; return; }
+		const int slot = AlphaSlotOf(texture);
+		if (slot == -2) { waiting++; leafFate[4]++; return; }
+		if (slot < 0) { leafFate[3]++; skip[kLeaf]++; return; }
+		static std::vector<NVR_EXT_RT_RANGE> ranges;
+		NVR_EXT_RT_GEOMETRY_DESC desc;
+		GeometryKey key;
+		if (!Describe(geo, desc, ranges, key)) { leafFate[5]++; skip[kLeaf]++; return; }
+		key.vertCount |= 0x40000000u | (leafPlanes << 28) | (leafOpaque ? 0x08000000u : 0u);	// the cards, not the mesh (and a new BLAS when the plane count changes)
+
+		GeometryEntry& entry = geometries[key];
+		if (entry.refused) { skip[kLeaf]++; return; }
+		entry.lastSeen = sceneFrame;
+		if (!entry.sent) {
+			LeafCards& lc = leafCards[key];
+			if (lc.failed) { skip[kLeaf]++; return; }
+			if (!lc.vb && !BuildLeafCards(geo, leafBase, leafPlanes, lc)) { lc.failed = true; skip[kLeaf]++; return; }
+			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
+			static const NVR_EXT_RT_RANGE all = {};
+			NVR_EXT_RT_RANGE range = all;
+			range.Topology = NVR_EXT_RT_TRIANGLE_LIST;
+			range.PrimitiveCount = lc.triangles;
+			NVR_EXT_RT_GEOMETRY_DESC cards = {};
+			cards.pVertexBuffer = lc.vb;
+			cards.VertexStride = 20;
+			cards.VertexCount = lc.vertices;
+			cards.PositionFormat = NVR_EXT_RT_POSITION_FLOAT3;
+			cards.pIndexBuffer = lc.ib;
+			cards.RangeCount = 1;
+			cards.pRanges = &range;
+			cards.Flags = NVR_EXT_RT_TEXCOORD_FLAGS(12, false);
+			cards.pDebugName = "NVR RT leaf cards";
+			NVR_EXT_RT_GEOMETRY_INFO info = {};
+			if (FAILED(rt->MeasureGeometry(&cards, &info))) { entry.refused = true; skip[kMeasure]++; return; }
+			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; leafFate[4]++; return; }
+			if (buildBudget && distance > buildNear && trianglesThisFrame && trianglesThisFrame + info.TriangleCount > buildBudget) {
+				waiting++; budgetWaits++; leafFate[4]++; return;
+			}
+			if (FAILED(rt->StageGeometry(&cards, images[0], arenaUsed, &info))) { entry.refused = true; return; }
+			trianglesThisFrame += info.TriangleCount;
+			NvrRtGeometryOp& op = record->ops[record->opCount++];
+			op = NvrRtGeometryOp();
+			op.op = NVR_RT_OP_BUILD;
+			op.id = entry.id;
+			op.vertexCount = info.VertexCount;
+			op.triangleCount = info.TriangleCount;
+			op.arenaTexel = arenaUsed;
+			op.flags = NVR_RT_OP_FLAG_TEXCOORDS | (leafOpaque ? 0u : NVR_RT_OP_FLAG_ALPHA) | (compactOn ? NVR_RT_OP_FLAG_COMPACT : 0u);
+			arenaUsed += info.Texels;
+			entry.sent = true;
+			lc.made = sceneFrame;
+		}
+		if (record->instanceCount >= NVR_RT_MAX_INSTANCES) return;
+		skip[kTaken]++;
+		leafFate[7]++;
+		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
+		const UInt32 alphaRef = alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK) ? alpha->alphaTestRef : 128u;
+		const Albedo& albedo = AlbedoOfTexture(texture);
+		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
+		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
+		extra.flags = (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (leafOpaque ? NVR_RT_RECORD_TEXTURED : NVR_RT_RECORD_ALPHA_TESTED | (alphaRef << 8)) | ((UInt32)slot << 16);
+		extra.geometryId = entry.id;
+		extra.vertexOffset = extra.indexOffset = 0;
+		NvrRtInstance& instance = record->instances[record->instanceCount++];
+		D3DMATRIX m;
+		TheRenderManager->CreateD3DMatrix(&m, &geo->m_worldTransform);	// camera relative, row vectors (p' = p M)
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++) instance.transform[r][c] = m.m[c][r];
+			instance.transform[r][3] = m.m[3][r];
+		}
+		instance.geometryId = entry.id;
+		instance.customIndex = 0;
+		instance.mask = leafOpaque ? 0x02u : NVR_RT_MASK_ALPHA;	// only rays that test alpha see it (a ray mask without 0x10 skips the leaves)
+		static int placed = 0;
+		if (placed < 4) {	// where the first trees' cards go (camera relative) against the tree's world bound
+			placed++;
+			const NiBound* b = geo->m_kWorldBound;
+			Logger::Log("RT CORE leaves: instance %u: translation %.0f %.0f %.0f, scale row %.2f %.2f %.2f; world bound centre (camera relative) %.0f %.0f %.0f r %.0f; "
+				"alpha ref %u, slot %d, %s", entry.id, instance.transform[0][3], instance.transform[1][3], instance.transform[2][3], instance.transform[0][0],
+				instance.transform[0][1], instance.transform[0][2], b ? b->Center.x - TheRenderManager->CameraPosition.x : 0.0f,
+				b ? b->Center.y - TheRenderManager->CameraPosition.y : 0.0f, b ? b->Center.z - TheRenderManager->CameraPosition.z : 0.0f, b ? b->Radius : 0.0f,
+				alphaRef, slot, leafOpaque ? "opaque (LeafCardsOpaque)" : "alpha-tested");
+		}
+		instance.flags = 0x1u;	// both faces
+	}
+
 	void Core::AddGeometry(NiGeometry* geo, bool land, bool lod) {
 		UInt32* skip = skips[lod ? 2 : land ? 1 : 0];
 		skip[kSeen]++;
@@ -921,6 +1223,10 @@ namespace {
 		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData) { skip[kNoShader]++; return; }
 		if (geo->skinInstance) { skip[kSkinned]++; return; }
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
+		if (leafPlanes && !land && shaderProperty && static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf) {
+			AddLeaves(geo, shaderProperty, distance);	// (2026-10-30) LeafCards
+			return;
+		}
 		if (!shaderProperty || !shaderProperty->IsLightingProperty()) { skip[kNotLighting]++; return; }
 		if (shaderProperty->GetFlag(BSSP_REFRACTION) || shaderProperty->GetFlag(BSSP_FIRE_REFRACTION) || shaderProperty->GetFlag(BSSP_DECAL) ||
 			shaderProperty->GetFlag(BSSP_DYNAMIC_DECAL)) { skip[kFlags]++; return; }
@@ -1225,7 +1531,9 @@ namespace {
 			if (!node) continue;
 			if (land && !lod) landWalk[2]++;
 			// Faded out: not drawn. Land ignores it, as the cascades' walk does (rt-reflections' og-lake run met no land with it).
-			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) { if (land) { if (!lod) landWalk[3]++; } else continue; }
+			// A tree's root fade node reads 0 on most trees the game draws (rtleaf-4: 630 of 668 SpeedTree leaf meshes under one); the cascades'
+			// walk never tests a ref's root, so a tree's root is not tested here either (LeafCards)
+			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f && !(walkTree && object == root)) { if (land) { if (!lod) landWalk[3]++; } else continue; }
 			if (node->IsKindOf<NiSwitchNode>()) {
 				if (land && !lod) landWalk[4]++;
 				NiSwitchNode* sw = static_cast<NiSwitchNode*>(node);
@@ -1233,6 +1541,50 @@ namespace {
 				continue;
 			}
 			for (int i = 0; i < node->m_children.end; i++) if (node->m_children.data[i]) stack.push_back(node->m_children.data[i]);
+		}
+	}
+
+	void Core::ProbeTree(TESObjectREFR* ref) {
+		treeFate[0]++;
+		if (ref->flags & TESForm::FormFlags::kFormFlags_NotCastShadows) treeFate[1]++;
+		NiNode* root = ref->GetNode();
+		if (!root) { treeFate[2]++; return; }
+		const float dx = ref->pos.x - TheRenderManager->CameraPosition.x, dy = ref->pos.y - TheRenderManager->CameraPosition.y;
+		if (dx * dx + dy * dy <= radius * radius) treeFate[3]++;
+		struct Item { NiAVObject* o; UInt32 why; };	// why: 1 culled, 2 faded, 4 switch child not taken
+		static std::vector<Item> items;
+		items.clear();
+		items.push_back({ root, 0u });
+		UInt32 leaves = 0, reachable = 0;
+		while (!items.empty()) {
+			Item it = items.back();
+			items.pop_back();
+			if (!it.o) continue;
+			UInt32 why = it.why | ((it.o->m_flags & NiAVObject::NiFlags::APP_CULLED) ? 1u : 0u);
+			if (it.o->IsGeometry()) {
+				NiGeometry* g = static_cast<NiGeometry*>(it.o);
+				BSShaderProperty* sp = (BSShaderProperty*)g->GetProperty(NiProperty::PropertyType::kType_Shade);
+				if (!sp || static_cast<NiShadeProperty*>((NiProperty*)sp)->m_eShaderType != NiShadeProperty::kProp_SpeedTreeLeaf) continue;
+				treeFate[4]++; leaves++;
+				if (why & 1u) treeFate[5]++;
+				if (why & 2u) treeFate[6]++;
+				if (why & 4u) treeFate[7]++;
+				if (!g->geomData || !g->geomData->m_pkBuffData) treeFate[8]++;
+				else if (!why) { treeFate[9]++; reachable++; }
+				continue;
+			}
+			NiNode* node = it.o->IsNiNode();
+			if (!node) continue;
+			if (node->IsFadeNode() && static_cast<BSFadeNode*>(node)->FadeAlpha <= 0.0f) why |= 2u;
+			const bool sw = node->IsKindOf<NiSwitchNode>();
+			for (int i = 0; i < node->m_children.end; i++)
+				items.push_back({ node->m_children.data[i], why | (sw && i != static_cast<NiSwitchNode*>(node)->m_iIndex ? 4u : 0u) });
+		}
+		static int told = 0;
+		if (told < 6) {
+			told++;
+			Logger::Log("RT CORE tree probe: ref %08X at %.0f units: root flags %X%s, %u leaf meshes, %u reachable", ref->refID, sqrtf(dx * dx + dy * dy),
+				(unsigned)root->m_flags, root->IsFadeNode() ? " (fade node)" : "", leaves, reachable);
 		}
 	}
 
@@ -1245,6 +1597,7 @@ namespace {
 		Walk(landNode, true);
 		for (TList<TESObjectREFR>::Entry* entry = &cell->objectList.First; entry; entry = entry->next) {
 			TESObjectREFR* ref = entry->item;
+			if (treeProbe && ref && ref->baseForm && ref->baseForm->formType == TESForm::FormType::kFormType_Tree) ProbeTree(ref);
 			if (!ref || !ref->baseForm || (ref->flags & TESForm::FormFlags::kFormFlags_NotCastShadows)) continue;
 			const UInt8 type = ref->baseForm->formType;
 			if (type == TESForm::FormType::kFormType_Land) continue;
@@ -1256,7 +1609,9 @@ namespace {
 				if (dx * dx + dy * dy > actorRadius * actorRadius) continue;
 			}
 			if ((TESObjectREFR*)Player == ref) continue;	// walked once, by Gather
+			walkTree = leafPlanes && type == TESForm::FormType::kFormType_Tree;
 			Walk(ref->GetNode(), false);
+			walkTree = false;
 		}
 	}
 
@@ -1288,6 +1643,9 @@ namespace {
 		buildNear = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "BuildNearRadius"));
 		cullAngle = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "CullSmallAngle"));
 		plantSway = TheSettingManager->GetSettingI("Main.Main.RayTracing", "PlantSway") != 0;
+		const int planes = TheSettingManager->GetSettingI("Main.Main.RayTracing", "LeafCards");
+		leafPlanes = planes <= 0 ? 0u : planes >= 3 ? 3u : 2u;
+		leafOpaque = TheSettingManager->GetSettingI("Main.Main.RayTracing", "LeafCardsOpaque") != 0;
 		trianglesThisFrame = 0;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		grassRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "GrassRadius"));
@@ -1315,11 +1673,13 @@ namespace {
 			if (skips[1][kTaken] == landBefore) Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
 		}
 		else if (Player) WalkCell(Player->parentCell);
+		treeProbe = false;
 		if (grassOn) AddGrass();	// UNOFFICIAL 2026-10-30: the grass drawn this frame (RtCore::NoteGrass)
 		instances = record->instanceCount;
 
 		// Geometries not met for a while (their cell unloaded, the object gone): released in the helper
 		if ((sceneFrame % 30) == 0) {
+			FreeLeafCards(false);
 			for (auto it = geometries.begin(); it != geometries.end(); ) {
 				if (sceneFrame - it->second.lastSeen > kReleaseAfterFrames) {
 					if (it->second.sent) Release(it->second.id);
@@ -1503,6 +1863,21 @@ namespace {
 				Logger::Log("RT CORE: plant sway %s: %.1f plant instances leaned a frame (plant wind statics %s)", c.plantSway ? "on" : "off",
 					c.swayed / (float)(n == 60 ? 60 : n == 600 ? 540 : 600), PlantWind::StaticsOn ? "on" : "off");
 			c.swayed = 0;
+			if (c.treeFate[0]) {
+				const UInt32* t = c.treeFate;
+				Logger::Log("RT CORE: tree probe (one frame): %u tree refs (NotCastShadows %u, no node %u, in SceneRadius %u); %u leaf meshes: under APP_CULLED %u, "
+					"under a faded node %u, in a switch child not taken %u, no buffer data %u, reachable %u", t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9]);
+				for (UInt32& v : c.treeFate) v = 0;
+			}
+			c.treeProbe = c.leafPlanes != 0;	// the next frame's gather walks the tree refs once (above, at the next log)
+			if (c.leafPlanes || c.leafFate[0]) {	// (2026-10-30) LeafCards
+				const UInt32* f = c.leafFate;
+				const float frames = (float)(n == 60 ? 60 : n == 600 ? 540 : 600);
+				Logger::Log("RT CORE: leaf cards %u planes: %.1f leaf meshes met a frame, %.1f traced; models built %u (buffers held %u); left out: AlphaTested off %u, "
+					"no corner table / texture %u, no alpha slot %u, layout not understood %u, buffers unreadable %u; waited %u", c.leafPlanes, f[0] / frames,
+					f[7] / frames, f[8], (unsigned)c.leafCards.size(), f[1], f[2], f[3], f[5], f[6], f[4]);
+				for (int k = 0; k < 9; k++) if (k != 8) c.leafFate[k] = 0;
+			}
 			if (c.actorsOn && Player) {	// (2026-10-30) the player in the traced scene: the third-person body (walked always), the view model (never)
 				const NiNode* body = Player->GetNode();
 				Logger::Log("RT CORE: player: %s person; body node %s; %.1f body instances a frame; first-person node %s (not traced)",
