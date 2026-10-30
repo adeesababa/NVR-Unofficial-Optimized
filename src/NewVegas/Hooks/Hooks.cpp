@@ -48,6 +48,7 @@ void AttachHooks() {
 	}
 
 	DetourAttach(&(PVOID&)GetWaterHeightLOD, &GetWaterHeightLODHook);
+	DetourAttach(&(PVOID&)IsWaterNodeVisible, &IsWaterNodeVisibleHook);   // always: water with no child nodes (crash in the reflection pass; ported from Balebandro/Physically-Based-Reloaded 1ce5d62)
 	// Always hooked so the reflection pass can be profiled; it only changes rendering when
 	// ForceReflections is enabled (see RenderReflectionsHook).
 	DetourAttach(&(PVOID&)RenderReflections, &RenderReflectionsHook);
