@@ -604,21 +604,16 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// count; the sun's luminance and height), the history may stand for 1 frame of samples only, growing back by one each frame.
 	static float prevLight[GILightKeys] = {};
 	static float giCap = 0.0f;
-	const bool giPass = gi && rt.GIReuse > 0 && RtGIShader >= 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
+	// (2026-10-30) At full rate (Interleave 1, GIInterleave 1) the reuse runs inside the AO pass (one pass instead of two: ~6 ms on the
+	// iGPU, rt-gi-10/14), which then binds 10 images (the RT core's passes take up to 12 since rt-sun-core 6b9784c3); interleaved GI keeps
+	// its own pass (its whole-grid dispatch and tiles).
+	const bool reuse = gi && rt.GIReuse > 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
+	static int rotationSign = 0;	// the quaternion convention that reproduces viewToWorld (checked once; -1: none did, no merging)
+	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1 && rotationSign >= 0;
+	const bool giPass = reuse && !merged && RtGIShader >= 0;
 	RtAmbient::GIConstants g = {};
-	if (giPass) {
+	if (reuse && (giPass || merged)) {
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
-		g.viewToWorld = c.viewToWorld;
-		g.prevViewToWorld = RtGIHistory ? prevViewToWorld : c.viewToWorld;
-		g.projection = c.projection;
-		g.origin = c.origin;
-		g.gi = c.gi;
-		g.sunDir = c.sunDir;
-		g.sunColor = c.sunColor;
-		g.ambient = c.ambient;
-		memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
-		memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
-		g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
 		float light[GILightKeys] = {};
 		auto luma = [](const D3DXVECTOR4& c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
 		for (int k = 0; k < RtAmbient::GILampsMax && k < (int)c.gi.z; k++) {	// (order-free: the list is sorted by distance)
@@ -636,24 +631,75 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		static int cuts = 0, frames = 0;	// (logged every 600 GI frames: how often the light changed enough to cut the history)
 		cuts += changed ? 1 : 0;
 		if (++frames >= 600) { Logger::Log("UNOFFICIAL RT AO: GI reuse history cut %d times in the last 600 frames (the lamps or the sun changed by > 10 %%).", cuts); cuts = frames = 0; }
-		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (std::max)(giCap, 1.0f) + 64.0f * rt.GISpatial)
-							  : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		const D3DXVECTOR4 reuseNow = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (std::max)(giCap, 1.0f) + 64.0f * rt.GISpatial)
+												 : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		const D3DXMATRIX& last = RtGIHistory ? prevViewToWorld : c.viewToWorld;
+		if (giPass) {
+			g.viewToWorld = c.viewToWorld;
+			g.prevViewToWorld = last;
+			g.projection = c.projection;
+			g.origin = c.origin;
+			g.gi = c.gi;
+			g.sunDir = c.sunDir;
+			g.sunColor = c.sunColor;
+			g.ambient = c.ambient;
+			memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
+			memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
+			g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
+			g.reuse = reuseNow;
+			c.gi.y = 0.0f;	// (no GI rays in the AO pass)
+		}
+		else {
+			// The shader takes last frame's point as the rotation's inverse applied to p + the camera's move (RtAOTrace.comp: transpose(mat3(M))
+			// in the GI pass = M x v in D3DX's rows); here a quaternion (32 bytes of constants were free, a matrix is 64). D3DX's quaternion
+			// convention is checked once against the matrix with a test vector, both signs; if neither matches, no merging.
+			D3DXMATRIX m = last;
+			m._14 = m._24 = m._34 = m._41 = m._42 = m._43 = 0.0f;
+			m._44 = 1.0f;
+			D3DXQUATERNION q;
+			D3DXQuaternionRotationMatrix(&q, &m);
+			if (rotationSign == 0) {
+				const D3DXVECTOR3 a(0.3f, -0.5f, 0.8f);
+				const D3DXVECTOR3 want(m._11 * a.x + m._12 * a.y + m._13 * a.z, m._21 * a.x + m._22 * a.y + m._23 * a.z, m._31 * a.x + m._32 * a.y + m._33 * a.z);
+				for (int sign = 1; sign <= 2 && rotationSign == 0; sign++) {
+					const float s = sign == 1 ? 1.0f : -1.0f;
+					const D3DXVECTOR3 u(-s * q.x, -s * q.y, -s * q.z);	// the shader's u = -prevRot.xyz
+					D3DXVECTOR3 t, t2, got;
+					D3DXVec3Cross(&t, &u, &a);
+					t += a * q.w;
+					D3DXVec3Cross(&t2, &u, &t);
+					got = a + t2 * 2.0f;
+					const D3DXVECTOR3 d = got - want;
+					if (D3DXVec3Length(&d) < 1.0e-3f) rotationSign = sign;
+				}
+				if (rotationSign == 0) {
+					rotationSign = -1;
+					Logger::Log("UNOFFICIAL RT AO: GI reuse could not express the view's rotation as a quaternion; the GI keeps its own pass.");
+				}
+				else Logger::Log("UNOFFICIAL RT AO: GI reuse at full rate runs inside the AO pass (one pass; quaternion sign %d).", rotationSign);
+			}
+			const float s = rotationSign == 2 ? -1.0f : 1.0f;
+			c.prevRot = D3DXVECTOR4(s * q.x, s * q.y, s * q.z, q.w);
+			c.reuse = reuseNow;
+			c.gi3.z = rotationSign > 0 ? 1.0f : 0.0f;
+		}
 		prevViewToWorld = c.viewToWorld;
 		prevCamera = camera;
-		c.gi.y = 0.0f;	// (no GI rays in the AO pass)
 	}
-	const int images[6] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas };
+	const bool mergedNow = merged && c.gi3.z > 0.5f;
 	const int cur = giParity & 1, prev = cur ^ 1;
+	const int images[10] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1] };	// (8, 9 only when merged)
 	const int giImages[8] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
 		RtImageReservoir[cur][0], RtImageReservoir[cur][1] };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, 6, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		!RtCore::AddPass(RtShader, images, mergedNow ? 10 : 6, mergedNow ? 0x306 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
 		(giPass && !RtCore::AddPass(RtGIShader, giImages, 8, 0xC0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
-		(gi && !RtCore::CopyOut(giPass ? RtImageReservoir[cur][0] : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
-	if (giPass) giParity++;
-	RtGIHistory = giPass;
+		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageReservoir[cur][0] : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
+	if (giPass || mergedNow) giParity++;
+	RtGIHistory = giPass || mergedNow;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
 	if (traced++ == 0)
@@ -663,7 +709,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (gi && !giLogged) {
 		giLogged = true;
 		Logger::Log("UNOFFICIAL RT AO: GI traced (1 bounce ray of %.0f units, %d lamps, sun %s, %s).", rt.GIDistance, (int)c.gi.z, c.sunDir.w > 0.5f ? "up" : "down / indoors",
-			giPass ? "its own pass with ReSTIR GI temporal reuse (GIReuse)" : "in the AO pass");
+			giPass ? "its own pass with ReSTIR GI temporal reuse (GIReuse)" : mergedNow ? "in the AO pass with ReSTIR GI temporal reuse" : "in the AO pass");
 	}
 }
 

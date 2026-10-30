@@ -57,7 +57,10 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
-    vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; y AOAlpha (0 skip, 1 opaque, 2 test); zw unused
+    vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; y AOAlpha (0 skip, 1 opaque, 2 test);
+                        // z 1 = GIReuse in this pass (2026-10-30), w unused
+    vec4 prevRot;       // (2026-10-30, gi3.z) last frame's viewToWorld rotation as a quaternion (xyz, w): v = its inverse applied to p + reuse.xyz
+    vec4 reuse;         // xyz this frame's camera minus last frame's, w the M cap + 64 x GISpatial (0: no history)
 } cb;
 #endif
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
@@ -70,6 +73,12 @@ layout(set = 0, binding = 4, rgba16f) uniform readonly image2D prevB;
 layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D curA;
 layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D curB;
 #else
+// (2026-10-30) GIReuse inside this pass at full rate (gi3.z 1): last frame's reservoirs at 8 / 9, this frame's at 12 / 13 (the helper's
+// images 8-11 bind at 12-15; 10 / 11 stay the records and the geometry). Bound only then (the helper's descriptors are partially bound).
+layout(set = 0, binding = 8, rgba16f) uniform readonly image2D prevA;
+layout(set = 0, binding = 9, rgba16f) uniform readonly image2D prevB;
+layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D curA;
+layout(set = 0, binding = 13, rgba16f) uniform writeonly image2D curB;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
 #endif
@@ -246,6 +255,88 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     return vec4(Clamped(albedo * e * cb.gi2.x + glow), t / cb.gi.x);
 }
 
+// ---- (2026-10-30) ReSTIR GI's reuse step, shared by the GI pass (RT_GI_PASS) and the AO pass at full rate (GIReuse with Interleave 1
+// and GIInterleave 1: one pass, ~6 ms less than two on the iGPU, rt-gi-10). v: this texel's point in last frame's view; reuse: the M cap
+// + 64 x GISpatial (cap 0: no history, every texel traces); giTile: a new candidate this frame. Writes the reservoir pair curA / curB.
+vec2 OctEncode(vec3 n) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 e = n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return e * 0.5 + 0.5;
+}
+float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void ReuseGI(ivec2 texel, vec3 p, vec3 n, float viewZ, float bias, bool giTile, vec3 v, float reuse) {
+    // Last frame's reservoir of this surface. (2026-10-30, v2) Outside the frame's tiles a texel without its own history (a
+    // disocclusion, a screen edge) borrows a neighbour's last frame (2 texels round the reprojected point, depth within 15 %) instead
+    // of tracing: v1 traced there, and one such texel made its whole wave pay for the bounce (rt-gi-10/11: GIInterleave 4 cost ~12-14
+    // ms where a quarter of the full rate's 26 is 6.5). Nothing usable: empty (M 0) until its tile's turn.
+    float cap = mod(reuse, 64.0), historyM = 0.0;
+    int spatial = int(reuse / 64.0);
+    vec4 history = vec4(0.0);
+    ivec2 qt = ivec2(-1);
+    if (cap > 0.5) {
+        if (v.z > 1.0) {
+            vec2 q = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
+            qt = ivec2(floor(q * cb.projection.zw));
+            const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2));
+            int tries = giTile ? 1 : 5;
+            for (int k = 0; k < tries && historyM < 0.5; k++) {
+                ivec2 at = qt + around[k];
+                if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
+                vec4 b = imageLoad(prevB, at);
+                float tolerance = k == 0 ? 0.05 : 0.15;
+                if (b.x > 0.5 && abs(b.y - v.z) < tolerance * v.z + 2.0 && dot(OctDecode(b.zw), n) > 0.9) {
+                    history = imageLoad(prevA, at);
+                    historyM = min(b.x, cap);
+                    if (!(history.a >= 0.0) || any(isnan(history.rgb)) || any(isinf(history.rgb))) { history = vec4(0.0); historyM = 0.0; }
+                }
+            }
+        }
+    }
+    vec3 chosen = history.a > 0.0 ? history.rgb / history.a : vec3(0.0);
+    float weightSum = Luma(chosen) * history.a * historyM, m = historyM;
+
+    // (2026-10-30) GISpatial: ReSTIR's spatial step, from last frame's reservoirs: up to 4 neighbours (random, 3-12 texels round the
+    // reprojected point, turned each frame) whose surface matches (depth 5 %, normal ~18 deg) join with their weight sums, each M at
+    // most cap / 2. No visibility test and no Jacobian (a neighbour's sample is taken as light arriving here too): fine across a
+    // floor or a wall, can leak a little across contact shadows (that is what the depth / normal tests and the short radius limit).
+    if (spatial > 0 && qt.x >= 0 && v.z > 1.0) {
+        float frame = cb.origin.w;
+        float spin = 6.2831853 * fract(Ign(vec2(texel) + 211.0) + frame * 0.618034);
+        for (int k = 0; k < spatial; k++) {
+            float a = spin + float(k) * 2.3999632;  // the golden angle
+            float r = 3.0 + 9.0 * fract(0.5 + float(k) * 0.618034 + frame * 0.381966);
+            ivec2 at = qt + ivec2(round(vec2(cos(a), sin(a)) * r));
+            if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
+            vec4 b = imageLoad(prevB, at);
+            if (!(b.x > 0.5) || abs(b.y - v.z) > 0.05 * v.z + 2.0 || dot(OctDecode(b.zw), n) < 0.95) continue;
+            vec4 h = imageLoad(prevA, at);
+            if (!(h.a > 0.0) || any(isnan(h.rgb)) || any(isinf(h.rgb))) continue;
+            vec3 l = h.rgb / h.a;
+            float mk = min(b.x, max(cap * 0.5, 1.0));
+            float w = Luma(l) * h.a * mk;
+            weightSum += w;
+            m += mk;
+            if (fract(Ign(vec2(texel) + 257.0 + 31.0 * float(k)) + frame * 0.7548777) * weightSum < w) chosen = l;
+        }
+    }
+
+    // The first frame of a reservoir (cap 0: no history at all) traces everywhere.
+    if (giTile || cap < 0.5) {
+        float frame = cb.origin.w;
+        vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
+        vec3 light = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840)).rgb;
+        float w = Luma(light);
+        weightSum += w;
+        m += 1.0;
+        if (fract(Ign(vec2(texel) + 131.0) + frame * 0.7548777) * weightSum < w) chosen = light;
+    }
+    float target = Luma(chosen);
+    float W = m > 0.0 && target > 0.0 ? weightSum / (m * target) : 0.0;
+    imageStore(curA, texel, vec4(chosen * W, W));
+    imageStore(curB, texel, vec4(m, viewZ, OctEncode(n)));
+}
+
 #ifndef RT_GI_PASS
 void main() {
     // (2026-10-29) Interleave: only every 2nd (checkerboard) or every 4th (one texel of each 2 x 2, in turn) texel is traced a frame;
@@ -264,6 +355,7 @@ void main() {
     if (!(viewZ > 0.0)) {
         imageStore(outputImage, texel, vec4(cb.ao.w > 3.5 ? 0.0 : 1.0, 1.0, 0.0, 1.0));
         imageStore(giImage, texel, vec4(0.0, 0.0, 0.0, 1.0));
+        if (cb.gi3.z > 0.5) { imageStore(curA, texel, vec4(0.0)); imageStore(curB, texel, vec4(0.0)); }
         return;
     }
     vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
@@ -333,7 +425,13 @@ void main() {
     bool giTile = giInterleave >= 4 ? ((tile.x & 1) + 2 * (tile.y & 1)) == (turn & 3)
                 : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
                 : true;
-    if (cb.gi.y > 0.5 && !giTile) {
+    if (cb.gi.y > 0.5 && cb.gi3.z > 0.5) {
+        // (2026-10-30) GIReuse at full rate, in this pass: last frame's view by the quaternion's inverse, then the shared reuse step.
+        vec3 a = p + cb.reuse.xyz, u = -cb.prevRot.xyz;
+        vec3 v = cb.reuse.w > 0.5 ? a + 2.0 * cross(u, cross(u, a) + cb.prevRot.w * a) : vec3(0.0);
+        ReuseGI(texel, p, n, viewZ, bias, true, v, cb.reuse.w);
+    }
+    else if (cb.gi.y > 0.5 && !giTile) {
         // (no GI ray this frame here: the image keeps its last value)
     }
     else if (cb.gi.y > 0.5) {
@@ -341,7 +439,7 @@ void main() {
         vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
         gi = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840));
     }
-    if (cb.gi.y < 0.5 || giTile) imageStore(giImage, texel, gi);
+    if ((cb.gi.y < 0.5 || giTile) && cb.gi3.z < 0.5) imageStore(giImage, texel, gi);
     if (cb.ao.w > 3.5 && cb.ao.w < 4.5) aoVisibility = clamp(viewZ / 2000.0, 0.0, 1.0);
     if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
     imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
@@ -355,13 +453,6 @@ void main() {
 // candidate alone gives L (GIReuse 0's value); with history the bright samples are kept and weighed down instead of landing on one
 // texel in twenty (the noise the denoiser had to blur). Simplifications (v1): the chosen sample is not re-traced (a light switched off
 // fades over GIReuse frames), no reuse from neighbours (spatial step), the surface is taken as the same (no Jacobian).
-vec2 OctEncode(vec3 n) {
-    n /= abs(n.x) + abs(n.y) + abs(n.z);
-    vec2 e = n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return e * 0.5 + 0.5;
-}
-float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
-
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
@@ -386,76 +477,8 @@ void main() {
                 : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
                 : true;
 
-    // Last frame's reservoir of this surface. (2026-10-30, v2) Outside the frame's tiles a texel without its own history (a
-    // disocclusion, a screen edge) borrows a neighbour's last frame (2 texels round the reprojected point, depth within 15 %) instead
-    // of tracing: v1 traced there, and one such texel made its whole wave pay for the bounce (rt-gi-10/11: GIInterleave 4 cost ~12-14
-    // ms where a quarter of the full rate's 26 is 6.5). Nothing usable: empty (M 0) until its tile's turn.
-    float cap = mod(cb.reuse.w, 64.0), historyM = 0.0;
-    int spatial = int(cb.reuse.w / 64.0);
-    vec4 history = vec4(0.0);
-    vec3 v = vec3(0.0);
-    ivec2 qt = ivec2(-1);
-    if (cap > 0.5) {
-        v = transpose(mat3(cb.prevViewToWorld)) * (p + cb.reuse.xyz);
-        if (v.z > 1.0) {
-            vec2 q = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
-            qt = ivec2(floor(q * cb.projection.zw));
-            const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2));
-            int tries = giTile ? 1 : 5;
-            for (int k = 0; k < tries && historyM < 0.5; k++) {
-                ivec2 at = qt + around[k];
-                if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
-                vec4 b = imageLoad(prevB, at);
-                float tolerance = k == 0 ? 0.05 : 0.15;
-                if (b.x > 0.5 && abs(b.y - v.z) < tolerance * v.z + 2.0 && dot(OctDecode(b.zw), n) > 0.9) {
-                    history = imageLoad(prevA, at);
-                    historyM = min(b.x, cap);
-                    if (!(history.a >= 0.0) || any(isnan(history.rgb)) || any(isinf(history.rgb))) { history = vec4(0.0); historyM = 0.0; }
-                }
-            }
-        }
-    }
-    vec3 chosen = history.a > 0.0 ? history.rgb / history.a : vec3(0.0);
-    float weightSum = Luma(chosen) * history.a * historyM, m = historyM;
-
-    // (2026-10-30) GISpatial: ReSTIR's spatial step, from last frame's reservoirs: up to 4 neighbours (random, 3-12 texels round the
-    // reprojected point, turned each frame) whose surface matches (depth 5 %, normal ~18 deg) join with their weight sums, each M at
-    // most cap / 2. No visibility test and no Jacobian (a neighbour's sample is taken as light arriving here too): fine across a
-    // floor or a wall, can leak a little across contact shadows (that is what the depth / normal tests and the short radius limit).
-    if (spatial > 0 && qt.x >= 0 && v.z > 1.0) {
-        float frame = cb.origin.w;
-        float spin = 6.2831853 * fract(Ign(vec2(texel) + 211.0) + frame * 0.618034);
-        for (int k = 0; k < spatial; k++) {
-            float a = spin + float(k) * 2.3999632;  // the golden angle
-            float r = 3.0 + 9.0 * fract(0.5 + float(k) * 0.618034 + frame * 0.381966);
-            ivec2 at = qt + ivec2(round(vec2(cos(a), sin(a)) * r));
-            if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
-            vec4 b = imageLoad(prevB, at);
-            if (!(b.x > 0.5) || abs(b.y - v.z) > 0.05 * v.z + 2.0 || dot(OctDecode(b.zw), n) < 0.95) continue;
-            vec4 h = imageLoad(prevA, at);
-            if (!(h.a > 0.0) || any(isnan(h.rgb)) || any(isinf(h.rgb))) continue;
-            vec3 l = h.rgb / h.a;
-            float mk = min(b.x, max(cap * 0.5, 1.0));
-            float w = Luma(l) * h.a * mk;
-            weightSum += w;
-            m += mk;
-            if (fract(Ign(vec2(texel) + 257.0 + 31.0 * float(k)) + frame * 0.7548777) * weightSum < w) chosen = l;
-        }
-    }
-
-    // The first frame of a reservoir (cap 0: no history at all) traces everywhere.
-    if (giTile || cap < 0.5) {
-        float frame = cb.origin.w;
-        vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
-        vec3 light = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840)).rgb;
-        float w = Luma(light);
-        weightSum += w;
-        m += 1.0;
-        if (fract(Ign(vec2(texel) + 131.0) + frame * 0.7548777) * weightSum < w) chosen = light;
-    }
-    float target = Luma(chosen);
-    float W = m > 0.0 && target > 0.0 ? weightSum / (m * target) : 0.0;
-    imageStore(curA, texel, vec4(chosen * W, W));
-    imageStore(curB, texel, vec4(m, viewZ, OctEncode(n)));
+    // Last frame's reservoir: the point in last frame's view (its rotation and the camera's move), then the shared reuse step.
+    vec3 v = cb.reuse.w > 0.5 ? transpose(mat3(cb.prevViewToWorld)) * (p + cb.reuse.xyz) : vec3(0.0);
+    ReuseGI(texel, p, n, viewZ, bias, giTile, v, cb.reuse.w);
 }
 #endif

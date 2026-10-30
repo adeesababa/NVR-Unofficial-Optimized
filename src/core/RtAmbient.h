@@ -90,7 +90,9 @@ namespace RtAmbient {
 		D3DXVECTOR4	lampPos[GILampsMax];	// xyz scene space, w reach
 		D3DXVECTOR4	lampColor[GILampsMax];	// rgb x dimmer
 		D3DXVECTOR4	gi2;			// (GI v2) x GIOffscreen, y the on-screen depth tolerance (share), z GIClamp, w Interleave
-		D3DXVECTOR4	gi3;			// x GIInterleave, y AOAlpha
+		D3DXVECTOR4	gi3;			// x GIInterleave, y AOAlpha, z 1 = GIReuse in this pass (2026-10-30: full rate, one pass instead of two)
+		D3DXVECTOR4	prevRot;		// (gi3.z) last frame's viewToWorld rotation as a quaternion (xyz, w)
+		D3DXVECTOR4	reuse;			// (gi3.z) xyz this frame's camera minus last frame's, w the M cap + 64 x GISpatial (0: no history)
 	};
 	static_assert(sizeof(TraceConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
