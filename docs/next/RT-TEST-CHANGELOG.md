@@ -101,3 +101,20 @@ nothing here is pushed, released or installed unless the user says so.
   cube A/B 0.04 %.
 - DLL CRC32 8B889510, NvrRtHelper CFF056B2 (protocol 3, same source as round 5), fork-0033 B8CF2308.
   Package `H:\_NVR-pkg\rt-test-f0fc7031\`.
+
+## Round 7 (2026-10-30 04:00, 4fe32674)
+
+- Merged: claude/rt-sun-2 0b138786 (textured skinned actors in the hit atlas = fork patch 0033 amended -> ship fork-0033b,
+  refit texcoord fix, glow record flag, cell-change actor release, RtDenoise Ids/Kernel, sun DenoiseKernel 5, RT-HARDWARE-TEST.md);
+  claude/rt-refl-2 2eeee727 (glow at RT hits verified, MaterialBufferRoughness off); claude/rt-lamps-2 6e60a90e (Flashlight and
+  Exteriors RT, both off + restart, ExteriorDebug); claude/rt-ao-gi 78d8d119 (AOAlpha, DenoiseKernel 3, ReSTIR GI reuse
+  GIReuse 8 / GISpatial 0 inside GI (off), history cut on light changes, RT AO RayCount 4 -> 2); claude/rootplan-round3 7142d073
+  (SettingsCache on, CasterListCache + MenuHiddenLean off, results doc).
+- Not taken: rt-sun-2 76085f8c (docs only, no READY line).
+- Conflict: ReflectionsTemporal.spv recompiled from the merged source (spirv-val OK); all shaders this round touched match
+  their sources. FORK-RT-AO.md and ROOTPLAN-RESULTS.md back to CRLF.
+- Bench PASS: 1070 RT off (20261030-040757-slotC): interiors at noise level, outdoors only clouds / bush sway / an NPC moved
+  (lighting the same); iGPU Goodsprings (041043-slotC, list rtm-igpu-ext5): helper by LUID, sun hard/soft/actors+alpha, AO + GI,
+  reflections, all on each change the picture, debug view right, no crash. Timings not trusted: rp8-skipluxe-4 and
+  rp8-skipv21-1 ran in other slots at the same time.
+- DLL CRC32 F7BAB601, NvrRtHelper 077433EA (protocol 3), fork-0033b 9E5E68CF. Package `H:\_NVR-pkgt-test-4fe32674\`.
