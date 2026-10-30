@@ -21,7 +21,8 @@ namespace {
 		float	rayLength = 30000.0f;
 		float	sunAngle = 0.0f;		// degrees across the sun's disc: 0 = one hard ray, > 0 = rays jittered inside it + the denoiser
 		bool	denoise = true;
-		bool	halfResolution = false;		// trace a quarter of the pixels (2 x 2 blocks), denoise and upsample
+		bool	halfResolution = false;
+		int		denoiseKernel = 5;			// the shared denoiser's a-trous kernel: 5 (5 x 5) or 3 (3 x 3, cheaper)		// trace a quarter of the pixels (2 x 2 blocks), denoise and upsample
 		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
@@ -58,6 +59,7 @@ namespace {
 		S.sunAngle = (std::min)((std::max)(TheSettingManager->GetSettingF(kSection, "SunAngle"), 0.0f), 10.0f);
 		S.denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
 		S.halfResolution = TheSettingManager->GetSettingI(kSection, "HalfResolution") != 0;
+		S.denoiseKernel = TheSettingManager->GetSettingI(kSection, "DenoiseKernel") == 3 ? 3 : 5;
 	}
 
 	const D3DXVECTOR4* Constant(const char* name) {
@@ -201,6 +203,7 @@ namespace RtSunShadows {
 			if (!denoiser) denoiser = RtDenoise::Create("RT sun shadows");
 			RtDenoise::Settings settings;
 			settings.Downscale = S.halfResolution ? 2 : 1;
+			settings.Kernel = S.denoiseKernel;
 			if (denoisedSurface && RtDenoise::Run(denoiser, Device, visibilityTexture, denoisedSurface, settings)) signalTexture = denoisedTexture;
 		}
 		if (!traced || S.debugView == 2 || S.debugView >= 4 || !signalTexture) return;

@@ -14,7 +14,7 @@ layout(set = 1, binding = 2) uniform texture2D t_ids;       // Settings.Ids (.r:
 
 layout(push_constant) uniform Push {
     vec4 params;   // x step (texels), y depth sigma, z normal power, w value sigma
-    vec4 size;     // x 1 / width, y 1 / height, z 1: only taps with the centre's id (t_ids) count
+    vec4 size;     // x 1 / width, y 1 / height, z 1: only taps with the centre's id (t_ids) count, w 1: the 3 x 3 kernel
     uint samplerIndex;
     uint pad[3];
 } pc;
@@ -23,6 +23,7 @@ layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 o_color;
 
 const float kernel[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+const float kernel3[2] = float[2](1.0 / 2.0, 1.0 / 4.0);   // the 3 x 3 kernel (Settings.Kernel 3): 9 taps instead of 25
 
 void main() {
     const vec4 center = textureLod(sampler2D(t_in, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0);
@@ -37,14 +38,15 @@ void main() {
 
     vec4 sum = vec4(0.0);
     float weights = 0.0;
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
+    const int reach = pc.size.w > 0.5 ? 1 : 2;
+    for (int y = -reach; y <= reach; y++) {
+        for (int x = -reach; x <= reach; x++) {
             const vec2 tapUv = uv + vec2(x, y) * pc.params.x * pc.size.xy;
             const vec4 tap = textureLod(sampler2D(t_in, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0);
             if (tap.a <= 0.0) continue;
             if (pc.size.z > 0.5 && abs(textureLod(sampler2D(t_ids, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0).r - id) > 0.5) continue;
             const vec3 tn = normalize(textureLod(sampler2D(t_normals, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0).xyz * 2.0 - 1.0);
-            float w = kernel[abs(x)] * kernel[abs(y)];
+            float w = reach == 1 ? kernel3[abs(x)] * kernel3[abs(y)] : kernel[abs(x)] * kernel[abs(y)];
             w *= exp(-abs(tap.a - z) / (pc.params.y * zSlope * length(vec2(x, y)) + 1.0e-3));
             w *= pow(max(dot(n, tn), 0.0), pc.params.z);
             w *= exp(-abs(tap.r - center.r) / valueSigma);
