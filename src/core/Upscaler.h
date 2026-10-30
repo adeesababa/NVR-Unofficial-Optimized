@@ -64,7 +64,11 @@ namespace Upscaler {
 
 	// [Shaders.TAA.DLSS] HelperTest (the helper's pass-through test: the same exchange, no DLSS) and JitterFlip (bit 0
 	// flips the jitter's x, bit 1 its y, for checks with NVIDIA's development DLL). Set by TAAEffect::UpdateSettings.
-	void		DlssOptions(bool PassThroughTest, int JitterFlip);
+	// UNOFFICIAL 2026-10-30 (DLAA stall report, RTX 5060: the game's GPU sat ~45 ms in the wait for the helper with interior shadows on):
+	// HelperWait 1 (the helper waits on the CPU for the game's inputs, then submits with no GPU wait in it; 0 = its submission waits on the
+	// GPU, as before) and HelperGpuPriority 1 (the helper's queue and process at the high GPU priority; 0 = normal). Both are the helper's
+	// start options: a change starts it again.
+	void		DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait = true, bool HelperHighPriority = true);
 
 	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run),
 	// 2 FSR 3.1 ([Shaders.TAA.FSR] Enabled + Version 1; FSR 2 from its first failure on, logged once).

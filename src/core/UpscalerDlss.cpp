@@ -118,11 +118,16 @@ namespace {
 				return;
 			}
 		}
-		// Right before "inputs ready" (the flush): the copies' end, in the same command list as the start.
-		void MidGpu() {
+		// Right before "inputs ready" (the flush): the copies' end, in the same command list as the start. The frame's number and the
+		// frames in flight then go with the slot, for the exchange-stall line.
+		void MidGpu(UInt64 frame, UInt64 inFlight, const char* mode) {
 			if (!active) return;
+			active->frame = frame;
+			active->inFlight = inFlight;
+			active->mode = mode;
 			if (FAILED(active->mid->Issue(D3DISSUE_END))) { broken = true; ReleaseQueries(); }
 		}
+		void SetShared(const NvrDlssShared* s) { sharedBlock = s; }
 		void EndGpu(bool keep) {
 			Slot* slot = active;
 			active = nullptr;
@@ -179,8 +184,8 @@ namespace {
 					sorted[(std::min)(n - 1, (n * 99) / 100)], sorted[n - 1], over33, (UInt32)n, over50);
 			}
 			char gpu[224] = "the exchange not measured (no timestamp queries)";
-			if (gpuCount) sprintf_s(gpu, "the copies in %.2f ms avg; the span to the helper's output %.2f ms avg, max %.2f (%u of %u over 4 ms; with CPU time "
-				"until the next submit when CPU-bound)", copySumMs / gpuCount, gpuSumMs / gpuCount, gpuMaxMs, gpuOver4, gpuCount);
+			if (gpuCount) sprintf_s(gpu, "the copies in %.2f ms avg; the span to the helper's output %.2f ms avg, max %.2f (%u of %u over 4 ms, %u over 20 ms; "
+				"with CPU time until the next submit when CPU-bound)", copySumMs / gpuCount, gpuSumMs / gpuCount, gpuMaxMs, gpuOver4, gpuCount, stallsWindow);
 			char vram[128];
 			VideoMemory(vram, sizeof(vram));
 			sprintf_s(text, size, "; %s; %s; video memory %s", frames, gpu, vram);
@@ -189,7 +194,15 @@ namespace {
 		}
 
 	private:
-		struct Slot { IDirect3DQuery9* start = nullptr; IDirect3DQuery9* mid = nullptr; IDirect3DQuery9* end = nullptr; IDirect3DQuery9* frequency = nullptr; bool pending = false; };
+		struct Slot {
+			IDirect3DQuery9* start = nullptr; IDirect3DQuery9* mid = nullptr; IDirect3DQuery9* end = nullptr; IDirect3DQuery9* frequency = nullptr;
+			bool pending = false;
+			UInt64 frame = 0, inFlight = 0;		// (DLSS EXCHANGE STALL line)
+			const char* mode = "";
+		};
+		const NvrDlssShared* sharedBlock = nullptr;
+		UInt32	stallsLogged = 0, stallsWindow = 0;
+		LARGE_INTEGER lastStallQpc = {};
 		Slot	slots[8];
 		Slot*	active = nullptr;
 		IDirect3DDevice9* device = nullptr;
@@ -206,7 +219,7 @@ namespace {
 		bool	luidValid = false, dxgiTried = false;
 		IDXGIAdapter3* adapter = nullptr;
 
-		void ResetGpuWindow() { gpuSumMs = gpuMaxMs = copySumMs = 0.0; gpuCount = gpuOver4 = 0; }
+		void ResetGpuWindow() { gpuSumMs = gpuMaxMs = copySumMs = 0.0; gpuCount = gpuOver4 = stallsWindow = 0; }
 		double RecentMaxMs() const {
 			double m = 0.0;
 			for (UInt32 i = 0; i < (std::min)(recentCount, (UInt32)8); i++) m = (std::max)(m, (double)recent[i]);
@@ -252,6 +265,23 @@ namespace {
 				gpuMaxMs = (std::max)(gpuMaxMs, ms);
 				gpuCount++;
 				if (ms > 4.0) gpuOver4++;
+				// UNOFFICIAL 2026-10-30 (DLAA stall report): an exchange whose span is over 20 ms gets a line of its own (60 a session, at
+				// most 2 a second), with what the helper says about itself: its own GPU time and response normal, a long span = the game's
+				// GPU waited for a helper that was not scheduled (or a CPU-bound frame's late submit: see "copies").
+				if (ms > 20.0) {
+					stallsWindow++;
+					LARGE_INTEGER now, qpf;
+					QueryPerformanceCounter(&now);
+					QueryPerformanceFrequency(&qpf);
+					if (stallsLogged < 60 && (now.QuadPart - lastStallQpc.QuadPart) * 2 > qpf.QuadPart) {
+						stallsLogged++;
+						lastStallQpc = now;
+						Logger::Log("DLSS EXCHANGE STALL frame %llu (%s): the span to the helper's output %.1f ms (the copies in %.2f ms), %llu frames in flight "
+							"then; the helper itself: GPU %.3f ms (last), response %.3f ms avg (max %.3f)", (unsigned long long)slot.frame, slot.mode, ms, copies,
+							(unsigned long long)slot.inFlight, sharedBlock ? sharedBlock->gpuTimeUsLast / 1000.0 : 0.0,
+							sharedBlock ? sharedBlock->responseUsAvg / 1000.0 : 0.0, sharedBlock ? sharedBlock->responseUsMax / 1000.0 : 0.0);
+					}
+				}
 				recent[recentCount++ % 8] = (float)ms;
 			}
 		}
@@ -301,12 +331,20 @@ namespace {
 		bool	IsOff() const { return state == Off; }
 		// a frame went to FSR 2 by the setting: DLSS's history is stale (and FSR 2's textures are freed again once DLSS has run 600 frames)
 		void	MarkUnused() { dlssNeedsReset = true; runningFrames = 0; fsrFreed = false; watch.Gap(); }
-		void	SetOptions(bool test, int jitterFlip) {
+		void	SetOptions(bool test, int jitterFlip, bool cpuWait, bool highPriority) {
 			if (test != passThrough && state != Idle && state != Off) {
 				// Another mode: the helper is started again (FSR 2 in between).
 				Stop(test ? "HelperTest turned on" : "HelperTest turned off");
 				state = Idle;
 			}
+			// UNOFFICIAL 2026-10-30 (DLAA stall report): the helper's start options; a change starts it again (FSR 2 in between)
+			if ((cpuWait != helperCpuWait || highPriority != helperHighPriority) && state != Idle && state != Off) {
+				Stop(cpuWait != helperCpuWait ? (cpuWait ? "HelperWait turned to 1 (the helper waits on the CPU)" : "HelperWait turned to 0 (the GPU waits)") :
+					(highPriority ? "HelperGpuPriority turned on" : "HelperGpuPriority turned off"));
+				state = Idle;
+			}
+			helperCpuWait = cpuWait;
+			helperHighPriority = highPriority;
 			passThrough = test;
 			flipX = (jitterFlip & 1) != 0;
 			flipY = (jitterFlip & 2) != 0;
@@ -355,6 +393,7 @@ namespace {
 		State		state = Idle;
 		bool		passThrough = false;
 		bool		flipX = false, flipY = false;
+		bool		helperCpuWait = true, helperHighPriority = true;	// UNOFFICIAL 2026-10-30: the helper's start options (DlssOptions)
 		bool		usedSelf = false;			// this frame's Output() is the helper's (else FSR 2's)
 		bool		fsrNeedsReset = false;		// FSR 2's history is stale after DLSS frames
 		bool		dlssNeedsReset = true;
@@ -555,6 +594,9 @@ namespace {
 		shared->features = rrImages ? NVR_DLSS_FEATURE_RR : 0u;
 
 		std::wstring cmdLine = L"\"" + exe + L"\" --shm " + base;
+		// UNOFFICIAL 2026-10-30 (DLAA stall report): HelperWait / HelperGpuPriority (NvrDlssHelper.cpp's header says what they do)
+		cmdLine += helperCpuWait ? L" --wait cpu" : L" --wait gpu";
+		cmdLine += helperHighPriority ? L" --gpu-priority high" : L" --gpu-priority normal";
 		STARTUPINFOW si = { sizeof(si) };
 		PROCESS_INFORMATION pi = {};
 		if (!CreateProcessW(exe.c_str(), &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS, nullptr, helperDir.c_str(), &si, &pi)) {
@@ -624,6 +666,7 @@ namespace {
 		rrSent = 0;
 		rrSkipLogged = false;
 		watch.SetAdapter(info.DeviceLUID, info.DeviceLUIDValid != FALSE);
+		watch.SetShared(shared);
 		watch.Reset();
 		runningFrames = 0;
 		fsrFreed = false;
@@ -635,8 +678,9 @@ namespace {
 		startTick = GetTickCount64();
 		state = Starting;
 		lastSerial = 0;
-		Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper started (%s, %ls): inputs %ux%u, display %ux%u, GPU %s; FSR 2 runs until it is ready.",
-			passThrough ? "pass-through test" : "DLSS", exe.c_str(), inputWidth, inputHeight, displayWidth, displayHeight, info.DeviceName);
+		Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper started (%s, %ls): inputs %ux%u, display %ux%u, GPU %s; HelperWait %d (%s), HelperGpuPriority %d; "
+			"FSR 2 runs until it is ready.", passThrough ? "pass-through test" : "DLSS", exe.c_str(), inputWidth, inputHeight, displayWidth, displayHeight,
+			info.DeviceName, helperCpuWait ? 1 : 0, helperCpuWait ? "the helper waits on the CPU" : "the GPU waits", helperHighPriority ? 1 : 0);
 		return true;
 	}
 
@@ -807,7 +851,13 @@ namespace {
 		InterlockedExchange64((volatile LONG64*)&shared->latestFrame, (LONG64)n);
 		SetEvent(frameEvent);
 		InterlockedExchange64(&lastRecorded, (LONG64)n);
-		watch.MidGpu();	// UNOFFICIAL 2026-10-30: the copies' end, before the flush "inputs ready" makes (ExchangeWatch)
+		{
+			// UNOFFICIAL 2026-10-30: the copies' end, before the flush "inputs ready" makes (ExchangeWatch), with this frame's number and
+			// the frames in flight then (the exchange-stall line)
+			UINT64 back = 0;
+			outputReady->GetCompletedValue(&back);
+			watch.MidGpu(n, n > back ? n - back - 1 : 0, Rr ? "Ray Reconstruction" : (passThrough ? "pass-through test" : DlssModeName(In.RenderWidth, In.DisplayWidth)));
+		}
 		share->SignalShared(inputsReady, n);
 		share->WaitShared(outputReady, n);
 		share->CopyFromShared(output.Texture, 0, 0, images[NVR_DLSS_IMAGE_OUTPUT], nullptr);
@@ -944,7 +994,9 @@ namespace {
 namespace Upscaler {
 	IUpscaler* Dlss() { return &TheDlss; }
 
-	void DlssOptions(bool PassThroughTest, int JitterFlip) { TheDlss.SetOptions(PassThroughTest, JitterFlip); }
+	void DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait, bool HelperHighPriority) {
+		TheDlss.SetOptions(PassThroughTest, JitterFlip, HelperCpuWait, HelperHighPriority);
+	}
 
 	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (Upscaler.h): the same helper, semaphores and frame counter as Dlss().
 	void DlssRrOptions(const RrOptions& Options) { TheDlss.SetRrOptions(Options); }

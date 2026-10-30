@@ -97,8 +97,12 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;
 	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; DLSS Enabled above is real DLSS,
 	// with FSR 2 whenever it cannot run). Both read as 0 (off) when missing.
+	// UNOFFICIAL 2026-10-30 (DLAA stall report): HelperWait / HelperGpuPriority, 1 when the key is missing (FillNode: 0 is a real value).
+	SettingManager::Configuration::ConfigNode helperNode;
+	const bool helperCpuWait = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperWait") ? helperNode.FloatValue != 0.0f : true;
+	const bool helperHighPriority = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperGpuPriority") ? helperNode.FloatValue != 0.0f : true;
 	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
-		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3));
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3), helperCpuWait, helperHighPriority);
 	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (TAAFSR.cpp RayReconstruct, docs/next/FORK2-DLSS-RR.md) and DLSS SR's preset. A missing
 	// key reads as 0 / false: RR off, no preset hint (the DLL's own choice, as before), the guides' defaults. RRRoughness is the one where 0
 	// is a real value (a mirror), so only a key that is there at all replaces its default.

@@ -16,7 +16,15 @@
 // SR also takes NVR's model preset per frame now (a hint per quality mode, set before the feature is made).
 //
 // Usage:
-//   NvrDlssHelper.exe --shm <name>   started by NVR (never by hand)
+//   NvrDlssHelper.exe --shm <name>   started by NVR (never by hand); UNOFFICIAL 2026-10-30 (DLAA stall report, RTX 5060: the game's
+//                                    GPU sat ~45 ms in the wait for the helper while the helper's own work took 0.94 ms and it
+//                                    submitted within 0.15 ms) two options after it, from [Shaders.TAA.DLSS] HelperWait / HelperGpuPriority:
+//                                    --wait cpu: the helper waits on the CPU until the game's "inputs ready" is reached, then submits
+//                                    a frame with no semaphore wait in it (no cross-process wait for the driver to resolve on the GPU);
+//                                    --wait gpu: as before (the submission waits on the GPU). --gpu-priority high: the helper's queue at
+//                                    VK_EXT/KHR_global_priority HIGH where the driver allows it, and its process at the WDDM scheduling
+//                                    priority class HIGH (D3DKMTSetProcessSchedulingPriorityClass; CPU priority is not GPU priority);
+//                                    --gpu-priority normal: neither.
 //   NvrDlssHelper.exe --probe        prints the GPU, the Vulkan interop support and whether DLSS (and Ray Reconstruction) is
 //                                    available, then exits
 //   NvrDlssHelper.exe --selftest     (or --selftest dlss: the child in DLSS mode; without DLSS it must give up cleanly) the whole cross-process exchange without the game: this process plays NVR's part
@@ -59,6 +67,9 @@ namespace {
 	NvrDlssShared*		g_shared = nullptr;
 	HANDLE				g_statusEvent = nullptr;
 	bool				g_console = false;
+	// UNOFFICIAL 2026-10-30 (DLAA stall report): --wait cpu / --gpu-priority high (the helper's start options; see the header)
+	bool				g_cpuWait = false;
+	bool				g_highPriority = false;
 	std::wstring		g_exeDir;
 
 	void Log(const char* format, ...) {
@@ -452,12 +463,33 @@ namespace {
 		queueInfo.queueFamilyIndex = vk.queueFamily;
 		queueInfo.queueCount = 1;
 		queueInfo.pQueuePriorities = &priority;
+		// UNOFFICIAL 2026-10-30 (DLAA stall report): --gpu-priority high: the queue at the global priority HIGH where the driver offers
+		// VK_KHR_global_priority or VK_EXT_global_priority (the same structure); a driver that does not permit it gets the device without.
+		VkDeviceQueueGlobalPriorityCreateInfoEXT globalPriority = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_EXT };
+		globalPriority.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_HIGH_EXT;
+		const char* priorityExtension = nullptr;
+		if (g_highPriority) {
+			if (HasExtension(deviceExts, "VK_KHR_global_priority")) priorityExtension = "VK_KHR_global_priority";
+			else if (HasExtension(deviceExts, "VK_EXT_global_priority")) priorityExtension = "VK_EXT_global_priority";
+			if (priorityExtension) {
+				AddUnique(enabled, priorityExtension);
+				queueInfo.pNext = &globalPriority;
+			}
+			else Log("GPU priority: the driver offers no global queue priority (VK_KHR/EXT_global_priority); the queue stays at the default");
+		}
 		VkDeviceCreateInfo deviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features };
 		deviceInfo.queueCreateInfoCount = 1;
 		deviceInfo.pQueueCreateInfos = &queueInfo;
 		deviceInfo.enabledExtensionCount = (uint32_t)enabled.size();
 		deviceInfo.ppEnabledExtensionNames = enabled.data();
-		VK_CHECK(vkCreateDevice(vk.physical, &deviceInfo, nullptr, &vk.device), "vkCreateDevice");
+		VkResult created = vkCreateDevice(vk.physical, &deviceInfo, nullptr, &vk.device);
+		if (priorityExtension && created == VK_ERROR_NOT_PERMITTED_EXT) {
+			Log("GPU priority: %s HIGH is not permitted here; the queue stays at the default", priorityExtension);
+			queueInfo.pNext = nullptr;
+			created = vkCreateDevice(vk.physical, &deviceInfo, nullptr, &vk.device);
+		}
+		else if (priorityExtension && created == VK_SUCCESS) Log("GPU priority: the queue is at the global priority HIGH (%s)", priorityExtension);
+		VK_CHECK(created, "vkCreateDevice");
 		vkGetDeviceQueue(vk.device, vk.queueFamily, 0, &vk.queue);
 		vk.getMemoryWin32Handle = (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(vk.device, "vkGetMemoryWin32HandleKHR");
 		vk.getSemaphoreWin32Handle = (PFN_vkGetSemaphoreWin32HandleKHR)vkGetDeviceProcAddr(vk.device, "vkGetSemaphoreWin32HandleKHR");
@@ -573,6 +605,8 @@ namespace {
 		bool			markerReady = false;
 		uint32_t		mode = NVR_DLSS_MODE_PASSTHROUGH;
 		uint64_t		gpuUs[64] = {}, responseUs[64] = {};
+		double			inputsWaitMsSum = 0.0, inputsWaitMsMax = 0.0;	// UNOFFICIAL 2026-10-30: --wait cpu's waits for the game's inputs
+		uint32_t		inputsWaitCount = 0;
 		uint32_t		gpuCount = 0, responseCount = 0;
 		bool			loggedFirst = false;
 		// UNOFFICIAL 2026-10-30 protocol 2: the images NVR made (4, or 8 with the RR guides) and whether RR frames can come.
@@ -1217,24 +1251,8 @@ namespace {
 		if (h.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * 2 + 1);
 		VK_CHECK(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
-		const uint64_t waitValue = frame, signalValue = frame;
-		VkTimelineSemaphoreSubmitInfo timeline = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
-		timeline.waitSemaphoreValueCount = 1;
-		timeline.pWaitSemaphoreValues = &waitValue;
-		timeline.signalSemaphoreValueCount = 1;
-		timeline.pSignalSemaphoreValues = &signalValue;
-		const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-		VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, &timeline };
-		submit.waitSemaphoreCount = 1;
-		submit.pWaitSemaphores = &h.inputsReady;
-		submit.pWaitDstStageMask = &waitStage;
-		submit.commandBufferCount = 1;
-		submit.pCommandBuffers = &cmd;
-		submit.signalSemaphoreCount = 1;
-		submit.pSignalSemaphores = &h.outputReady;
-		VK_CHECK(vkQueueSubmit(h.vk.queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
-		h.cmdFrame[slot] = frame;
-
+		// The response (NVR's write -> this frame ready to go): measured here, before --wait cpu's wait for the game's GPU, so it means the
+		// same in both modes (UNOFFICIAL 2026-10-30).
 		LARGE_INTEGER now, frequency;
 		QueryPerformanceCounter(&now);
 		QueryPerformanceFrequency(&frequency);
@@ -1244,6 +1262,53 @@ namespace {
 			g_shared->responseUsAvg = Average(h.responseUs, h.responseCount);
 			if (us > g_shared->responseUsMax) g_shared->responseUsMax = (uint32_t)us;
 		}
+
+		// UNOFFICIAL 2026-10-30 (DLAA stall report) --wait cpu: the game's "inputs ready" = N reached on the CPU first; the submission then
+		// carries no wait, so the GPU runs it as soon as it is submitted (no cross-process GPU wait). Its end still signals "output ready".
+		bool gpuWait = !g_cpuWait;
+		if (g_cpuWait) {
+			VkSemaphoreWaitInfo wait = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+			wait.semaphoreCount = 1;
+			wait.pSemaphores = &h.inputsReady;
+			wait.pValues = &frame;
+			LARGE_INTEGER waitStart, waitEnd;
+			QueryPerformanceCounter(&waitStart);
+			for (;;) {
+				const VkResult r = vkWaitSemaphores(h.vk.device, &wait, 250ull * 1000 * 1000);
+				if (r == VK_SUCCESS) break;
+				if (r != VK_TIMEOUT) {
+					// Waiting on the CPU failed: this frame waits on the GPU as before, and so do the rest (logged once).
+					Log("--wait cpu: waiting for the game's inputs failed (%s); the helper's submissions wait on the GPU from now on", VkResultName(r));
+					g_cpuWait = false;
+					gpuWait = true;
+					break;
+				}
+				if (WaitForSingleObject(parent, 0) == WAIT_OBJECT_0 || g_shared->quit) return false;
+			}
+			QueryPerformanceCounter(&waitEnd);
+			const double waitedMs = (double)(waitEnd.QuadPart - waitStart.QuadPart) * 1000.0 / (double)frequency.QuadPart;
+			h.inputsWaitMsSum += waitedMs;
+			h.inputsWaitMsMax = std::max(h.inputsWaitMsMax, waitedMs);
+			h.inputsWaitCount++;
+		}
+
+		const uint64_t waitValue = frame, signalValue = frame;
+		VkTimelineSemaphoreSubmitInfo timeline = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+		timeline.waitSemaphoreValueCount = gpuWait ? 1 : 0;
+		timeline.pWaitSemaphoreValues = gpuWait ? &waitValue : nullptr;
+		timeline.signalSemaphoreValueCount = 1;
+		timeline.pSignalSemaphoreValues = &signalValue;
+		const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+		VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, &timeline };
+		submit.waitSemaphoreCount = gpuWait ? 1 : 0;
+		submit.pWaitSemaphores = gpuWait ? &h.inputsReady : nullptr;
+		submit.pWaitDstStageMask = gpuWait ? &waitStage : nullptr;
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers = &cmd;
+		submit.signalSemaphoreCount = 1;
+		submit.pSignalSemaphores = &h.outputReady;
+		VK_CHECK(vkQueueSubmit(h.vk.queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
+		h.cmdFrame[slot] = frame;
 		if (dlssRan) g_shared->dlssEvaluated++;
 		if (rrRan) g_shared->rrEvaluated++;
 		g_shared->framesSubmitted++;
@@ -1260,6 +1325,12 @@ namespace {
 			Log("first RR frame %llu submitted (%s, render %ux%u -> %ux%u, %s normals, %s depth)", (unsigned long long)frame, work, use.renderWidth,
 				use.renderHeight, h.images[NVR_DLSS_IMAGE_OUTPUT].width, h.images[NVR_DLSS_IMAGE_OUTPUT].height,
 				(use.rrOptions & NVR_DLSS_RR_NORMALS_VIEW) ? "view-space" : "world-space", (use.rrOptions & NVR_DLSS_RR_DEPTH_LINEAR) ? "linear" : "hardware");
+		}
+		if ((frame % 600) == 0 && h.inputsWaitCount) {
+			Log("frame %llu: --wait cpu waited for the game's inputs %.3f ms avg (max %.3f) over the last %u frames", (unsigned long long)frame,
+				h.inputsWaitMsSum / h.inputsWaitCount, h.inputsWaitMsMax, h.inputsWaitCount);
+			h.inputsWaitMsSum = h.inputsWaitMsMax = 0.0;
+			h.inputsWaitCount = 0;
 		}
 		if ((frame % 600) == 0) {
 			char rr[64] = "";
@@ -1289,6 +1360,18 @@ namespace {
 				shared->version, shared->size, NVR_DLSS_PROTOCOL_VERSION, (unsigned)sizeof(NvrDlssShared));
 			return 2;
 		}
+		// UNOFFICIAL 2026-10-30 (DLAA stall report): the WDDM GPU scheduling priority class of this process (gdi32's
+		// D3DKMTSetProcessSchedulingPriorityClass; D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH = 4). The CPU priority class does not reach the GPU.
+		if (g_highPriority) {
+			typedef LONG(APIENTRY* SetGpuPriorityClass)(HANDLE, int);
+			const SetGpuPriorityClass setClass = (SetGpuPriorityClass)GetProcAddress(GetModuleHandleW(L"gdi32.dll") ? GetModuleHandleW(L"gdi32.dll") :
+				LoadLibraryW(L"gdi32.dll"), "D3DKMTSetProcessSchedulingPriorityClass");
+			const LONG status = setClass ? setClass(GetCurrentProcess(), 4) : -1;
+			Log("GPU priority: the process's GPU scheduling priority class HIGH: %s (NTSTATUS 0x%08lX)", status == 0 ? "set" : "not set",
+				(unsigned long)status);
+		}
+		Log("start options: %s, GPU priority %s", g_cpuWait ? "--wait cpu (the helper waits for the game's inputs on the CPU, then submits)" :
+			"--wait gpu (the submission waits on the GPU)", g_highPriority ? "high" : "normal");
 		const std::wstring frameName = std::wstring(base) + NVR_DLSS_EVENT_FRAME_SUFFIX, statusName = std::wstring(base) + NVR_DLSS_EVENT_STATUS_SUFFIX;
 		HANDLE frameEvent = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, frameName.c_str());
 		g_statusEvent = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, statusName.c_str());
@@ -1613,6 +1696,8 @@ namespace {
 		wchar_t exe[MAX_PATH] = {};
 		GetModuleFileNameW(nullptr, exe, MAX_PATH);
 		std::wstring cmdLine = L"\"" + std::wstring(exe) + L"\" --shm " + base;
+		cmdLine += g_cpuWait ? L" --wait cpu" : L" --wait gpu";				// UNOFFICIAL 2026-10-30
+		cmdLine += g_highPriority ? L" --gpu-priority high" : L" --gpu-priority normal";
 		STARTUPINFOW si = { sizeof(si) };
 		PROCESS_INFORMATION pi = {};
 		if (!CreateProcessW(exe, &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, g_exeDir.c_str(), &si, &pi)) {
@@ -1876,7 +1961,14 @@ int wmain(int argc, wchar_t** argv) {
 	InitializeCriticalSection(&g_logLock);
 	g_exeDir = ExeDir();
 	for (int i = 1; i < argc; i++) {
-		if (!wcscmp(argv[i], L"--shm") && i + 1 < argc) return RunHelper(argv[i + 1]);
+		if (!wcscmp(argv[i], L"--shm") && i + 1 < argc) {
+			// UNOFFICIAL 2026-10-30 (DLAA stall report): the start options after it
+			for (int j = i + 2; j + 1 < argc; j += 2) {
+				if (!wcscmp(argv[j], L"--wait")) g_cpuWait = !wcscmp(argv[j + 1], L"cpu");
+				else if (!wcscmp(argv[j], L"--gpu-priority")) g_highPriority = !wcscmp(argv[j + 1], L"high");
+			}
+			return RunHelper(argv[i + 1]);
+		}
 		if (!wcscmp(argv[i], L"--probe")) return RunProbe();
 		if (!wcscmp(argv[i], L"--selftest")) {
 			// UNOFFICIAL 2026-10-30: "dlss" and "rr" after it, in either order (--selftest rr, --selftest dlss rr).
@@ -1884,10 +1976,12 @@ int wmain(int argc, wchar_t** argv) {
 			for (int j = i + 1; j < argc; j++) {
 				if (!wcscmp(argv[j], L"dlss")) dlss = true;
 				else if (!wcscmp(argv[j], L"rr")) rr = true;
+				else if (!wcscmp(argv[j], L"cpuwait")) g_cpuWait = true;		// UNOFFICIAL 2026-10-30: the child gets --wait cpu
+				else if (!wcscmp(argv[j], L"highprio")) g_highPriority = true;	// and --gpu-priority high
 			}
 			return RunSelfTest(dlss, rr);
 		}
 	}
-	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest [dlss] [rr] (the exchange without the game).\n");
+	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest [dlss] [rr] [cpuwait] [highprio] (the exchange without the game).\n");
 	return 1;
 }
