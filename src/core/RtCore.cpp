@@ -664,13 +664,18 @@ namespace {
 		NiSkinInstance* skin = geo->skinInstance;
 		NiSkinPartition* parts = skin ? skin->SkinPartition : nullptr;
 		if (!rtSkin || !parts || !parts->Partitions || !skin->SkinData || !skin->SkinData->BoneData || !skin->BoneObjects) { skip[kSkinned]++; return; }
+		// Any shader: the bodies' skin shader is not a lighting property (rtsun-16: only the hidden dismemberment caps were in)
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
-		if (!shaderProperty || !shaderProperty->IsLightingProperty()) { skip[kNotLighting]++; return; }
+		if (!shaderProperty) { skip[kNotLighting]++; return; }
+		// Dismemberment: a skin that does not render (the gore caps until a limb comes off) or a disabled partition stays out
+		BSDismemberSkinInstance* dismember = *(void**)skin == Pointers::VirtualTables::BSDismemberSkinInstance ? (BSDismemberSkinInstance*)skin : nullptr;
+		if (dismember && !dismember->IsRenderable) { skip[kSkinned]++; return; }
 		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
 		// Bodies are alpha-tested (the hair and fringe edges): they go in opaque (rtsun-13: with them left out, only heads and hands were
 		// in the scene). Blended-only (glass, fx) stays out.
 		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; return; }
-		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
+		static const Albedo grey = { { 0.5f, 0.5f, 0.5f }, false };
+		const Albedo& albedo = shaderProperty->IsLightingProperty() ? AlbedoOf(geo, shaderProperty) : grey;
 		const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		static std::vector<float> palette;
@@ -690,6 +695,7 @@ namespace {
 		for (UInt32 p = 0; p < parts->PartitionsCount; p++) {
 			const NiSkinPartition::Partition& part = parts->Partitions[p];
 			if (!part.BuffData) { partitionFate[0]++; continue; }
+			if (dismember && dismember->partitions && p < dismember->partitionNumber && !dismember->partitions[p].Enabled) { partitionFate[1]++; continue; }
 			if (!part.pBones || !part.Bones || part.Bones > NVR_EXT_RT_SKIN_MAX_BONES || !part.BonesPerVertex) { partitionFate[1]++; continue; }
 			NVR_EXT_RT_GEOMETRY_DESC desc;
 			GeometryKey key;
