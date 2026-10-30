@@ -110,7 +110,12 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   TERRAIN_LAMP_RT matches them by POSITION: a lamp's camera-relative position = the pixel's (shadowWorldPos) + its vector to the lamp
   (the same in every space); the trace's slot positions as traced (RtLampShadows::TracedLampWorld, slots 0-19) at c146-c165, the
   reprojection c168-c171, c172, the traced buffer on s15; +135 slots on the largest (2639 -> 2774, offline). Only with Terrain Blending
-  off (logged otherwise). Test: rtlamp-34 (Novac + Freeside).
+  off (logged otherwise).
+- rtlamp-34 (20261030-081600-slotA, PASS): all 21 land shaders with lamps load their outdoor record (0 refused); Freeside unchanged
+  (0.29 % darker). Novac's old spot: moonlight only on the ground (0.10 % = repeat noise). rtlamp-35 (20261030-084238-slotA, PASS),
+  right under the motel walkway lamps: one traced lamp shadow on an object (a lamp-lit fence face goes dark, 0.46 % vs 0.13 % noise);
+  no lamp pool on the land in either view, so the land path's visible effect is NOT proven yet (it runs, no artifacts, no regression).
+  Needs a land spot with a lamp pool on the ground (a lamp-lit dirt road at night); the coverage view does not cover the land.
 - The Strip showcase (parked, for the user to run): foundations\liststlamp-strip-showcase.txt (11 shots: today / traced x2 /
   coverage, two headings, 23:00 clear) in a FULL game copy or the real folder with the strip20 save (the slim slots have none), run
   toml bench\deep-roadmaptlampun-toml-igpu-rtlamp-extfwd.toml.
