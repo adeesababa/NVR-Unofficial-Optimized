@@ -30,7 +30,7 @@ namespace {
 		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4], alpha[4], full[4];
 	};
 
-	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1;
+	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1, hitDebugShader = -1;
 	IDirect3DTexture9*	visibilityTexture = nullptr;
 	IDirect3DTexture9*	denoisedTexture = nullptr;		// SunAngle > 0: the denoised visibility (R16F)
 	IDirect3DSurface9*	denoisedSurface = nullptr;
@@ -124,8 +124,15 @@ namespace {
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
 		const int atlas = RtCore::AlphaAtlasImage();
-		const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
-		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		const int albedoAtlas = RtCore::AlbedoAtlasImage();
+		if (S.debugView == 7 && albedoAtlas >= 0 && atlas >= 0 && hitDebugShader >= 0) {	// the hit textures check (RtHitDebug.comp)
+			const int images[3] = { imageVisibility, atlas, albedoAtlas };
+			if (!RtCore::AddPass(hitDebugShader, images, 3, 0x1, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		}
+		else {
+			const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
+			if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		}
 		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface, w, h);
 		if (tracedThisFrame && frames++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows traced (%ux%u, Mode %d: %s, range %.0f, DebugView %d).", w, h, S.mode,
@@ -171,6 +178,7 @@ namespace {
 namespace RtSunShadows {
 	void Register() {
 		shader = RtCore::AddShader("RtSunShadow");
+		hitDebugShader = RtCore::AddShader("RtHitDebug");
 		RtCore::AddUser({ "RT sun shadows", Wants, Setup, Record });
 	}
 
