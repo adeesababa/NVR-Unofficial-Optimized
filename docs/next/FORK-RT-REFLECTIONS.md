@@ -185,6 +185,16 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 04:00 MaterialBufferRoughness (4b3c5ca7, DLL FE2ADFD6): wiring for the material buffer, effect waits for the merge round
+`[Shaders.Reflections.Main] MaterialBufferRoughness` (off, Vulkan passes): where the game's shader wrote the roughness it lit a surface
+with into TESR_MaterialBuffer (claude/material-buffer, `[Main.Main.Quality] MaterialBuffer`: r class, b roughness, -1 none), the floor
+guess takes it instead of the one DryRoughness: polished floors stay sharp, carpets and dirt blur and get no rays past MaxRoughness.
+That branch's readers were blocked by the D3D9 path's 16 samplers; the Vulkan passes bind it on binding 24 (cb.material2.x). The
+buffer is looked up once by name, so this branch (without it) builds and runs with the switch doing nothing.
+- luxe 20261030-035035-slotA (rtrefl-11, RT on): on vs off 0.14 % px (noise 0.16 %), reflection alone 0.03 %: no change without the
+  buffer, as meant; log "no TESR_MaterialBuffer in this build: off" (and the texture manager's one-time "[ERROR] Texture
+  TESR_MaterialBuffer not found", harmless). The real check needs a build with both branches (merge round).
+
 ### 2026-10-30 02:10 people in the RT scene (rtrefl-8 with [Main.Main.RayTracing] Actors on; 33f84313 = rt-sun-2 0b138786, DLL F9E43B13)
 - lucky22 20261030-015913-slotA (fork-0033b, extra-p3; AlphaTested + HitTextures + Actors): no regression: textures vs average
   8.29 % px alone (8.49 % without actors), repeats 0.01 %; 1810 skinned partitions posed in the first 60 exchanges.
