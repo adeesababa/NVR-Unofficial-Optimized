@@ -3,11 +3,8 @@
 #include "PointShadowSchedule.h"
 #include "LampFixtures.h"
 #include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28
-<<<<<<< HEAD
 #include "ShadowPool.h"	// UNOFFICIAL 2026-10-29 ShadowPool (ShadowPoolMax)
-=======
 #include <unordered_set>	// UNOFFICIAL 2026-10-30 TerrainRecords
->>>>>>> claude/rt-lamps-2
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
 //
