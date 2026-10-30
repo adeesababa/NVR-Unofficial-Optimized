@@ -430,3 +430,31 @@ highlight / texture passes 0 (one-pass lighting already); world GPU 3.1 ms, of i
 a deferred pass would replace is already one pass and clustered shows no missing lamps, while the frame is CPU-bound (render 3-6 ms CPU =
 the frame interval, GPU 4.6-7 ms on the 1070 at 640x360); a G-buffer pass re-submits every world draw (~1772 a frame, the costly part on
 the CPU) to save at most the 21 % (~0.65 ms GPU) the game's own short lamp lists already light cheaply. Nothing in these numbers it would add.
+
+## Round 11b: Vault 21 floor pools (OwnGlassDistance), LightCommonLamps cost, D1 ReactiveMask
+
+**Vault 21 floor lamps lost their floor pools with the round 10 lamp-shadow defaults (merge round 10 note). Fixed: OwnGlassDistance 24
+(fa516ed1, on).** pool-1 (run 20261030-180052-slotA, one switch a shot from today at the merge view): only VisibleRanking changes the
+picture (ShadowHold 0, FadeIn 0, LampModelShadows 0: 0.00-0.01 %); VisibleRanking 0 is brighter by +0.51 mean (1.77 % of pixels > 16).
+LogLamps: the floor lamps stand 15 units above the floor, 0 units from their own glowing glass; VisibleRanking gives the visible ones a live
+slot, and the glass then took their whole floor and wall pool. pool-2 (180948): LampGlassShadows 0 or LampModelOwnDistance -1 bring back
++0.45 of it; the rest is real pillar / wall shadows. OwnGlassDistance (new, [Shaders.ShadowsInteriors.Forward], live, below 0 = as before):
+a lamp part within that many units of a light casts nothing into that light's map (other lamps' maps keep it). Run 20261030-182137-slotA
+ABAB: Vault 21 +0.45 on both pairs; VisibleRanking 1 vs 0 at that view now 0.01 % (the same picture); Lucky 38 0.10 %, Freeside noise.
+
+**LightCommonLamps cost (the open +0.5 ms), ABBA launches** (runs 180052 A / 180303 B / 180507 B / 180713 A, still timing shots): world GPU
+Lucky 38 3.01 / 3.07 / 3.07 / 3.00, Vault 21 0.99 / 1.10 / 1.53 / 1.00, Freeside 1.63 / 1.68 / 1.74 / 1.63 ms; CPU the same. The table
+costs +0.06 ms (Lucky 38), +0.05-0.1 (Freeside), +0.1-0.5 (Vault 21); the +0.5 ms was cross-launch noise.
+
+**D1 ReactiveMask (off): FSR's reactive mask from what the world draws over its main opaque list** ([Shaders.TAA.FSR] ReactiveMask scale,
+ReactiveMax 0.9, ReactiveThreshold 0.04, ReactiveMaxDistance 12000, ReactiveDebug; core/ReactiveMask.h; final de042902, DLL 00BC37EF).
+Colour copied when the main list ends and after the world's depth resolve; mask = largest change of c/(1+c) x scale; FSRPrep / FSRUpPrep
+take max(weapon, mask) where their depth is nearer than ReactiveMaxDistance. How it got there:
+- the blended stage alone (RenderBlended 0xB650C0) holds almost none of it: 0.00 % (run 183310); window glow cards and neon are elsewhere;
+- main list end to world end also marks the sky and the distant land (drawn after the main list; run 182413, x4 debug view);
+- a D3D9 pass reads the INTZ world depth as 0 under NVR DXVK, even after the resolve (runs 190111, 190349): the distance cut is in the
+  FSR prep compute shaders, on their own depth.
+Run 20261030-190713-slotA (still Freeside at night, FSR 3.1 RenderScale 0.67, ABAB): sky pixels changed > 8 levels vs mask off: cut
+0.49 %, uncut 2.33 %, mask-off repeat 0.11 %; lower half (the near alpha draws) 0.85 %. Coverage walking: 5.2 % of the screen > 0.1 at
+scale 1, 8.4 % at 4. Not judged: whether smoke / sparks trail less in motion (needs a scene with them and a look in motion); cost not
+measured cleanly (walk timings swing; two screen copies + one pass at 960x540).
