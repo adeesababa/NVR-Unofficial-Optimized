@@ -144,6 +144,77 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   AmbientLight (open item).
 - Next: rt-ao-4 (og-desert, land now in the scene via rt-sun-core 28ea9e77, build 1852AA82): the occlusion view at 1 / 4 / 16 rays.
 
+## Strand 2026-10-29 afternoon: AO -> shared denoiser -> GI (branch claude/rt-ao-gi from claude/rt-test-merge af12c7e7)
+### Step 1, rays hit (verified, numbers)
+Share of on-screen surface pixels whose raw RT visibility (RT DebugView 1, through AmbientLight's occlusion view) is below open (< 0.95):
+| run | scene | rays hitting | rays starting inside (DebugView 3 black) |
+|---|---|---|---|
+| run 1 (10-28, before the Eye() fix) | lucky22 | ~0 % | n/a (everything read open) |
+| run 2 (10-29 04:28) | lucky22 | 53 % | 0.2 % of pixels below half |
+| run 5 (10-29 05:54, land in the scene) | og-desert | 47 % | none on surfaces |
+The every-ray-misses bug is gone in all three test views (raw, inside, input). Land: run 5 had the loaded cells' land (28ea9e77); og-lake
+style spots with LOD-only ground get it from ecf5defe (in this branch's base).
+
+### Step 2, shared denoiser
+Asked rt-sun-core (10-29 ~16:10) for its API. Until it lands, AO keeps AmbientLight's blurs + Accumulate and GI keeps ComputeGI's
+accumulate (below): both are temporal + edge-aware spatial already.
+
+### Step 3, one-bounce RT GI (built 92a5792d, DLL F3A8C42C; bench rt-gi-1 queued in lucky22 + og-desert)
+- `[Shaders.AmbientOcclusion.RT] GI` (off), `GIDistance` 1500, `GIStrength` 1.0, DebugView 6 = the bounce light alone. AmbientLight only.
+- RtAOTrace.comp: one cosine ray per half-resolution pixel and frame (its own noise, decorrelated from the AO rays), closest hit, up to
+  GIDistance. At the hit: albedo from the core's per-instance record (the draw's diffuse texture averaged; grey 0.5 if unknown), the
+  normal from the hit triangle (core v2 geometry data, to the scene by the instance transform, turned to the ray), lit by the sun (N.L
+  and a shadow ray; outdoors while the cascades' fade is below 1), the ambient (x (1 + n.z) / 2) and the 8 lamps nearest the eye
+  (ShaderManager's shadow-slot and tracked lamps, quadratic falloff to their reach, no shadow ray). Output albedo x E (the pixel's
+  irradiance estimate with cosine sampling), clamped to 4; misses give 0 (the sky's light is the game's ambient already). Second
+  shared image NVR RT gi (RGBA16F) -> NVR_RTGIRaw.
+- AmbientLight: the RT estimate writes the bounce into its rgb (as ComputeGI's GI pass does), sets giDrawn, so ComputeGI's
+  accumulate (temporal: reprojection, depth test, neighbour clamp) and its apply (x the surface colour x TESR_AmbientLightData.z =
+  GIStrength) take it. ComputeGI on = its screen search wins (A/B).
+- **rt-gi-1 (10-29 16:35 lucky22 slot A, 16:44 og-desert slot C; DLL F3A8C42C).** GI traced in both (Lucky 38: 8 lamps, indoors;
+  desert: sun up, 0 lamps). Lucky 38 held a still camera this time (al vs al-end: 0.2 % of pixels differ = noise), so it is a valid
+  same-spot A/B (the desert's light still changes between shots: not comparable). Same spot, mean picture level 0-255:
+  AmbientLight 31.5 -> RT AO 33.6 (+2.2, lighter on 24 %: less occlusion than AL's GTAO overall) -> RT AO + GI 41.9 (+8.3 on 74 % of
+  pixels = +25 %); GI x2 47.7; ComputeGI (screen) 31.9 (-1.7 vs RT AO). The RT bounce light alone (DebugView 6) was an even red-orange
+  wash over the whole room: nearly every bounce ray hits a wall or ceiling and returned albedo x the game's AMBIENT, i.e. a second
+  copy of the ambient light, which the game already uses for indirect light. Fix ac0598e2: GIAmbient (default 0) = only the sun and
+  the lamps bounce. Cost (core's "Ray tracing" line): Lucky 38 AO 4 rays + GI ~16 ms (AO alone ~9.5 ms earlier) on the iGPU; desert
+  ~4.8 ms (AO + GI, sun shadow rays). AmbientLight's GI accumulate 0.7-0.9 ms.
+- Cull mask 0xEF on every ray (ac0598e2): leaves out 0x10, the core's alpha-tested casters (claude/rt-sun-2, off by default), which
+  would otherwise block as solid cards. Testing their alpha (RtAlpha.glsl) for the AO and sky rays is the next foliage step.
+- **rt-gi-2 (10-29 17:11 lucky22, DLL 315CD821, GIAmbient 0):** still +7.8/255 on 71 % (vs +8.3 with the ambient): the wash comes from
+  the LAMPS: the 8 nearest lit every hit unshadowed, through walls and ceilings. RT cost 14.9 ms avg (AO 4 + GI) on the iGPU.
+- **Fix a0b05c51 (DLL 59DC7BCA): lamps by resampled importance sampling** (ReSTIR's direct-light step without the reuse): at a hit one
+  lamp is picked in proportion to its unshadowed light (N.L x quadratic falloff to its reach), its light / its chance, and ONE shadow
+  ray to it (stopping 16 units short of the lamp so its own fixture does not block it). Unbiased; the GI accumulate averages the pick.
+- **Alpha-tested casters (merged claude/rt-sun-2 94998464):** every AO / sky / GI ray now takes them (cull 0xFF) and confirms their
+  candidate hits only where the texture's alpha passes (Compute/Rt/RtAlpha.glsl, the core's atlas on binding 5; a 256x256 R16F
+  stand-in when [Main.Main.RayTracing] AlphaTested is off and there is no atlas). Needs fork patch 0029 when AlphaTested is on.
+- Queued: rt-gi-3 (lucky22, rt-gi-1 list, fork-0029) and rt-ao-5 (og-goodsprings, trees, AlphaTested on via
+  bench/deep-roadmap/rtao/run-toml-igpu-alpha.toml).
+- **rt-ao-5 (10-29 17:53 og-goodsprings slot C, AlphaTested on, fork-0029, DLL 59DC7BCA):** ran clean (684 instances, 234 geometries,
+  816k triangles; RT AO 4 rays: core line 6.0-6.4 ms). Foliage NOT verified: rt-sun-core's own rtsun-11 at the same spot found the core
+  takes only ~5 alpha-tested meshes a frame (the cause is the core's; counters coming). My rays' alpha test waits for that.
+- **rt-gi-3 (10-29 18:08 lucky22, DLL 59DC7BCA, RIS shadowed lamps):** +7.1/255 on 67 % (v1 +8.3, no-ambient +7.8): shadowing the lamps
+  barely helped, so the level, not the leaks, was wrong. Measured: the RT bounce light (view 13) has mean linear 0.026 vs ComputeGI's
+  0.0009 (29x) and vs the frame itself 0.015: the analytic shading at the hit (lamp colour x quadratic falloff x albedo) is not in the
+  game's light units. RT cost (core line) 20.7 ms avg, min 11 ms (AO 4 + GI 1 + its shadow rays) in Lucky 38 on the iGPU.
+- **GI v2 (7e8f80e7, DLL 8F014ACC):** a hit the screen saw takes the light the game drew there: the hit is projected back into the
+  view, and where the input's view distance there matches (5 %, at least 8 units) the lit frame (StretchRect of the render target at
+  the RT core's point: the world is drawn, NVR's effects not yet; to the trace grid, shared as NVR RT gi frame light) gives its linear
+  colour, exactly the light ComputeGI's taps use. Hits off screen keep the analytic light x GIOffscreen (0.1 default; 0 = on-screen
+  bounces only, i.e. ComputeGI's light with ray-traced visibility). Merged claude/rt-sun-2 ffa19075 (alpha atlas on the GPU: ~900
+  alpha-tested meshes a frame at Goodsprings now really in the scene).
+- **rt-gi-4 (10-29 18:33 lucky22 slot A, DLL 8F014ACC, GI v2): WORKS.** Same spot (al vs al-end 0.2 % = noise): RT AO 33.6 ->
+  RT AO + GI 35.7 (+2.1/255 on 12.7 % of pixels, was +8.3 on 74 % in v1); GI x2 37.8. The bounce light (view 13) mean linear 0.0058
+  (v1 0.026; ComputeGI's 0.0009): RT finds more bounce than the screen search (rays reach what the screen's slices miss), local and
+  warm near the lit railing, the counter and the lamps, not a wash. Final picture natural. Flaw: sparse orange fireflies where a bounce
+  ray lands on a lamp's glow on screen (the per-sample cap is 4.0: too high) -> next: a luminance clamp per sample. Cost unchanged:
+  core line 21.3 ms avg, 11.0 ms min (AO 4 + GI 1 + its shadow rays) on the iGPU in Lucky 38.
+- rt-ao-6 (og-goodsprings, AlphaTested on, foliage really in now) running.
+- Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
+  probe cache (next, for cost) once the plain version's look and cost are measured.
+
 ## Resumed 2026-10-29 (main session, on the user's word)
 - The every-ray-misses bug is rt-sun-core's to fix (its lead: the fork's StageGeometry conversion; rt-reflections' camera rays miss on
   100 % of pixels too, so the scene itself is wrong, not the passes' inputs). No bench runs here until it says rays hit.

@@ -381,7 +381,8 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 // NVR_RTAORaw (AO visibility, sky visibility, covered, DebugView 3's value). RtRaw: that texture if it was traced this frame, else null
 // (the callers keep NVR's own passes).
 namespace {
-	int RtImageIn = -1, RtImageOut = -1, RtShader = -1;
+	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtShader = -1;
+	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
 
@@ -393,6 +394,37 @@ namespace {
 		const UINT w = RtReduced(TheRenderManager->width), h = RtReduced(TheRenderManager->height);
 		RtImageIn = RtCore::AddImage("NVR RT ao input", w, h, NVR_EXT_SHARED_RG32F);
 		RtImageOut = RtCore::AddImage("NVR RT ao", w, h, NVR_EXT_SHARED_RGBA16F);
+		RtImageGI = RtCore::AddImage("NVR RT gi", w, h, NVR_EXT_SHARED_RGBA16F);	// (rt-ao-gi) the bounce light; written every trace
+		RtImageLight = RtCore::AddImage("NVR RT gi frame light", w, h, NVR_EXT_SHARED_RGBA16F);	// (GI v2) the lit frame, for on-screen hits
+		// (2026-10-29) RtAOTrace.comp binds the core's alpha atlas (binding 5) for the alpha-tested casters; with AlphaTested off there is no
+		// atlas and no such instance (the shader never reads it): this small image stands in so the binding is always an R16F image.
+		if (RtCore::AlphaAtlasImage() < 0) RtImageAlphaStandIn = RtCore::AddImage("NVR RT ao alpha stand-in", 256, 256, NVR_EXT_SHARED_R16F);
+	}
+
+	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
+	// this frame, as AmbientLight's grid takes them), nearest to the eye first, at most GILampsMax; scene space (world minus
+	// CameraPosition), colour linear x dimmer. Returns how many.
+	int RtGILamps(RtAmbient::TraceConstants& c) {
+		struct Lamp { D3DXVECTOR4 pos, colour; float distance; };
+		Lamp lamps[ShadowCubeMapsMax + TrackedLightsMax];
+		int found = 0;
+		const D3DXVECTOR4& eye = TheRenderManager->CameraPosition;
+		auto add = [&](const D3DXVECTOR4& p, const D3DXVECTOR4& col) {
+			if (p.w <= 10.0f || col.w <= 0.0f || found >= ShadowCubeMapsMax + TrackedLightsMax) return;
+			const D3DXVECTOR3 rel(p.x - eye.x, p.y - eye.y, p.z - eye.z);
+			for (int i = 0; i < found; i++)	// the same lamp in both lists
+				if (fabsf(lamps[i].pos.x - rel.x) < 1.0f && fabsf(lamps[i].pos.y - rel.y) < 1.0f && fabsf(lamps[i].pos.z - rel.z) < 1.0f) return;
+			lamps[found++] = { D3DXVECTOR4(rel.x, rel.y, rel.z, p.w),
+				D3DXVECTOR4(powf((std::max)(col.x, 0.0f), 2.2f) * col.w, powf((std::max)(col.y, 0.0f), 2.2f) * col.w, powf((std::max)(col.z, 0.0f), 2.2f) * col.w, 0.0f),
+				(std::max)(D3DXVec3Length(&rel) - p.w, 0.0f) };
+		};
+		ShaderManager* sm = TheShaderManager;
+		for (int s = 0; s < ShadowCubeMapsMax; s++) add(sm->BatchLightPosition[s], sm->BatchLightColor[s]);
+		for (int t = 0; t < TrackedLightsMax; t++) add(sm->LightPosition[t], sm->LightColor[ShadowCubeMapsScreen + t]);
+		std::sort(lamps, lamps + found, [](const Lamp& a, const Lamp& b) { return a.distance < b.distance; });
+		found = (std::min)(found, RtAmbient::GILampsMax);
+		for (int i = 0; i < found; i++) { c.lampPos[i] = lamps[i].pos; c.lampColor[i] = lamps[i].colour; }
+		return found;
 	}
 	void RtRecordUser(IDirect3DDevice9* Device) {
 		if (AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion) ao->RtRecord(Device);
@@ -408,13 +440,22 @@ IDirect3DTexture9* AmbientOcclusionEffect::RtRaw() {
 	return RtTracedFrame == TheFrameRateManager->FrameNumber && RtAmbient::Ready() ? rtRawTexture : nullptr;
 }
 
+// (rt-ao-gi) this frame's traced bounce light (NVR_RTGIRaw: rgb the light arriving, a hit distance / GIDistance), or null.
+IDirect3DTexture9* AmbientOcclusionEffect::RtGI() {
+	return RtGITraced && RtRaw() ? rtGITexture : nullptr;
+}
+
 void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	static bool failed = false;
 	static UInt32 traced = 0;
-	if (failed || !Effect || RtImageIn < 0 || RtImageOut < 0 || RtShader < 0) return;
+	RtGITraced = false;
+	if (failed || !Effect || RtImageIn < 0 || RtImageOut < 0 || RtImageGI < 0 || RtShader < 0) return;
 	const UINT width = RtReduced(TheRenderManager->width), height = RtReduced(TheRenderManager->height);
 	if (!rtInputTexture || rtWidth != width || rtHeight != height) {
 		DxvkCompute::Drop(rtInputSurface); DxvkCompute::Drop(rtInputTexture); DxvkCompute::Drop(rtRawSurface); DxvkCompute::Drop(rtRawTexture);
+		DxvkCompute::Drop(rtGISurface); DxvkCompute::Drop(rtGITexture); DxvkCompute::Drop(rtLightSurface); DxvkCompute::Drop(rtLightTexture);
+		TheTextureManager->InitTexture("NVR_RTGIFrameLight", &rtLightTexture, &rtLightSurface, width, height, D3DFMT_A16B16G16R16F);	// (GI v2)
+		TheTextureManager->InitTexture("NVR_RTGIRaw", &rtGITexture, &rtGISurface, width, height, D3DFMT_A16B16G16R16F);	// (rt-ao-gi)
 		TheTextureManager->InitTexture("NVR_RTAOInput", &rtInputTexture, &rtInputSurface, width, height, D3DFMT_G32R32F);
 		TheTextureManager->InitTexture("NVR_RTAORaw", &rtRawTexture, &rtRawSurface, width, height, D3DFMT_A16B16G16R16F);
 		rtWidth = width;
@@ -423,7 +464,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	MakePipelineRT(extInputRT, "RtAOInput", 2, 1);
-	if (!rtInputTexture || !rtRawTexture || !depth || !normals || !extInputRT.Pipeline) return;
+	if (!rtInputTexture || !rtRawTexture || !rtGITexture || !rtLightTexture || !depth || !normals || !extInputRT.Pipeline) return;
 	const D3DXVECTOR4 layout(1.0f, 1.0f, 1.0f / width, 1.0f / height);
 	static GpuTimer inputTimer("  AO RT input (half)");
 	{
@@ -456,16 +497,51 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// every ray ~71000 units outside the scene (CameraLocation reads ~0 in game: the every-ray-misses bug, rt-sun-core 4ba2abfd).
 	const D3DXVECTOR3 eye = RtCore::Eye();
 	c.origin = D3DXVECTOR4(eye.x, eye.y, eye.z, (float)(TheFrameRateManager->FrameNumber % 1024));
-	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, rt.DebugView >= 4 ? (float)rt.DebugView : 0.0f);	// (both consumers keep a history: the noise moves)
+	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, rt.DebugView == 4 || rt.DebugView == 5 ? (float)rt.DebugView : 0.0f);	// (both consumers keep a history: the noise moves)
 	c.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
-	const int images[2] = { RtImageIn, RtImageOut };
-	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||
-		!RtCore::AddPass(RtShader, images, 2, 0x2, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
-		!RtCore::CopyOut(RtImageOut, rtRawSurface)) return;
+	// (rt-ao-gi) one-bounce GI: AmbientLight takes it (its bounce light), so only while AmbientLight renders. The sun lights the hits
+	// outdoors while it is up (the cascades' fade); its colour and the ambient as the game gives them (TESR_SunColor, TESR_SunAmbient),
+	// linear.
+	AmbientLightEffect* al = TheShaderManager->Effects.AmbientLight;
+	const bool gi = rt.GI && al && al->ShouldRender();
+	if (gi) {
+		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
+		const bool sunUp = TheShaderManager->GameState.isExterior && shadows && shadows->Constants.ShadowFade.x < 1.0f;
+		const D3DXVECTOR4 sunDir = shadows ? shadows->Constants.SmoothedSunDir : D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+		const D3DXVECTOR4& sunColor = TheShaderManager->ShaderConst.sunColor;
+		const D3DXVECTOR4& ambient = TheShaderManager->ShaderConst.sunAmbient;
+		auto lin = [](float v) { return powf((std::max)(v, 0.0f), 2.2f); };
+		c.sunDir = D3DXVECTOR4(sunDir.x, sunDir.y, sunDir.z, sunUp ? 1.0f : 0.0f);
+		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
+		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
+		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
+		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, rt.GIClamp, (float)rt.Interleave);
+		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
+		// trace grid: on-screen bounce hits take their light from it (RtAOTrace.comp ScreenLight).
+		IDirect3DSurface9* frame = nullptr;
+		if (SUCCEEDED(Device->GetRenderTarget(0, &frame)) && frame) {
+			Device->StretchRect(frame, nullptr, rtLightSurface, nullptr, D3DTEXF_LINEAR);
+			frame->Release();
+		}
+	}
+	const int alphaAtlas = RtCore::AlphaAtlasImage() >= 0 ? RtCore::AlphaAtlasImage() : RtImageAlphaStandIn;
+	if (alphaAtlas < 0) return;
+	if (RtImageLight < 0) return;
+	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
+	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
+	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
+		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
+	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
 	if (traced++ == 0)
-		Logger::Log("UNOFFICIAL RT AO: traced (%ux%u, %d AO rays of %.0f units, sky %s).", width, height, rt.RayCount, rt.Distance,
-			c.sky.y > 0.0f ? "on" : "off (Skylighting off or RT Sky off)");
+		Logger::Log("UNOFFICIAL RT AO: traced (%ux%u, %d AO rays of %.0f units, sky %s, GI %s).", width, height, rt.RayCount, rt.Distance,
+			c.sky.y > 0.0f ? "on" : "off (Skylighting off or RT Sky off)", gi ? "on (1 bounce ray)" : "off");
+	static bool giLogged = false;
+	if (gi && !giLogged) {
+		giLogged = true;
+		Logger::Log("UNOFFICIAL RT AO: GI traced (1 bounce ray of %.0f units, %d lamps, sun %s).", rt.GIDistance, (int)c.gi.z, c.sunDir.w > 0.5f ? "up" : "down / indoors");
+	}
 }
 
 // UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): Estimate's place in ExtDedicated. The traced
