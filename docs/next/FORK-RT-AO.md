@@ -242,7 +242,16 @@ accumulate (below): both are temporal + edge-aware spatial already.
 - **RtDenoise half resolution + RGB (merged claude/rt-sun-2 82976a88; DLL 3FFB0E01):** the AO denoise now runs at the trace grid
   (Downscale 2: ~4x cheaper than the 23.6 ms screen-size run), and the GI bounce light goes through its RGB mode (Channels 3, Downscale 2)
   into NVR_RTGIDenoised, which AmbientLight's RT estimate takes instead of the raw bounce (then ComputeGI's accumulate as before). First
-  use of the RGB mode anywhere. Bench rt-gi-5 queued.
+  use of the RGB mode anywhere. (The first rt-gi-5 was cancelled before it ran: rt-sun-core's RGB mode overran a binding array and
+  crashed on first use; its fix 02222b6d merged, DLL 413E9634.)
+- **rt-gi-5 (10-29 21:21 lucky22 slot A, DLL 413E9634, helper rtsun/extra-p3 with per-pass times): PASS.** No crash; both denoise
+  modes ran. COSTS on the iGPU (720p, trace grid 640x360), the helper's per-pass GPU times (the pass alone, no waits):
+  RtAOTrace with AO 4 rays 9.5-9.9 ms; AO 4 + GI 1 (+ its sun / lamp shadow rays): 23.8 ms (GI adds ~14 ms indoors); with
+  Interleave 2: 19.7 ms (only -17 %). NVR side: "AO RT denoise" (half) 6.3 ms (screen size was 23.6), "GI RT denoise (half, rgb)"
+  8.6 ms. Look: the denoised bounce light (DebugView 6) is smooth and clean; the raw one is full of specks (and in this run the
+  camera moved for the later shots, so raw vs denoised GI is not the same view; AO denoised vs raw as in rt-gi-3).
+- Interleave v2 (next build): the dispatch is cut to the traced texels (W/2, or W/2 x H/2 threads, each mapped to its texel): v1 let
+  the skipped threads exit inside full 8x8 groups, which then ran as long as their slowest traced texel.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
