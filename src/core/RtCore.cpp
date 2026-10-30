@@ -71,6 +71,8 @@ namespace {
 		UInt32	lastSeen = 0;
 		bool	sent = false;		// a BUILD op went to the helper
 		bool	refused = false;	// the fork refused it (logged once): never again
+		bool	textured = false;	// skinned: its last build carried texcoords (hit textures)
+		bool	skinned = false;	// an actor's partition (dropped at once when the player changes cell)
 	};
 
 	// A diffuse texture's average colour (linear rgb), from its smallest mip, once per texture (protocol v2's instance records).
@@ -129,6 +131,15 @@ namespace {
 		return found->second;
 	}
 
+	// UNOFFICIAL 2026-10-30 the glow / emissive flag (NVR_RT_RECORD_GLOW; rt-reflections' GlowBrightness reads it): the draw's shader has
+	// a glow map (BSShaderPPLightingProperty texture slot 2: neon, lit signs and windows, lamp globes).
+	bool HasGlowMap(BSShaderProperty* shaderProperty) {
+		const UInt32 type = static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType;
+		if (!shaderProperty->IsLightingProperty() && type != NiShadeProperty::kProp_PPLighting && type != NiShadeProperty::kProp_Lighting30) return false;
+		NiSourceTexture** glow = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2];
+		return glow && *glow && (*glow)->rendererData && (*glow)->rendererData->dTexture;
+	}
+
 	// Where a vertex declaration keeps the position (cached per declaration).
 	struct PositionElement {
 		int stream = -1; UInt32 offset = 0; NVR_EXT_RT_POSITION_FORMAT format = NVR_EXT_RT_POSITION_FLOAT3;
@@ -151,7 +162,8 @@ namespace {
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
-		UInt32		partitionFate[5] = {};				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
+		UInt32		partitionFate[5] = {};
+		UInt32		skinTex[6] = {};	// hit textures on actors: not PPLighting, no diffuse, texcoords elsewhere, no slot, staged without texcoords, textured				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
 		std::vector<std::string> imageNames;
 		std::vector<NVR_EXT_SHARED_IMAGE_DESC> imageDescs;	// the sizes made (rounded up: kImageAlign)
@@ -696,8 +708,19 @@ namespace {
 		// Bodies are alpha-tested (the hair and fringe edges): they go in opaque (rtsun-13: with them left out, only heads and hands were
 		// in the scene). Blended-only (glass, fx) stays out.
 		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; return; }
+		// The skin shader is not a "lighting property" by its shader index, but its class is BSShaderPPLightingProperty (the textures)
+		const UInt32 shaderType = static_cast<NiShadeProperty*>((NiProperty*)shaderProperty)->m_eShaderType;
+		const bool ppLighting = shaderProperty->IsLightingProperty() || shaderType == NiShadeProperty::kProp_PPLighting || shaderType == NiShadeProperty::kProp_Lighting30;
 		static const Albedo grey = { { 0.5f, 0.5f, 0.5f }, false };
-		const Albedo& albedo = shaderProperty->IsLightingProperty() ? AlbedoOf(geo, shaderProperty) : grey;
+		const Albedo& albedo = ppLighting ? AlbedoOf(geo, shaderProperty) : grey;
+		IDirect3DBaseTexture9* diffuse = nullptr;	// hit textures: the body's diffuse texture
+		if (hitTextures && !ppLighting) skinTex[0]++;
+		if (hitTextures && ppLighting) {
+			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
+			NiTexture* texture = textures ? *textures : nullptr;
+			if (texture && texture->rendererData) diffuse = texture->rendererData->dTexture;
+			if (!diffuse) skinTex[1]++;
+		}
 		const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		static std::vector<float> palette;
@@ -754,10 +777,19 @@ namespace {
 			s.IndicesFormat = NVR_EXT_RT_SKIN_INDICES_UBYTE4;
 			s.PaletteCount = part.Bones;
 			s.pPalette = palette.data();
+			// Hit textures: the texcoords go with the posed positions (fork 0033 stages them for skinned geometry too), the colour in the atlas
+			int slot = -1;
+			if (diffuse && e.uvStream != e.stream) skinTex[2]++;
+			if (diffuse && e.uvStream == e.stream) {
+				slot = AlphaSlotOf(diffuse);
+				if (slot >= 0) desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)e.uvOffset - (int)e.offset, e.uvHalf);
+				else skinTex[3]++;
+			}
 
 			GeometryEntry& entry = geometries[key];
 			if (entry.refused) continue;
 			entry.lastSeen = sceneFrame;
+			entry.skinned = true;
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
 			// ActorUpdateInterval: a posed partition is re-posed only every Nth frame (staggered by id), the frames between keep the
 			// last pose (a frame or two late: unseen in shadows; rt-lamp: actors were most of the RT cost indoors, ~60 partitions a frame)
@@ -765,6 +797,7 @@ namespace {
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
 			if (pose && FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
+			bool hasUv = entry.textured;	// what the helper has: decided by what the fork staged (an older 0033 drops skinned texcoords)
 			if (pose) {
 				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
 				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
@@ -776,7 +809,10 @@ namespace {
 					op.vertexCount = info.VertexCount;
 					op.triangleCount = info.TriangleCount;
 					op.arenaTexel = arenaUsed;
-					op.flags = NVR_RT_OP_FLAG_DYNAMIC;
+					hasUv = slot >= 0 && info.Texels == 3u * (info.VertexCount + info.TriangleCount) + 2u * info.VertexCount;
+					entry.textured = hasUv;
+					if (slot >= 0) skinTex[hasUv ? 5 : 4]++;
+					op.flags = NVR_RT_OP_FLAG_DYNAMIC | (hasUv ? NVR_RT_OP_FLAG_TEXCOORDS : 0u);
 					arenaUsed += info.Texels;
 					entry.sent = true;
 					actorPartitions++;
@@ -785,7 +821,7 @@ namespace {
 
 			NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 			extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
-			extra.flags = albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u;
+			extra.flags = (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (hasUv && slot >= 0 ? NVR_RT_RECORD_TEXTURED | ((UInt32)slot << 16) : 0u);
 			extra.geometryId = entry.id;
 			extra.vertexOffset = extra.indexOffset = 0;
 			NvrRtInstance& instance = record->instances[record->instanceCount++];
@@ -911,7 +947,7 @@ namespace {
 		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
 		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
-		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u);
+		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (HasGlowMap(shaderProperty) ? NVR_RT_RECORD_GLOW : 0u);
 		if (alphaTested) extra.flags |= NVR_RT_RECORD_ALPHA_TESTED | ((UInt32)alpha->alphaTestRef << 8) | ((UInt32)alphaSlot << 16);
 		else if (textured) extra.flags |= NVR_RT_RECORD_TEXTURED | ((UInt32)alphaSlot << 16);
 		extra.geometryId = entry.id;
@@ -997,6 +1033,24 @@ namespace {
 
 	void Core::Gather() {
 		sceneFrame++;
+		// A cell change (a door, a jump, a load): every actor partition goes at once (its buffers and bones may be unloaded and the
+		// addresses reused by new ones); the actors still there are posed again from scratch this frame
+		static const void* lastCell = nullptr;
+		const void* cell = Player ? (const void*)Player->parentCell : nullptr;
+		if (cell != lastCell) {
+			for (auto it = geometries.begin(); it != geometries.end(); ) {
+				if (!it->second.skinned) { ++it; continue; }
+				if (it->second.sent && record->opCount < NVR_RT_MAX_OPS) {
+					NvrRtGeometryOp& op = record->ops[record->opCount++];
+					op = NvrRtGeometryOp();
+					op.op = NVR_RT_OP_RELEASE;
+					op.id = it->second.id;
+					released++;
+				}
+				it = geometries.erase(it);
+			}
+			lastCell = cell;
+		}
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
@@ -1194,8 +1248,10 @@ namespace {
 			c.shared->responseUsMax = 0;
 			if (n == 60 && c.actorsOn)
 				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
-					"streams / half positions %u, palette %u", c.actorPartitions, c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off",
-					c.partitionFate[0], c.partitionFate[1], c.partitionFate[2], c.partitionFate[3], c.partitionFate[4]);
+					"streams / half positions %u, palette %u; hit textures: not PPLighting %u, no diffuse %u, texcoords in another stream %u, "
+					"no slot %u, staged without texcoords %u, textured %u", c.actorPartitions, c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off",
+					c.partitionFate[0], c.partitionFate[1], c.partitionFate[2], c.partitionFate[3], c.partitionFate[4],
+					c.skinTex[0], c.skinTex[1], c.skinTex[2], c.skinTex[3], c.skinTex[4], c.skinTex[5]);
 			if (n == 60) {
 				const UInt32* a = c.alphaFate;
 				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
