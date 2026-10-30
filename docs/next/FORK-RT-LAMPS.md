@@ -98,7 +98,12 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
 - rtlamp-32 (5b5911ce, DLL 2F959124, RankBy; 20261030-073352-slotA, PASS): ranking by the game's own falloff (RankBy 1) does not help:
   Freeside coverage 36 % -> 8 % (yellow 20 -> 50 %), Novac 0 % green either way; RankBy stays 0. Novac's coverage is mostly GREY (the
   draw's lamps have no traced slot), not yellow, with 24 lamps traced: the lamps lighting those walls are outside the published set.
-  rtlamp-33 tries LightPoints 63 there.
+  rtlamp-33 (20261030-075631-slotA, PASS): LightPoints 63 -> 21-28 lamps traced (all ShadowManager offers there), grey 9 -> 1.8 %,
+  still 0 % green. The coverage view shows why: almost nothing near the camera is drawn by an outdoor lamp-shadow record: the ground
+  at that spot is LANDSCAPE (TerrainTemplate, not one of the eligible lit object shaders), the motel's walls far off. Freeside works
+  because its street and pavement are object meshes. So outdoor lamp shadows on the land need the terrain shaders too (NVR land does
+  get the game's lamps: Vanilla Plus Terrain); open item. Its catch: TerrainTemplate already takes s15 (TESR_TerrainBlendDepth), so
+  the traced buffer needs another free stage there (a register audit of the terrain records first).
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
