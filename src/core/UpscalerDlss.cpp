@@ -332,9 +332,11 @@ namespace {
 		// a frame went to FSR 2 by the setting: DLSS's history is stale (and FSR 2's textures are freed again once DLSS has run 600 frames)
 		void	MarkUnused() { dlssNeedsReset = true; runningFrames = 0; fsrFreed = false; watch.Gap(); }
 		void	SetOptions(bool test, int jitterFlip, bool cpuWait, bool highPriority) {
-			if (test != passThrough && state != Idle && state != Off) {
-				// Another mode: the helper is started again (FSR 2 in between).
-				Stop(test ? "HelperTest turned on" : "HelperTest turned off");
+			if (test != passThrough && state != Idle) {
+				// Another mode: the helper is started again (FSR 2 in between). UNOFFICIAL 2026-10-30: also after the other mode turned
+				// itself off for the session (real DLSS on a GTX card gives up: the pass-through test can still run there).
+				if (state != Off) Stop(test ? "HelperTest turned on" : "HelperTest turned off");
+				else Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper: HelperTest turned %s: the helper is tried again in that mode.", test ? "on" : "off");
 				state = Idle;
 			}
 			// UNOFFICIAL 2026-10-30 (DLAA stall report): the helper's start options; a change starts it again (FSR 2 in between)

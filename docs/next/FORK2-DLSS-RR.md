@@ -241,3 +241,30 @@ If a drop shows a normal span and normal helper figures, the drop is not the hel
 FSR 2 frames, such as a live switch to FSR and back. They take about 190 MB at 1920x1080 and are only FSR 2's
 stand-in for the second the helper needs to start. On an 8 GB card that memory matters. FSR 2 makes them again on its first
 frame if DLSS stops.
+
+## DLAA stall with interior shadows (2026-10-30 evening, tester report: RTX 5060, P84 v4)
+
+The tester saw runs of 45-53 ms frames, but only with DLAA on and the dedicated interior shadow pass on. The F10 log showed:
+- Present ~46 ms;
+- "DLSS helper (copies + helper's work + waits)" at p50 1.4 ms and max 45-59 ms;
+- the helper's own GPU time 0.94 ms and its response 0.15 ms throughout.
+
+Raising the helper's CPU priority changed nothing; HAGS was on. So the game's GPU queue sat in its wait for the helper's output
+while the helper's submission, made 0.15 ms after NVR's write, was not being run. That points to the scheduling of two
+processes on one GPU (wait-before-signal across processes), not to the helper's work.
+
+Two `[Shaders.TAA.DLSS]` settings change how the helper hands its work over. Both are on by default, and both are start options of
+the helper (`--wait cpu|gpu`, `--gpu-priority high|normal`), so changing one restarts it:
+- **HelperWait = 1.** The helper waits on the CPU (vkWaitSemaphores) until the game's "inputs ready" has been reached, then
+  submits a frame with no semaphore wait in it. No cross-process GPU wait is left for the driver to resolve, and the GPU runs the
+  helper's work as soon as it is submitted. The helper's response is measured before that wait, so it means the same in both
+  modes. NvrDlssHelper.log gives the CPU wait's average and maximum every 600 frames. 0 = the old GPU wait.
+- **HelperGpuPriority = 1.** Two requests:
+  - the helper's queue at VK_KHR/EXT_global_priority HIGH, where the driver offers and permits it;
+  - the helper's process at the WDDM GPU scheduling priority class HIGH (D3DKMTSetProcessSchedulingPriorityClass; the CPU
+    priority class does not reach the GPU).
+
+  On the GTX 1070 the WDDM class is set and the Vulkan HIGH is "not permitted"; both outcomes are logged.
+
+Every exchange whose span is over 20 ms gets a `DLSS EXCHANGE STALL frame N` line: the span, the copies, the frames in flight then,
+and the helper's own GPU time and response. The DLSS HELPER line counts these stalls per window.

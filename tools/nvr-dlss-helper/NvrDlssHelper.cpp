@@ -1251,17 +1251,10 @@ namespace {
 		if (h.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * 2 + 1);
 		VK_CHECK(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
-		// The response (NVR's write -> this frame ready to go): measured here, before --wait cpu's wait for the game's GPU, so it means the
-		// same in both modes (UNOFFICIAL 2026-10-30).
 		LARGE_INTEGER now, frequency;
-		QueryPerformanceCounter(&now);
 		QueryPerformanceFrequency(&frequency);
-		if (f.frame == frame && f.writtenQpc) {
-			const uint64_t us = (uint64_t)((now.QuadPart - f.writtenQpc) * 1000000 / frequency.QuadPart);
-			h.responseUs[h.responseCount++ % 64] = us;
-			g_shared->responseUsAvg = Average(h.responseUs, h.responseCount);
-			if (us > g_shared->responseUsMax) g_shared->responseUsMax = (uint32_t)us;
-		}
+		LARGE_INTEGER readyFrom = {};	// UNOFFICIAL 2026-10-30: from when this frame could go (the response below)
+		readyFrom.QuadPart = f.frame == frame ? f.writtenQpc : 0;
 
 		// UNOFFICIAL 2026-10-30 (DLAA stall report) --wait cpu: the game's "inputs ready" = N reached on the CPU first; the submission then
 		// carries no wait, so the GPU runs it as soon as it is submitted (no cross-process GPU wait). Its end still signals "output ready".
@@ -1286,6 +1279,7 @@ namespace {
 				if (WaitForSingleObject(parent, 0) == WAIT_OBJECT_0 || g_shared->quit) return false;
 			}
 			QueryPerformanceCounter(&waitEnd);
+			if (readyFrom.QuadPart && waitEnd.QuadPart > readyFrom.QuadPart) readyFrom = waitEnd;	// the frame could go once the game's inputs were there
 			const double waitedMs = (double)(waitEnd.QuadPart - waitStart.QuadPart) * 1000.0 / (double)frequency.QuadPart;
 			h.inputsWaitMsSum += waitedMs;
 			h.inputsWaitMsMax = std::max(h.inputsWaitMsMax, waitedMs);
@@ -1309,6 +1303,17 @@ namespace {
 		submit.pSignalSemaphores = &h.outputReady;
 		VK_CHECK(vkQueueSubmit(h.vk.queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
 		h.cmdFrame[slot] = frame;
+
+		// The response: from when this frame could go (NVR's write; with --wait cpu, the game's inputs ready if that came later) to its
+		// submission (UNOFFICIAL 2026-10-30: under --wait cpu the frames are taken in turn, so NVR's write alone would count the wait for
+		// the frame before it).
+		QueryPerformanceCounter(&now);
+		if (readyFrom.QuadPart) {
+			const uint64_t us = (uint64_t)((now.QuadPart - readyFrom.QuadPart) * 1000000 / frequency.QuadPart);
+			h.responseUs[h.responseCount++ % 64] = us;
+			g_shared->responseUsAvg = Average(h.responseUs, h.responseCount);
+			if (us > g_shared->responseUsMax) g_shared->responseUsMax = (uint32_t)us;
+		}
 		if (dlssRan) g_shared->dlssEvaluated++;
 		if (rrRan) g_shared->rrEvaluated++;
 		g_shared->framesSubmitted++;
