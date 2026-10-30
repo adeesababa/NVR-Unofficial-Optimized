@@ -44,6 +44,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
 	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h)
 	Settings.GlassReflect = std::clamp(TheSettingManager->GetSettingF(section, "GlassReflect"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-29 (core/GlassMask.h)
+	Settings.MaterialBufferRoughness = TheSettingManager->GetSettingI(section, "MaterialBufferRoughness") != 0;	// UNOFFICIAL 2026-10-30
 	// UNOFFICIAL 2026-10-25 Reflectivity: the PBR section's one reflectivity control reaches the floor reflections too (a missing key: 1).
 	SettingManager::Configuration::ConfigNode node;
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
@@ -574,6 +575,7 @@ namespace {
 		D3DXVECTOR4	reciprocalResolution, skyColor, horizonColor, waterSettings;
 		D3DXVECTOR4	data, data2, data3, data4, layout, cube2, grid, grid2, grid3, material;
 		D3DXVECTOR4	depthConstants, cameraData, cameraPosition, sky, flags;
+		D3DXVECTOR4	material2;	// UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess
 	};
 	ReflUniforms ReflUploaded;	// what the uniform buffer holds (one effect instance)
 	struct ReflPush { D3DXVECTOR4 cube; UInt32 linearIndex, pointIndex, mipIndex, pass; };
@@ -601,6 +603,7 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,   FALSE, 20 },	// POINT, CLAMP
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
 		{ 1, 23, NVR_EXT_BIND_SAMPLED_IMAGE, 22, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-29 TESR_GlassMask (index 20: after the samplers)
+		{ 1, 24, NVR_EXT_BIND_SAMPLED_IMAGE, 23, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-30 TESR_MaterialBuffer (index 21)
 	};
 	const UINT ReflTextureCount = 16;
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 1).
@@ -777,6 +780,18 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	uniforms.sky = extSky;
 	uniforms.flags = D3DXVECTOR4(ReflMaterial::CompiledIn() ? 1.0f : 0.0f, ReflMaterial::AddCompiledIn() ? 1.0f : 0.0f,
 		ReflMaterial::OccCompiledIn() ? 1.0f : 0.0f, materialBound ? 1.0f : 0.0f);
+	// UNOFFICIAL 2026-10-30 MaterialBufferRoughness: the material buffer (core/CapturedNormals.h, [Main.Main.Quality] MaterialBuffer) when
+	// this build registers it and it is made; looked up once, by name, so a build without it simply leaves this off.
+	static IDirect3DBaseTexture9** materialBuffer = nullptr;
+	static bool materialLooked = false;
+	if (Settings.MaterialBufferRoughness && !materialLooked) {
+		materialLooked = true;
+		std::string name = "TESR_MaterialBuffer";
+		materialBuffer = TheTextureManager->GetTextureSlotByName(name);
+		Logger::Log("UNOFFICIAL Reflections MaterialBufferRoughness: %s", materialBuffer ? "TESR_MaterialBuffer found" : "no TESR_MaterialBuffer in this build: off");
+	}
+	IDirect3DBaseTexture9* matbuf = Settings.MaterialBufferRoughness && materialBuffer ? *materialBuffer : nullptr;
+	uniforms.material2 = D3DXVECTOR4(matbuf ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 	ID3D9NvrExtBuffer* buffer = extUniforms.Buffer;
 	if (!buffer || memcmp(&uniforms, &ReflUploaded, sizeof(uniforms))) {
 		buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
@@ -795,6 +810,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	// UNOFFICIAL 2026-10-29 glass reflections: the glass mask (core/GlassMask.h), or the depth as a placeholder (never read: material.w 0).
 	IDirect3DTexture9* glass = GlassMask::ThisFrame();
 	resources[20].Slot = 22; resources[20].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[20].pResource = glass ? (IUnknown*)glass : (IUnknown*)depth;
+	resources[21].Slot = 23; resources[21].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[21].pResource = matbuf ? (IUnknown*)matbuf : (IUnknown*)depth;	// UNOFFICIAL 2026-10-30
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
 		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;

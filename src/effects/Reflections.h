@@ -36,6 +36,7 @@ public:
 		float	SpecularOcclusionLevel;	// the surface / reflection brightness ratio that keeps all of the reflection
 		bool	HiZ;			// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h): the hierarchical ray march on the Hi-Z pyramid (Vulkan trace only), outdoors
 		float	GlassReflect;	// UNOFFICIAL 2026-10-29 (core/GlassMask.h, Vulkan passes only): how much see-through glass reflects (0 off: nothing hooked)
+		bool	MaterialBufferRoughness;	// UNOFFICIAL 2026-10-30 (Vulkan passes only): the floor guess takes TESR_MaterialBuffer's roughness where written
 		bool	HiZSafeCells;		// test only: coarse cells read as min/max of their two channels, "behind" skip on the finest level only
 		bool	HiZInteriorsTest;	// test only: HiZ indoors too (the interior picture is not yet the old trace's; DebugView 9 / 10 to find why)
 		float	ReflectivityExterior;	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / Interior: times the dry sheen and
