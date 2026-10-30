@@ -11,6 +11,7 @@
 #include "RtCore.h"
 #include "DxvkCompute.h"
 #include "GpuProfiler.h"
+#include "PlantWind.h"	// (2026-10-30) PlantSway: a wind-bent plant's traced instance leans with it
 #include "../../tools/nvr-rt-helper/NvrRtProtocol.h"
 
 namespace {
@@ -224,6 +225,9 @@ namespace {
 		IDirect3DTexture9* alphaUpload = nullptr;			// 64 x 64 R16F, dynamic: one slot's alpha on its way to the atlas
 		IDirect3DTexture9* albedoUpload = nullptr;			// 64 x 64 A8R8G8B8: one slot's colour on its way to the albedo atlas
 		bool		hitTextures = false;				// [Main.Main.RayTracing] HitTextures (read at each helper start)
+		bool		plantSway = true;					// [Main.Main.RayTracing] PlantSway (2026-10-30, read each frame)
+		UInt32		swayed = 0;							// plant instances leaned (exchanges 1-60, the scene log)
+		UInt32		playerInstances = 0;				// the player's body instances (the scene log, with Actors)
 		int			albedoAtlasImage = -1;
 		// UNOFFICIAL 2026-10-30 glow textures ([Main.Main.RayTracing] GlowTextures, with HitTextures; rt-ao-sky GlowGI / rt-reflections
 		// GlowBrightness): a slot is a (diffuse, glow map) pair; the glow map goes into the glow atlas (RGBA8) at the same slot and texcoords
@@ -1045,6 +1049,18 @@ namespace {
 			for (int c = 0; c < 3; c++) instance.transform[r][c] = m.m[c][r];
 			instance.transform[r][3] = m.m[3][r];
 		}
+		// (2026-10-30) a static plant bent by NVR's plant wind ([Shaders.Plants.Wind]): its drawn top leans with the gust, so the traced
+		// instance gets the same lean as a shear rooted at its base (PlantWind::RtLean); the BLAS is untouched (no rebuild, no refit)
+		float lean[2], base, H;
+		if (plantSway && !land && PlantWind::RtLean(geo, lean, base, H)) {
+			const float baseRel = base - TheRenderManager->CameraPosition.z;	// camera-relative, as the transform
+			for (int r = 0; r < 2; r++) {
+				const float k = lean[r] / H;
+				for (int c = 0; c < 4; c++) instance.transform[r][c] += k * instance.transform[2][c];
+				instance.transform[r][3] -= k * baseRel;
+			}
+			swayed++;
+		}
 		instance.geometryId = entry.id;
 		instance.customIndex = land ? 1u : 0u;
 		instance.mask = MaskHook ? (MaskHook(geo, land) & 0xFFu) : (land ? 0x01u : 0x02u);	// default: bit 0 land, bit 1 objects
@@ -1271,6 +1287,7 @@ namespace {
 		buildBudget = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "BuildTrianglesPerFrame"));
 		buildNear = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "BuildNearRadius"));
 		cullAngle = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "CullSmallAngle"));
+		plantSway = TheSettingManager->GetSettingI("Main.Main.RayTracing", "PlantSway") != 0;
 		trianglesThisFrame = 0;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		grassRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "GrassRadius"));
@@ -1287,7 +1304,9 @@ namespace {
 			for (UInt32 i = 0; i < count; i++) WalkCell(cells->GetCell(i));
 			if (actorsOn && rtSkin && Player) {	// the player's third-person body (not in the cells' lists)
 				walkingPlayer = true;
+				const UInt32 before = record->instanceCount;
 				Walk(Player->GetNode(), false);
+				playerInstances += record->instanceCount - before;	// (2026-10-30) the scene log: is the body traced in first person?
 				walkingPlayer = false;
 			}
 			// LOD land only when the loaded cells gave no land geometry this frame (rtsun-8 at og-lake: every land node empty, the ground on
@@ -1480,6 +1499,18 @@ namespace {
 				Logger::Log("RT CORE: scene cost: compact %s, %u far builds deferred by BuildTrianglesPerFrame %u, %u small objects culled (CullSmallAngle %.4f), "
 					"%u releases queued", c.compactOn ? "on" : "off", c.budgetWaits, c.buildBudget, c.culledSmall, c.cullAngle, (unsigned)c.pendingReleases.size());
 			c.budgetWaits = c.culledSmall = 0;
+			if (PlantWind::StaticsOn || c.swayed)	// (2026-10-30) PlantSway
+				Logger::Log("RT CORE: plant sway %s: %.1f plant instances leaned a frame (plant wind statics %s)", c.plantSway ? "on" : "off",
+					c.swayed / (float)(n == 60 ? 60 : n == 600 ? 540 : 600), PlantWind::StaticsOn ? "on" : "off");
+			c.swayed = 0;
+			if (c.actorsOn && Player) {	// (2026-10-30) the player in the traced scene: the third-person body (walked always), the view model (never)
+				const NiNode* body = Player->GetNode();
+				Logger::Log("RT CORE: player: %s person; body node %s; %.1f body instances a frame; first-person node %s (not traced)",
+					Player->isThirdPerson ? "third" : "first", !body ? "none" : (body->m_flags & NiAVObject::NiFlags::APP_CULLED) ? "CULLED" : "drawn",
+					c.playerInstances / (float)(n == 60 ? 60 : n == 600 ? 540 : 600), !Player->firstPersonNiNode ? "none" :
+					(Player->firstPersonNiNode->m_flags & NiAVObject::NiFlags::APP_CULLED) ? "culled" : "drawn");
+			}
+			c.playerInstances = 0;
 			if (n == 60 && c.actorsOn)
 				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
 					"streams / half positions %u, palette %u; hit textures: not PPLighting %u, no diffuse %u, texcoords in another stream %u, "
