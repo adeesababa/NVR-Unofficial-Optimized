@@ -35,6 +35,13 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Step 5: INTERIOR-SHADOWS-MODERN.md (on claude/rootplan-combo) -- coordinated 2026-10-29 20:25
+- Its layer 4 still names the v3 format (4 bits a lamp, 9 lamps). The v4 interface (3 entries a pixel: cube slot + 16-step
+  visibility, + the depth code; reading code; fallback rules) is written up for the screen-pass author in the shared notes:
+  RT-LAMPS-VISIBILITY-INTERFACE-2026-10-29.md. Writing the same texture from the screen pass keeps one forward read for both paths.
+- Next for this branch: cost. 24-39 ms on the iGPU is too much; try a half-resolution (checkerboard) trace with the depth-aware
+  upsample in the read, and skipping the trace for pixels whose lamps are all unshadowed by distance.
+
 ### Run rtlamp-12 (actors + the partial-loop fix d6d71721, DLL 98511EF1), 2026-10-29 20:15, 20261029-201506-slotA, PASS
 - Cube maps with traced shadows on (fork-0033, Actors on): ~0.0 ms GPU in both rooms (profile windows wholly inside traced shots:
   0.0002 ms; windows straddling a cube shot 1.2-2.5 ms) -- Vault 21 was 8.1 ms, Lucky 38 1.5 ms. People-only refreshes: 0.0-0.1 a
