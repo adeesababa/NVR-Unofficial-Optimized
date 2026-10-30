@@ -2657,8 +2657,18 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			// UNOFFICIAL 2026-10-27: FSR and DLSS are either/or (user: "toggling one disables the other")
 			if (val && !strcmp(node.Key, "Enabled")) {
-				if (!strcmp(node.Section, "Shaders.TAA.FSR")) TheSettingManager->SetSetting("Shaders.TAA.DLSS", "Enabled", false);
-				else if (!strcmp(node.Section, "Shaders.TAA.DLSS")) TheSettingManager->SetSetting("Shaders.TAA.FSR", "Enabled", false);
+				// UNOFFICIAL 2026-10-29 (tester: DLSS -> FSR 3.1 in the menu left the picture not upscaled, no log line): each has its own
+				// RenderScale, so the switch also went to FSR's (often 1 = native resolution, no upscale). The one being switched on takes
+				// the RenderScale of the one being switched off, so the picture keeps its render size.
+				const bool fsrOn = !strcmp(node.Section, "Shaders.TAA.FSR"), dlssOn = !strcmp(node.Section, "Shaders.TAA.DLSS");
+				const char* other = fsrOn ? "Shaders.TAA.DLSS" : dlssOn ? "Shaders.TAA.FSR" : nullptr;
+				if (other) {
+					if (TheSettingManager->GetSettingI(other, "Enabled")) {
+						const float scale = TheSettingManager->GetSettingF(other, "RenderScale");
+						if (scale > 0.0f) TheSettingManager->SetSetting(node.Section, "RenderScale", scale);
+					}
+					TheSettingManager->SetSetting(other, "Enabled", false);
+				}
 			}
 			TheSettingManager->LoadSettings();
 		}

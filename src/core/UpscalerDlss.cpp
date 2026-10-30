@@ -498,9 +498,14 @@ namespace Upscaler {
 			TheDlss.MarkUnused();
 			chosen = (setting == 2 && !Fsr31()->Failed()) ? Fsr31() : Fsr2();
 		}
-		if (last && chosen != last && (chosen == Fsr31() || last == Fsr31())) {
+		// UNOFFICIAL 2026-10-29 (live switching): every change of the one that runs restarts its history (the other one's frames went by;
+		// FSR 2 <-> DLSS too, not only to or from FSR 3.1), frees the textures of an FSR that stopped -- except FSR 2's while DLSS runs,
+		// which falls back on them -- and is logged.
+		if (last && chosen != last) {
 			chosen->RequestReset();
-			if (last == Fsr2() || last == Fsr31()) last->ReleaseResources();
+			if (last == Fsr31() || (last == Fsr2() && chosen != &TheDlss)) last->ReleaseResources();
+			if (last == &TheDlss && chosen == Fsr31()) Fsr2()->ReleaseResources();	// DLSS's fallback textures, unused now
+			Logger::Log("UNOFFICIAL upscaler switched live: %s -> %s (history restarted)", last->Name(), chosen->Name());
 		}
 		last = chosen;
 		return chosen;

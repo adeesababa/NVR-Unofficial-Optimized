@@ -78,6 +78,20 @@ void TAAEffect::UpdateSettings() {
 	// DLSS keeps its own switch above and wins over both.
 	const bool fsr31 = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Version") == 1;
 	FSRSettings.Upscaler = dlss ? 1 : (fsr31 ? 2 : 0);
+	// UNOFFICIAL 2026-10-29: every change of the upscaler or of its RenderScale says so (the RenderScale lines below only come from the
+	// upscaling path: a switch to a RenderScale of 1 -- native resolution, TAA / FSR as anti-aliasing only -- was silent).
+	{
+		static int loggedUpscaler = -1; static float loggedScale = -1.0f; static bool loggedEnabled = false;
+		if (FSRSettings.Upscaler != loggedUpscaler || FSRSettings.RenderScale != loggedScale || FSRSettings.Enabled != loggedEnabled) {
+			if (loggedUpscaler >= 0 || FSRSettings.Enabled)
+				Logger::Log("UNOFFICIAL TAA: %s, RenderScale %.2f (%s)%s", !FSRSettings.Enabled ? "TAA's own resolve" :
+					FSRSettings.Upscaler == 1 ? "DLSS (helper; FSR 2 while it cannot run)" : FSRSettings.Upscaler == 2 ? "FSR 3.1" : "FSR 2.2.1",
+					FSRSettings.RenderScale, FSRSettings.RenderScale < 1.0f ? "upscaled" : "native resolution, no upscale",
+					FSRSettings.Enabled && FSRSettings.RenderScale >= 1.0f && loggedScale > 0.0f && loggedScale < 1.0f ?
+					" -- was upscaled before: each of [Shaders.TAA.FSR] and [Shaders.TAA.DLSS] has its own RenderScale" : "");
+			loggedUpscaler = FSRSettings.Upscaler; loggedScale = FSRSettings.RenderScale; loggedEnabled = FSRSettings.Enabled;
+		}
+	}
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
 	// UNOFFICIAL 2026-10-27 RenderScale v2 (TAAUpscale.cpp): also for DLSS (the same path).
 	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;
