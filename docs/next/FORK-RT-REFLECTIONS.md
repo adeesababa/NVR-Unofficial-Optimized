@@ -181,6 +181,18 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 00:20 hit textures (rtrefl-8; 8de4960b, DLL 485F9B82; core rt-sun-2 4d776164, fork-0033, helper protocol 3)
+`[Shaders.Reflections.RT] HitTextures` (true, inside RT Enabled false) with the core's `[Main.Main.RayTracing] HitTextures` (off by
+default; on in the run toml with AlphaTested): a hit the screen cannot show takes its texture's colour at the hit (RtHit.glsl
+`rtHitAlbedo`, the core's 64 x 64 albedo atlas) instead of the draw's average. Skinned actors stay average. Variants
+ReflectionsRTTex / ReflectionsRTAlphaTex (albedo atlas on binding 6 / 7).
+- luxe 20261029-233808-slotA: reflection alone texture vs average 3.78 % of pixels > 2 against 0.02 % noise; full picture 0.87 %
+  vs 0.25 %. The change is in the floor where the out-of-view wall panels and fountain base reflect. GPU "Reflections RT" 8.7 ms
+  either way (no in-launch cost); helper passes 7.8 ms a frame with AlphaTested + HitTextures on (4.7 in earlier runs without them:
+  the core's alpha/albedo atlas work and the alpha pass, not this switch).
+- lucky22 20261030-001029-slotA: 8.49 % vs 0.00 % noise alone; full 0.64 % vs 0.20 %; "Reflections RT" 10.8 / 10.6 ms (tex / avg,
+  pads 10.7-10.8: in noise); helper passes 9.5 ms (3082 instances, 325k triangles).
+
 ### 2026-10-29 21:00-23:20 glass reflections (rtrefl-7; 1414c513, DLL ca236309; fixed in c85cdb10, DLL 57543F00)
 - iGPU saloon16: window panes and the mirror reflect. Reflection alone (DebugView 1), glass vs off: 16.2 % of pixels > 2, against
   0.67 % noise; full picture 7.9 % vs a 6.5 % noise floor (saloon's noise is high). 7500 redraws / 600 stages = ~12.5 a frame.
