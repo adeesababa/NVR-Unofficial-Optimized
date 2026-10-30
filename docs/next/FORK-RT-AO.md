@@ -229,6 +229,12 @@ accumulate (below): both are temporal + edge-aware spatial already.
   (it samples the half-resolution raw by uv) into NVR_RTAODenoised (R16F); AmbientLight's and AmbientOcclusion's RT estimates read it
   instead of the raw rays. Not used for DebugView 3 (it shows another channel). The GI bounce (RGB) keeps ComputeGI's accumulate
   until RtDenoise has a 3-channel mode (asked); a half-resolution mode would cut its cost by 4 on the iGPU (asked).
+- **rt-gi-3 (10-29 20:03 lucky22 slot A, DLL 52A01349):** RtDenoise on the AO WORKS: AmbientLight's occlusion view with the denoiser
+  is clean (the raw rays' grain at the railing base, the counter and the floor seams gone, contacts kept sharp). COST: "AO RT denoise"
+  23.6 ms a frame on the iGPU at 1280x720 (temporal + 3 a-trous at the screen's size): more than the rays (core line 11.1-11.5 ms,
+  AO 4 rays). Needs RtDenoise's half-resolution mode (asked; ~4x less) before it is usable on this GPU; Denoise stays the default
+  (the RT AO itself is off by default). Interleave's cost is NOT readable here: with the denoiser saturating the iGPU the core's
+  "Ray tracing" line (which includes the waits) read 13.4 / 27.3 / 21.4 ms for Interleave 1 / 2 / 4 = contention, not rays.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
