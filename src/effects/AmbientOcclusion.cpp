@@ -388,6 +388,7 @@ namespace {
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
+	constexpr int GILightKeys = 5;	// (GIReuse) the lamps' total and brightest luminance, their count, the sun's luminance and height
 
 	bool RtWants() {
 		AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
@@ -598,6 +599,11 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	static D3DXMATRIX prevViewToWorld;
 	static D3DXVECTOR4 prevCamera;
 	static UInt32 giParity = 0;
+	// (2026-10-30) The kept samples are not re-traced, so a light switched off (or the sun at dusk) would linger for GIReuse frames.
+	// When the light the bounce sees changes by more than 10 % (the lamps given: their total and brightest luminance and their
+	// count; the sun's luminance and height), the history may stand for 1 frame of samples only, growing back by one each frame.
+	static float prevLight[GILightKeys] = {};
+	static float giCap = 0.0f;
 	const bool giPass = gi && rt.GIReuse > 0 && RtGIShader >= 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
 	RtAmbient::GIConstants g = {};
 	if (giPass) {
@@ -613,7 +619,24 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
 		memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
 		g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
-		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (float)rt.GIReuse + 64.0f * rt.GISpatial)
+		float light[GILightKeys] = {};
+		auto luma = [](const D3DXVECTOR4& c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
+		for (int k = 0; k < RtAmbient::GILampsMax && k < (int)c.gi.z; k++) {	// (order-free: the list is sorted by distance)
+			light[0] += luma(c.lampColor[k]);
+			light[1] = (std::max)(light[1], luma(c.lampColor[k]));
+		}
+		light[2] = c.gi.z;
+		light[3] = c.sunDir.w > 0.5f ? luma(c.sunColor) : 0.0f;
+		light[4] = c.sunDir.w > 0.5f ? c.sunDir.z * 10.0f : 0.0f;
+		bool changed = false;
+		for (int k = 0; k < GILightKeys; k++)
+			if (fabsf(light[k] - prevLight[k]) > 0.1f * (std::max)((std::max)(fabsf(light[k]), fabsf(prevLight[k])), 0.01f)) changed = true;
+		memcpy(prevLight, light, sizeof(light));
+		giCap = changed ? 1.0f : (std::min)(giCap + 1.0f, (float)rt.GIReuse);
+		static int cuts = 0, frames = 0;	// (logged every 600 GI frames: how often the light changed enough to cut the history)
+		cuts += changed ? 1 : 0;
+		if (++frames >= 600) { Logger::Log("UNOFFICIAL RT AO: GI reuse history cut %d times in the last 600 frames (the lamps or the sun changed by > 10 %%).", cuts); cuts = frames = 0; }
+		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (std::max)(giCap, 1.0f) + 64.0f * rt.GISpatial)
 							  : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		prevViewToWorld = c.viewToWorld;
 		prevCamera = camera;
