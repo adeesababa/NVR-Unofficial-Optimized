@@ -29,6 +29,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 flags;         // x: 1 = OneSided (diagnostic): only the closest surface counts, and only if it faces the lamp, as the cube
 	                    //    maps draw casters (one-sided, seen from the lamp); 0 = every surface both ways (the scene's own)
 	                    // y: lamps a pixel traces (1-3)
+	                    // z: Interleave (1, 2 or 4): a pixel is traced every z-th frame; w: this frame's phase (0 .. z-1)
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
@@ -58,6 +59,13 @@ void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y))
 		return;
+	// Interleave: the other pixels keep the answer of the frame that traced them (the result image persists); the lamp shaders'
+	// depth check sends a pixel whose surface moved since to its cube map
+	int interleave = int(p.flags.z + 0.5);
+	if (interleave >= 2) {
+		int cell = interleave >= 4 ? (pixel.x & 1) + 2 * (pixel.y & 1) : (pixel.x + pixel.y) & 1;
+		if (cell != int(p.flags.w + 0.5)) return;
+	}
 
 	const float none = 1023.0;                // slot 63, visibility 15
 	float linear01 = imageLoad(depthImage, pixel).r;

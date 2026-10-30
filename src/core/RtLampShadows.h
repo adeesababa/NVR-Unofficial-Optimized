@@ -45,7 +45,7 @@ namespace RtLampShadows {
 	// The trace pass's uniform block (RtLampTrace.comp, std140, 128 bytes); the lamps are in the lamp table image
 	struct PassConstants {
 		float size[4], forward[4], right[4], up[4], origin[4], params[4], params2[4];
-		float flags[4];							// x: OneSided (diagnostic), y: lamps a pixel traces (LampsPerPixel 1-3)
+		float flags[4];							// x: OneSided (diagnostic), y: lamps a pixel traces (LampsPerPixel 1-3), z: Interleave, w: its phase
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
@@ -317,6 +317,11 @@ namespace RtLampShadows {
 		c.params2[3] = (float)TableSlots;
 		c.flags[0] = TheSettingManager->GetSettingI(kSection, "OneSided") ? 1.0f : 0.0f;
 		c.flags[1] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "LampsPerPixel"), 1), 3);
+		// UNOFFICIAL 2026-10-29 Interleave: 1/2 (checkerboard) or 1/4 (2 x 2 cells) of the pixels traced a frame, in turn
+		const int interleaveSetting = TheSettingManager->GetSettingI(kSection, "Interleave");
+		const int interleave = interleaveSetting >= 4 ? 4 : interleaveSetting >= 2 ? 2 : 1;
+		c.flags[2] = (float)interleave;
+		c.flags[3] = (float)(frame % (UInt32)interleave);
 		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
 		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
 		if (!WriteTable(camera, radius, invisible)) {
