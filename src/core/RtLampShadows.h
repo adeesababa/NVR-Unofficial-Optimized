@@ -2,8 +2,9 @@
 
 // UNOFFICIAL 2026-10-28 RT lamp shadows ([Shaders.ShadowsInteriors.RT], docs/next/FORK-RT-LAMPS.md). Indoors, each lamp's forward
 // shadow (PointShadowForward.hlsl) is read from a traced result instead of its cube map. The tracing is an RT core user (RtCore.h,
-// FORK-RT-CORE.md): at the core's point of the frame (after the depth and normals) the helper runs Compute/Rt/RtLampTrace.spv for the
-// up to 9 shadowed lamps of this frame (cube slots 0-8) and the result lands in TESR_RtLampShadow (G32R32F). The object shaders draw
+// FORK-RT-CORE.md): at the core's point of the frame (after the depth and normals) the helper runs Compute/Rt/RtLampTrace.spv over a
+// table of every shadowed lamp of this frame (up to 63, by cube slot); each pixel traces its LampsPerPixel strongest (2026-10-29 v4)
+// and the result lands in TESR_RtLampShadow (G32R32F: three cube-slot + visibility entries and a depth code). The object shaders draw
 // earlier in the frame, so they use the PREVIOUS frame's result: they reproject into the frame it was traced for and use it where that
 // frame saw the same surface; elsewhere the cube map, as before. The lamps are still picked, ranked and given cube slots as before.
 //
@@ -12,7 +13,7 @@
 // GTX 1070), the core stays off, Mode stays 0 and every lamp keeps its cube map (same picture, the RT shaders' extra branch only).
 //
 // Per draw (PointShadowForward::SetForPass): c206-c209 the reprojection, c215 mode / tolerance / depth unit / people-from-cube, c216-c217
-// the draw's lights' traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
+// the draw's lights' cube slots (when in the table), the result on s15 (the sixth lamp's cube stage: see the shader).
 
 #include <algorithm>
 #include "PointShadowSchedule.h"	// PointShadowSlotState (KeepCube)
@@ -22,7 +23,8 @@
 
 namespace RtLampShadows {
 
-	inline constexpr int TracedSlots = 9;		// RtLampTrace.comp: 6 lamps in r, 3 + the depth code in g (exact floats)
+	inline constexpr int TableSlots = 63;		// RtLampTrace.comp v4: cube slots 0-62 in the lamp table (63 = "none" in the result)
+	inline constexpr int TableWidth = 256;		// 4 RG32F texels a lamp
 	inline constexpr const char* kSection = "Shaders.ShadowsInteriors.RT";
 
 	// Instance mask bits the RT core gives the scene (FORK-RT-CORE.md: 0x01 land, 0x02 objects); ours for the lamps' own parts,
@@ -31,34 +33,35 @@ namespace RtLampShadows {
 	// out and those casters let lamp light through (the cube maps still draw them alpha-tested: a known difference).
 	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08, MaskAlphaTested = 0x10;
 
+	// ActorsFromCubeMaps applies only while the traced scene has no people: with the RT core's posed actors in it (RtCore::Actors(),
+	// mask 0x20, which the lamp rays' masks keep) people cast traced shadows and their cube-map layer is neither read nor redrawn.
+	inline bool ActorsFromCubeMaps() {
+		return !RtCore::Actors() && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps");
+	}
+
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
 
-	// The trace pass's uniform block (RtLampTrace.comp, std140, 304 bytes; the core allows 512)
+	// The trace pass's uniform block (RtLampTrace.comp, std140, 128 bytes); the lamps are in the lamp table image
 	struct PassConstants {
 		float size[4], forward[4], right[4], up[4], origin[4], params[4], params2[4];
-		float lamps[TracedSlots][4];
-		float radius[3][4];
-		float stops[3][4];						// per lamp: where its rays stop short of it, at least LampStop (its own globe / bulb / glass)
-		float flags[4];							// x: OneSided (diagnostic: count only casters facing the lamp, as the cube maps do)
+		float flags[4];							// x: OneSided (diagnostic), y: lamps a pixel traces (LampsPerPixel 1-3)
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
 	// This frame's lamps (Submit, from PointShadowForward::Publish) for Record
-	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; float stop; };	// stop: past the lamp's own glowing part (0 none)
-	inline SlotLamp Lamps[TracedSlots] = {};
+	// stop: past the lamp's own glowing part (0 none); intensity: luminance x dimmer (the per-pixel ranking); radius: the game's (Spec.r)
+	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; float stop; float intensity; float radius; };
+	inline SlotLamp Lamps[TableSlots] = {};
 	inline int LampCount = 0;
 	inline bool LampsThisFrame = false;
 
-	// Which lamps get traced (2026-10-29): the ones the screen uses most. Vault 21's lobby (447 lights, 64 cube slots): the lamps that
-	// light the view held slots above 8, so tracing cube slots 0-8 traced lamps nothing on screen used (coverage 0 %). Now every draw
-	// counts its lamps (NoteUse, by cube slot) and the next frame traces the MaxLamps most used; the result carries its own slot ->
-	// traced-index map (TracedMap), so a frame's draws decode with the map of the frame they read.
+	// Which lamps are in the trace (v4, 2026-10-29): every published shadow lamp in cube slots 0-62 (MaxLamps caps it); each pixel then
+	// traces the ones that light it most. (v3 traced 9 lamps everywhere, picked by how many draws used them: Vault 21's 64 shadow lamps
+	// needed more.) TracedMap: which cube slots the newest result's table held, so the draws only look up lamps it can have.
 	inline constexpr int MapSlots = 64;
-	inline UInt32 DrawUse[MapSlots] = {};
-	inline int PendingMap[MapSlots];		// this frame's trace: cube slot -> traced index (-1 none)
+	inline int PendingMap[MapSlots];		// this frame's table: cube slot -> the slot (in the table) or -1
 	inline int TracedMap[MapSlots];		// the newest result's
-	inline void NoteUse(int cubeSlot) { if (cubeSlot >= 0 && cubeSlot < MapSlots) DrawUse[cubeSlot]++; }
 
 	// The camera of the frame the newest result was traced for (Record) and whether it exists
 	struct TracedCamera { D3DXMATRIX view; D3DXVECTOR3 location;	// location: the traced frame's eye in world space
@@ -68,14 +71,18 @@ namespace RtLampShadows {
 
 	// Per draw
 	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view, 4 one lamp (DebugView 3)
-	inline float DebugLamp = 0.0f;			// c217.z: DebugView 3's traced lamp index
-	inline int MaxLamps = 8;				// cube slots below min(this, 9) use the traced result
+	inline float DebugLamp = 0.0f;			// c217.z: DebugView 3's lamp (cube slot)
+	inline int MaxLamps = TableSlots;		// lamps in the table
 	inline float Reproject[4][4] = {};		// c206-c209
 	inline float RtConstant[4] = {};		// c215
 	inline float Uploaded[7][4] = {};
 	inline bool UploadedValid = false;
 
-	inline int imageDepth = -1, imageNormals = -1, imageResult = -1, shader = -1;
+	inline int imageDepth = -1, imageNormals = -1, imageResult = -1, imageTable = -1, shader = -1;
+	inline int imageRaw = -1, filterShader = -1;	// Filter: the trace writes imageRaw, RtLampFilter.comp imageResult
+	inline IDirect3DTexture9* TableTexture = nullptr;		// the lamp table as the GPU sees it (copied into imageTable each frame)
+	inline IDirect3DSurface9* TableSurface = nullptr;
+	inline IDirect3DTexture9* TableStaging = nullptr;		// written by the CPU (system memory), UpdateSurface into TableTexture
 	inline IDirect3DTexture9* ResultTexture = nullptr;
 	inline IDirect3DSurface9* ResultSurface = nullptr;
 	inline UINT TextureWidth = 0, TextureHeight = 0;
@@ -126,21 +133,14 @@ namespace RtLampShadows {
 		LampCount = 0;
 		LampsThisFrame = false;
 		if (!CompiledIn) return;
-		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "MaxLamps"), 0), TracedSlots);
-		// The MaxLamps lamps the last frame's draws used most (ties: the lower cube slot, i.e. NVR's own order); unused lamps never
+		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "MaxLamps"), 0), TableSlots);
+		// The table: every published lamp in cube slots 0-62, in NVR's order (its ranking), up to MaxLamps
 		for (int i = 0; i < MapSlots; i++) PendingMap[i] = -1;
-		int order[MapSlots]; int candidates = 0;
-		for (int i = 0; i < count && candidates < MapSlots; i++)
-			if (lamps[i].slot >= 0 && lamps[i].slot < MapSlots && DrawUse[lamps[i].slot] > 0) order[candidates++] = i;
-		std::sort(order, order + candidates, [&](int a, int b) {
-			const UInt32 ua = DrawUse[lamps[a].slot], ub = DrawUse[lamps[b].slot];
-			return ua != ub ? ua > ub : lamps[a].slot < lamps[b].slot;
-		});
-		for (int k = 0; k < candidates && LampCount < MaxLamps; k++) {
-			PendingMap[lamps[order[k]].slot] = LampCount;
-			Lamps[LampCount++] = lamps[order[k]];
-		}
-		if (count) memset(DrawUse, 0, sizeof(DrawUse));
+		for (int i = 0; i < count && LampCount < MaxLamps; i++)
+			if (lamps[i].slot >= 0 && lamps[i].slot < TableSlots) {
+				PendingMap[lamps[i].slot] = lamps[i].slot;
+				Lamps[LampCount++] = lamps[i];
+			}
 		LampsThisFrame = TheSettingManager->GetSettingI(kSection, "Live") != 0;
 
 		// The newest result: traced last frame (Record moves Pending to Traced once its copy-out is recorded)
@@ -164,16 +164,16 @@ namespace RtLampShadows {
 		Reproject[3][3] = D3DXVec3Dot(&d, &forward);
 		RtConstant[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "DepthTolerance"), 0.004f);	// at least the depth code's step
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
-		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
+		RtConstant[3] = ActorsFromCubeMaps() ? 1.0f : 0.0f;
 		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
 		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : debugView == 3 ? 4.0f : 1.0f;
-		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TracedSlots - 1);
+		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TableSlots - 1);
 		RtConstant[0] = Mode;
 	}
 
-	// The slot a draw's light reads in the traced result, -1 for its cube map.
+	// What a draw's light looks up in the traced result (its cube slot, when the newest result's table had it), -1 for its cube map.
 	inline float TracedSlot(int cubeSlot) {
-		return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MapSlots && TracedMap[cubeSlot] >= 0 ? (float)TracedMap[cubeSlot] : -1.0f;
+		return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MapSlots && TracedMap[cubeSlot] >= 0 ? (float)cubeSlot : -1.0f;
 	}
 
 	// UNOFFICIAL 2026-10-29 SkipTracedCubes ([Shaders.ShadowsInteriors.RT], on): the cost win. A lamp the trace covered last frame
@@ -185,9 +185,12 @@ namespace RtLampShadows {
 	inline bool KeepCube(int slot, const PointShadowSlotState& last, const PointShadowSlotState& now) {
 		if (!CompiledIn || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;
 		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
-		if (!last.valid || last.partial || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
+		if (!last.valid || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
 			last.radius != now.radius) return false;
-		if (!now.staticCasters && TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps")) return false;
+		// A partial cube map (CubeFaceViewCull left the out-of-view faces of a people refresh as they were) is only the fallback here;
+		// redrawing it for that made a loop: each people refresh is partial again (rtlamp-10: Vault 21 7 refreshes a frame, 8.1 ms)
+		if (last.partial && ActorsFromCubeMaps()) return false;
+		if (!now.staticCasters && ActorsFromCubeMaps()) return false;
 		SkippedCubes++;
 		return true;
 	}
@@ -217,7 +220,7 @@ namespace RtLampShadows {
 			D3DLOCKED_RECT lock;
 			if (SUCCEEDED(neutral->LockRect(0, &lock, NULL, 0))) {
 				float* texel = (float*)lock.pBits;
-				texel[0] = 16777215.0f; texel[1] = 4095.0f;
+				texel[0] = 1023.0f + 1024.0f * 1023.0f; texel[1] = 1023.0f;	// no entries, depth code 0 (never matches)
 				neutral->UnlockRect(0);
 			}
 		}
@@ -234,10 +237,43 @@ namespace RtLampShadows {
 		imageDepth = RtCore::AddImage("NVR RT lamps depth", w, h, NVR_EXT_SHARED_R32F);
 		imageNormals = RtCore::AddImage("NVR RT lamps normals", w, h, NVR_EXT_SHARED_RGBA16F);
 		imageResult = RtCore::AddImage("NVR RT lamps", w, h, NVR_EXT_SHARED_RG32F);
+		imageTable = RtCore::AddImage("NVR RT lamp table", TableWidth, 1, NVR_EXT_SHARED_RG32F);
+		imageRaw = RtCore::AddImage("NVR RT lamps unfiltered", w, h, NVR_EXT_SHARED_RG32F);
+	}
+
+	// The lamp table into its GPU texture (scene space = world minus CameraPosition), for the copy into imageTable
+	inline bool WriteTable(const D3DXVECTOR4& camera, float discRadius, float invisibleRadius) {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (!TableTexture) {
+			TheTextureManager->InitTexture("TESR_RtLampTable", &TableTexture, &TableSurface, TableWidth, 1, D3DFMT_G32R32F);
+			if (!TableTexture) return false;
+		}
+		if (!TableStaging && FAILED(device->CreateTexture(TableWidth, 1, 1, 0, D3DFMT_G32R32F, D3DPOOL_SYSTEMMEM, &TableStaging, NULL))) {
+			TableStaging = nullptr;
+			return false;
+		}
+		D3DLOCKED_RECT lock;
+		if (FAILED(TableStaging->LockRect(0, &lock, NULL, 0))) return false;
+		float* t = (float*)lock.pBits;
+		memset(t, 0, TableWidth * 2 * sizeof(float));		// reach 0 = no lamp
+		for (int i = 0; i < LampCount; i++) {
+			const SlotLamp& l = Lamps[i];
+			float* e = t + 8 * l.slot;
+			e[0] = l.position.x - camera.x; e[1] = l.position.y - camera.y;
+			e[2] = l.position.z - camera.z; e[3] = l.reach;
+			e[4] = (std::max)(l.intensity, 0.001f); e[5] = (std::max)(l.radius, 1.0f);
+			e[6] = l.stop; e[7] = l.fade < 0.0f && invisibleRadius >= 0.0f ? invisibleRadius : discRadius;	// negative fade: an invisible light
+		}
+		TableStaging->UnlockRect(0);
+		IDirect3DSurface9* staging = nullptr;
+		if (FAILED(TableStaging->GetSurfaceLevel(0, &staging))) return false;
+		const HRESULT hr = device->UpdateSurface(staging, NULL, TableSurface, NULL);
+		staging->Release();
+		return SUCCEEDED(hr);
 	}
 
 	inline void Record(IDirect3DDevice9* Device) {
-		if (imageDepth < 0 || imageNormals < 0 || imageResult < 0 || shader < 0) return;
+		if (imageDepth < 0 || imageNormals < 0 || imageResult < 0 || imageTable < 0 || shader < 0) return;
 		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
 		if (!ResultTexture || TextureWidth != w || TextureHeight != h) {
 			if (ResultSurface) { ResultSurface->Release(); ResultSurface = nullptr; }
@@ -278,22 +314,31 @@ namespace RtLampShadows {
 		if (TheSettingManager->GetSettingI(kSection, "SkipLampGlass")) farMask &= ~MaskGlass;
 		c.params2[1] = (float)farMask;
 		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
-		c.params2[3] = (float)TracedSlots;
+		c.params2[3] = (float)TableSlots;
 		c.flags[0] = TheSettingManager->GetSettingI(kSection, "OneSided") ? 1.0f : 0.0f;
+		c.flags[1] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "LampsPerPixel"), 1), 3);
 		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
 		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
-		for (int i = 0; i < LampCount; i++) {	// traced index i (PendingMap)
-			const SlotLamp& l = Lamps[i];
-			float* lamp = c.lamps[i];
-			lamp[0] = l.position.x - camera.x; lamp[1] = l.position.y - camera.y; lamp[2] = l.position.z - camera.z;
-			lamp[3] = l.reach;
-			c.radius[i / 4][i % 4] = l.fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
-			c.stops[i / 4][i % 4] = l.stop;
+		if (!WriteTable(camera, radius, invisible)) {
+			static bool logged = false;
+			if (!logged) { logged = true; Logger::Log("UNOFFICIAL RT lamp shadows: the lamp table could not be written; not traced"); }
+			return;
 		}
 
-		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
-		const int images[3] = { imageDepth, imageNormals, imageResult };
-		if (!RtCore::AddPass(shader, images, 3, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals) || !RtCore::CopyIn(imageTable, TableTexture)) return;
+		// UNOFFICIAL 2026-10-29 Filter: the soft edges' noise (LampRadius, 1 ray) smoothed per lamp (RtLampFilter.comp) before the copy out
+		const bool filter = imageRaw >= 0 && filterShader >= 0 && TheSettingManager->GetSettingI(kSection, "Filter");
+		const int images[4] = { imageDepth, imageNormals, filter ? imageRaw : imageResult, imageTable };
+		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		if (filter) {
+			struct { float size[4], params[4]; } f = {};
+			f.size[0] = (float)w; f.size[1] = (float)h;
+			f.size[2] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "FilterStep"), 1), 4);
+			f.size[3] = (std::max)(TheSettingManager->GetSettingF(kSection, "FilterDepthSigma"), 0.01f);
+			f.params[0] = (std::max)(TheSettingManager->GetSettingF(kSection, "FilterNormalPower"), 0.0f);
+			const int filterImages[4] = { imageDepth, imageNormals, imageRaw, imageResult };
+			if (!RtCore::AddPass(filterShader, filterImages, 4, 0x8, &f, sizeof(f), (w + 7) / 8, (h + 7) / 8)) return;
+		}
 		if (!RtCore::CopyOut(imageResult, ResultSurface)) return;
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
@@ -302,8 +347,8 @@ namespace RtLampShadows {
 		if ((FramesTraced % 600) == 1 && FramesTraced <= 6001) {
 			char text[900]; int used = 0;
 			for (int i = 0; i < LampCount && used < 800; i++)
-				used += sprintf_s(text + used, sizeof(text) - used, " | %d: slot %d at %.0f %.0f %.0f reach %.0f stop %.0f", i, Lamps[i].slot,
-					Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, Lamps[i].reach, Lamps[i].stop);
+				used += sprintf_s(text + used, sizeof(text) - used, " | slot %d at %.0f %.0f %.0f reach %.0f I %.2f", Lamps[i].slot,
+					Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, Lamps[i].reach, Lamps[i].intensity);
 			Logger::Log("UNOFFICIAL RT lamp shadows: trace %u, %d lamps, cube redraws skipped %u since the last line (SkipTracedCubes)%s",
 				FramesTraced, LampCount, SkippedCubes, LampCount ? text : "");
 			SkippedCubes = 0;
@@ -331,6 +376,7 @@ namespace RtLampShadows {
 		if (!CompiledIn) return;
 		RtCore::SetMaskHook(MaskHook);
 		shader = RtCore::AddShader("RtLampTrace");
+		filterShader = RtCore::AddShader("RtLampFilter");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}
 

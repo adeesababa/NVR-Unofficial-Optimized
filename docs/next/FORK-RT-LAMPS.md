@@ -35,6 +35,52 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Runs rtlamp-10 (actors) + rtlamp-11 (soft 32 + filter v2), 2026-10-29 19:44-19:57, both PASS (DLL FB49B761, rt-sun-2 c9e185d8)
+- rtlamp-10, fork-0033 + Actors: the core posed 5040 skinned partitions in exchanges 1-60 (~84 a frame); A/B repeats 0.00 %; rt vs
+  cube L38 2.2 %, V21 1.1 %; nothing wrong on or round the people (no speckle, no self-shadow); people moved between shots, so the
+  run does not prove their traced shadows (needs a still NPC + DebugView 3 on the lamp over them). Cost: RT 36-42 ms (L38) /
+  39 ms (V21) vs 28 / 24 without actors: the skinned rebuilds ~+8 (L38) to +15 ms (V21) on the iGPU.
+- But V21's cube maps stayed 8.1 ms (7 people refreshes a frame): KeepCube refused any lamp whose last redraw was PARTIAL, and a
+  people refresh with CubeFaceViewCull is always partial -> a loop that redrew them every frame (also in rtlamp-7/8 with
+  ActorsFromCubeMaps 0). Fixed (dbb?): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
+- rtlamp-11, LampRadius 32 / invisible 48, 1 ray, Jitter off: hard / soft1 / soft4 still differ on < 0.1 % of pixels: traced lamp
+  shadows are a small part of these views and their penumbrae barely show. Filter v2: +14 ms (iGPU) and further from soft4 than
+  soft1 (0.13 vs 0.05 %): stays off. Soft lamp shadows: LampRadius 4 + Jitter (TAA) is enough here; the filter is parked.
+
+### Step 3, part 2: soft shadows + a lamp-aware filter (Filter, off; f65dbcce, DLL 1879B367; run rtlamp-9 19:12, PASS)
+- The shared RtDenoise (rt-sun-core) filters one value a pixel; this result is three lamps a pixel whose order differs between
+  neighbours, so it cannot go through it. RtLampFilter.comp, a second helper pass: each of the pixel's lamps averages the visibility
+  of the SAME cube slot among 5 x 5 taps (Step 2), depth and normal weighted.
+- rtlamp-9 (LampRadius 8, 1 ray, Jitter off): hard, soft 1 ray and soft 4 rays are the same picture (mean 0.04 / 255): at 8 units
+  the penumbrae are too small to see. The filter only changed thin silhouettes (rails, pipes) to brighter (0.2 % of pixels): the
+  depth slope came from a one-sided difference, huge at a silhouette, so background taps leaked in. Cost (iGPU, ms, trace + copies):
+  L38 hard 28.0, soft1 27.0, soft1 + filter 40.4, soft 4 rays 58.4; V21 24.2 / 24.1 / 37.7 / 52.3: the filter cost 13 ms.
+- v2 (f4cb4ec1, shader only): the smaller one-sided difference each way + an early out where the pixel and its 4 neighbours a step
+  away agree. Next run rtlamp-11: LampRadius 32 / invisible 48, where the soft edges show.
+
+### Step 2: actors (merged claude/rt-sun-2 7fc7ffc2: [Main.Main.RayTracing] Actors, mask 0x20, fork patch 0030) -- built, NOT run
+- The lamp rays' masks (far 0xEF, near 0xE7) already keep 0x20, so posed people block lamp rays once the core has them.
+- New RtCore::Actors() (running + Actors on + the fork's 1.8-rt-skin): while true, ActorsFromCubeMaps is ignored, so people's
+  shadows come from the trace only and SkipTracedCubes also skips the people-only refreshes (Vault 21: 7 a frame, ~8 ms iGPU).
+- To run once rt-sun-core ships a fork d3d9 with patch 0030: rtlamp-8 list with Actors on/off; watch actors' self-shadowing
+  (StartOffset on skinned normals) and the Vault 21 cube time.
+
+### Step 3, part 1: per-pixel lamp selection over every shadowed lamp (v4, 62575ea4, DLL FBF611F4; run rtlamp-8 18:00, PASS)
+- The trace's lamp table holds every published shadow lamp (cube slots 0-62; 24 in this run's toml, LightPoints); each pixel ranks
+  them by the unshadowed light they bring it (intensity x the game's falloff x N.L) and traces its LampsPerPixel strongest. The
+  result: three (cube slot + visibility) entries + the depth code per pixel; a draw's lamp not among them uses its cube map there.
+- Coverage (exact): Lucky 38 green 39.6 %, yellow (the pixel traced other, stronger lamps) 2.9 %, red 1.1 %, blue 0; Vault 21
+  green 38.7 %, yellow 4.2 %, red 0.7 %. A/B pairs repeat to 0.0-0.1 %. rt vs cube: Lucky 38 8.7 % / -0.34, Vault 21 5.5 % / -0.02.
+- Lamps per pixel: 2 = 3 to 0.1-0.2 % of pixels; 1 differs 1.8 %. Default 2.
+- Cost, helper GPU incl. copies and waits (iGPU 2 CUs, 720p, 1 ray): Lucky 38 1 / 2 / 3 lamps a pixel = 19.4 / 25.8 / 31.3 ms; Vault 21
+  17.6 / 23.8 / 24.4 ms. (v3: 9 fixed lamps for every pixel: 23-26 / 16.5 ms, with Vault 21's visible lamps mostly untraced.)
+- Cube maps (SkipTracedCubes): Lucky 38 1.75 ms (3.7 without RT); Vault 21 stays 8.1 ms although ~14 redraws a frame are skipped:
+  answered from the run's log: Vault 21's 8.1 ms is 7.0 lamps a frame refreshing only their people ("Cube people onto copy",
+  ~1.05 ms a lamp; 89 moving pieces there vs 32 in Lucky 38). SkipTracedCubes must keep those while actors come from the cube maps
+  (ActorsFromCubeMaps: not in the traced scene yet), so that cost goes only with step 2 (actors in the TLAS).
+- Still to do in step 3: soft shadows without noise = the shared denoiser (rt-sun-core); true ReSTIR (reservoir reuse across pixels
+  and frames) would only pay off with many more lamps per pixel than the forward lamp shaders can use (they shade 1-6 lamps each).
+
 ## SUMMARY (2026-10-29 07:40): where RT lamp shadows stand
 Branch `claude/rt-lamp-shadows-d97675` (merged with claude/rt-sun-core-aa6d6d up to ecf5defe), DLL B1BD417C. Not installed, not pushed.
 - **Works end to end on the iGPU** (9800X3D RDNA2, 2 CUs, 720p): the RT core's 64-bit helper traces the 9 lamps the visible draws
