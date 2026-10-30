@@ -20,7 +20,7 @@ float4 TESR_LotteData : register(c28);
 float4 TESR_ToneMapping : register(c29);
 float4 TESR_BloomExtraData : register(c30); // .x - NVR bloom on/off.
 float4 TESR_ReciprocalResolution : register(c31); //
-float4 TESR_ToneMappingClip : register(c32); // UNOFFICIAL y: dither size (0 off), z: dither frame (sky dither at the tonemap)
+float4 TESR_ToneMappingClip : register(c32); // UNOFFICIAL .x: 1 = HueSafeClip (2026-10-30, as ISHDRBLENDINSHADERCIN), y: dither size (0 off), z: dither frame (sky dither at the tonemap)
 
 
 
@@ -130,7 +130,17 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     final.rgb = lerp(final.rgb, final.rgb * Cinematic.w, cinematicScalar); // apply brightness from Cinematic
     final.rgb = tonemap(final.rgb * TESR_HDRData.y); // exposure & tonemap using provided tonemapper
-    
+    // UNOFFICIAL 2026-10-30 HueSafeClip here too (as ISHDRBLENDINSHADERCIN): this alpha-mask variant tonemaps the frames with a
+    // menu over the world (the Pip-Boy), and it cut a too-bright channel where the world's keeps the hue, so the Pip-Boy's lit
+    // amber and orange came out yellower than the same colours in the world. The setting's description says it applies everywhere.
+    [branch] if (TESR_ToneMappingClip.x > 0.5f) {
+        const float peak = max(final.r, max(final.g, final.b));
+        [branch] if (peak > 1.0f) {
+            const float brightness = saturate(luma(final.rgb));
+            final.rgb = brightness + (final.rgb - brightness) * saturate((1.0f - brightness) / max(peak - brightness, 1e-4f));
+        }
+    }
+
     if (gammaSpacePostProcess){
         final.rgb = delinearize(final.rgb);
     }
