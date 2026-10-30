@@ -24,6 +24,7 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_FogSkyColor", &Constants.FogSkyColor);	// UNOFFICIAL 2026-10-27 (UpdateFogSky)
 	TheShaderManager->RegisterConstant("TESR_FogSkyLowColor", &Constants.FogSkyLowColor);
 	TheShaderManager->RegisterConstant("TESR_FogHorizonColor", &Constants.FogHorizonColor);
+	TheShaderManager->RegisterConstant("TESR_FogWeatherColor", &Constants.FogWeatherColor);	// UNOFFICIAL 2026-10-30 (UpdateFogSky)
 }
 
 // UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
@@ -143,6 +144,18 @@ void SkyShaders::UpdateFogSky() {
 		if (!look) { *to[i] = *from[i]; continue; }
 		const D3DXVECTOR3 c = SkyLook(Linearize(*from[i]), 0.0f, D3DXVECTOR4(f.x, f.y, f.z, 1.0f), white, D3DXVECTOR4(f.w, 1.0f, 0.0f, 0.0f));
 		*to[i] = D3DXVECTOR4(LinearToSrgb(c.x), LinearToSrgb(c.y), LinearToSrgb(c.z), from[i]->w);
+	}
+	// UNOFFICIAL 2026-10-30 WeatherFogColor ([Shaders.VolumetricFog.Main]; tester: "a weather's fog colour set to 100% red changes
+	// nothing"): the fog now takes the weather's own fog colour, so its copy of it gets the sky look on top too, outdoors, while the
+	// fog in use takes it. Indoors (the cell's fog colour), with WeatherFogColor 0, LegacyFog, ClassicLook or the FogReference test
+	// it is the raw colour, as those read it before. VolumetricFog.fx.hlsl reads it as TESR_FogColor.
+	const D3DXVECTOR4& fog = TheShaderManager->ShaderConst.fogColor;
+	const VolumetricFogEffect* volumetricFog = TheShaderManager->Effects.VolumetricFog;
+	const bool fogTakesIt = volumetricFog && volumetricFog->Constants.Sun.y > 0.0f && !volumetricFog->IsLegacy() && !volumetricFog->IsClassic() && !volumetricFog->referenceTest;
+	if (!look || !TheShaderManager->GameState.isExterior || !fogTakesIt) Constants.FogWeatherColor = fog;
+	else {
+		const D3DXVECTOR3 c = SkyLook(Linearize(fog), 0.0f, D3DXVECTOR4(f.x, f.y, f.z, 1.0f), white, D3DXVECTOR4(f.w, 1.0f, 0.0f, 0.0f));
+		Constants.FogWeatherColor = D3DXVECTOR4(LinearToSrgb(c.x), LinearToSrgb(c.y), LinearToSrgb(c.z), fog.w);
 	}
 }
 

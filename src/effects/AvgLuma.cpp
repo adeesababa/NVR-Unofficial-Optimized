@@ -1,4 +1,5 @@
 #include "AvgLuma.h"
+#include "../core/MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 #include "../core/DxvkCompute.h"
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include <cmath>
@@ -142,6 +143,7 @@ bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
 	dispatch.pPushData = &push;
 	dispatch.PushDataSize = sizeof(push);
 
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	push.phase = 0;		// one partial sum (or the histogram counts) per 16x16 tile
 	dispatch.GroupsX = computeGroupsX; dispatch.GroupsY = computeGroupsY; dispatch.GroupsZ = 1;

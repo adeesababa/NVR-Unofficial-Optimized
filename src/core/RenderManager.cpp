@@ -2,6 +2,7 @@
 #include "ShaderWarmUp2.h"	// UNOFFICIAL 2026-10-18: ShaderWarmUp2 device hooks go in with the render manager
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 #include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28 RT lamp shadows
+#include "MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 
 void RenderManager::CreateD3DMatrix(D3DMATRIX* Matrix, NiTransform* Transform) {
 
@@ -372,6 +373,7 @@ void RenderManager::Initialize() {
 }
 
 void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
+	MixCheck::NoteWrite(Buffer, MixCheck::kD3D9, "DepthResolve");	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck (RESZ writes it without a draw)
 
 	if (RESZ) {
 		IDirect3DBaseTexture9 *pCurrTX = NULL;

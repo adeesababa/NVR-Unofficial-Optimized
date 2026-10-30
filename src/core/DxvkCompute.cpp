@@ -2,6 +2,7 @@
 #include <unordered_map>
 #include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 (DisplaceObjectsLayout)
+#include "MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 
 ID3D9NvrExt*	DxvkCompute::Ext = nullptr;
 NVR_EXT_INFO	DxvkCompute::ExtInfo = {};
@@ -138,6 +139,9 @@ void DxvkCompute::PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count) 
 	for (UINT i = 0; Bindings && i < Count; i++)
 		if (Bindings[i].Type == NVR_EXT_BIND_SAMPLED_IMAGE && Bindings[i].pResource)
 			static_cast<IDirect3DResource9*>(static_cast<void*>(Bindings[i].pResource))->PreLoad();
+	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck (core/MixCheck.h): every extension pass's bindings come through here: sampled images are its
+	// reads, storage images its writes (off: one bool test).
+	MixCheck::NoteBindings(Bindings, Count, NVR_EXT_BIND_SAMPLED_IMAGE, NVR_EXT_BIND_STORAGE_IMAGE);
 }
 
 ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address) {

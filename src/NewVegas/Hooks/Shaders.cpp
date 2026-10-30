@@ -9,7 +9,10 @@ void __fastcall SkyShader__UpdateConstants(SkyShader* apThis, void*, const NiPro
 
     ThisCall(kSkyShaderConstantsDetour.GetOverwrittenAddr(), apThis, apProperties);
 
-    TheRenderManager->device->SetPixelShaderConstantF(20, (const float*)&TheShaderManager->ShaderConst.skyObjectID, 1);
+    // UNOFFICIAL 2026-10-29: the id alone (SKYTEX.pso reads c20.x). This uploaded 16 bytes from &skyObjectID, i.e. the id and the sun
+    // disc colour after it, into c20, where SKY.pso kept its horizon tint until it moved to c32 (red horizon band, tester + user).
+    const float objectID[4] = { TheShaderManager->ShaderConst.skyObjectID, 0.0f, 0.0f, 0.0f };
+    TheRenderManager->device->SetPixelShaderConstantF(20, objectID, 1);
 }
 
 // UNOFFICIAL: the skin shader's hooks (effects/Skin.h, SkinTemplate.hlsl; 2026-10-25). After the hooks in Conor's (mrfury97) NVR

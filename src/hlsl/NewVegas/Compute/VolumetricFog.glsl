@@ -850,7 +850,11 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     vec3 nightAmbient = cb.sunAmbientLin.rgb * MoonVisibility * NightAmbientStrength * nightFactor;
     ambientColor = max(ambientColor, nightAmbient);
 
-    vec4 ambientSkyColor = vec4(mix(ambientColor, skyColor.rgb, saturate(WeatherImpact)), 1.0);
+    // UNOFFICIAL 2026-10-30 WeatherFogColor (VolumetricFog.fx.hlsl ModernFogTerms): the weather's own fog colour (fogColorLin, the
+    // fog's copy with the sky look in it) on the weather's side of this blend, by fogSun.y (0 = the sky's colour, as before;
+    // not on the sky dome, where the fog over the sky keeps the sky's colour; ClassicLook: 0, as master)
+    vec3 weatherColor = mix(skyColor.rgb, pureFogColor.rgb * cb.sunsetColor.w, classic ? 0.0 : cb.fogSun.y * (1.0 - isSkyDome));
+    vec4 ambientSkyColor = vec4(mix(ambientColor, weatherColor, saturate(WeatherImpact)), 1.0);
 
     vec4 fogColorFinal = fogColor(ambientSkyColor, pureFogColor, strength, FogSkyColorCoeff, sun, FogSaturation);
     fogColorFinal.rgb *= mix(vec3(1.0), NightTint, nightFactor);

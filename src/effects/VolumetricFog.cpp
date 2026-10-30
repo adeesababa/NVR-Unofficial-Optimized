@@ -137,6 +137,9 @@ void VolumetricFogEffect::UpdateSettings(){
 		Constants.Scatter.x = TheSettingManager->GetSettingF(SettingCategory, "PhaseAsymmetry");
 		Constants.Scatter.y = TheSettingManager->GetSettingF(SettingCategory, "ShadowStrength");
 		Constants.Sun.x = std::clamp(TheSettingManager->GetSettingF(SettingCategory, "SunGlow"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-15
+		// UNOFFICIAL 2026-10-30 WeatherFogColor (missing key, an older defaults toml = 1: the weather's fog colour, not silently the old look)
+		SettingManager::Configuration::ConfigNode weatherFogColor;
+		Constants.Sun.y = TheSettingManager->Config.FillNode(&weatherFogColor, SettingCategory, "WeatherFogColor") ? std::clamp(weatherFogColor.FloatValue, 0.0f, 1.0f) : 1.0f;
 
 		Constants.Aerial.x = TheSettingManager->GetSettingF(SettingCategory, "AerialStrength");
 		Constants.Aerial.y = TheSettingManager->GetSettingF(SettingCategory, "AerialRangeStart");
@@ -166,6 +169,7 @@ void VolumetricFogEffect::UpdateSettings(){
 		Constants.Scatter.x = 0.0f;
 		Constants.Scatter.y = 0.0f;
 		Constants.Sun.x = 0.0f;
+		Constants.Sun.y = 0.0f;	// (the fog's sky colour indoors is the cell's fog colour already)
 
 		Constants.Aerial = D3DXVECTOR4(0, 0, 0, 0);
 		Constants.AerialTintColor = D3DXVECTOR4(0, 0, 0, 0);
@@ -824,7 +828,8 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 namespace {
 	const char* const FogExtMatrixNames[] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
 		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod", "TESR_ViewTransform", "TESR_ProjectionTransform" };
-	const char* const FogExtVectorNames[] = { "TESR_FogColor", "TESR_FogData", "TESR_ReciprocalResolution", "TESR_GameTime", "TESR_SmoothedSunDir",
+	// UNOFFICIAL 2026-10-30: the fog colour is the fog's own copy with the sky look in it (Sky.cpp UpdateFogSky; the GLSL's fogColor)
+	const char* const FogExtVectorNames[] = { "TESR_FogWeatherColor", "TESR_FogData", "TESR_ReciprocalResolution", "TESR_GameTime", "TESR_SmoothedSunDir",
 		"TESR_SunPosition", "TESR_SunColor", "TESR_SunDiskColor", "TESR_SunAmbient", "TESR_FogHorizonColor", "TESR_FogSkyLowColor", "TESR_FogSkyColor",
 		"TESR_SkyData", "TESR_SunsetColor", "TESR_SunAmount", "TESR_PBRData",
 		"TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter", "TESR_ShadowFormatData", "TESR_ShadowBlur",
@@ -848,7 +853,7 @@ namespace {
 		D3DXVECTOR4	Linear[9];
 	};
 	// UNOFFICIAL 2026-10-27: the sky colours are the fog's own copies with the sky look in them (Sky.cpp UpdateFogSky; the GLSL is unchanged)
-	const char* const FogExtLinearNames[] = { "TESR_FogColor", "TESR_FogSkyColor", "TESR_FogSkyLowColor", "TESR_FogHorizonColor", "TESR_SunDiskColor",
+	const char* const FogExtLinearNames[] = { "TESR_FogWeatherColor", "TESR_FogSkyColor", "TESR_FogSkyLowColor", "TESR_FogHorizonColor", "TESR_SunDiskColor",
 		"TESR_SunsetColor", "TESR_SunAmbient", "TESR_VolumetricFogAerialTint", "TESR_SunColor" };
 
 	// Common.glsl linearize (rgb; alpha as it is).

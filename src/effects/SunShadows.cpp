@@ -88,12 +88,14 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 			const bool last = p == passes - 1;
 			IDirect3DSurface9* destination = last ? shadowSurface : scratchSurface[p & 1];
 			Device->SetTexture(3, nullptr); // TESR_PointShadowBuffer slot
+			TheRenderManager->renderState->NoteDeviceTexture(3, nullptr);	// UNOFFICIAL 2026-10-29: keep the game's texture cache truthful (as SetCT)
 			result = Device->SetRenderTarget(0, destination);
 			if (FAILED(result)) break;
 			if (ClearRenderTarget) Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
 			Device->SetTexture(3, source);
+			TheRenderManager->renderState->NoteDeviceTexture(3, source);
 			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part only in rect frames
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
@@ -103,6 +105,7 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 		Effect->End();
 	}
 	Device->SetTexture(3, nullptr);
+	TheRenderManager->renderState->NoteDeviceTexture(3, nullptr);
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
 		pingPongFailed = true;
@@ -274,6 +277,9 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 	// shadow buffer untouched (only the last pass writes it), so the D3D9 passes can still do this frame from the start.
 	GpuTimer* passTimers = ContactPassTimers();
 	Device->SetTexture(3, nullptr); // TESR_PointShadowBuffer slot
+	// UNOFFICIAL 2026-10-29: the game's texture cache told too. Before, it kept the last texture a world draw had bound on stage 3 while the
+	// device held none, so the next game bind of that texture there was skipped and sampled nothing (SetCT, which notes, does not run first here).
+	TheRenderManager->renderState->NoteDeviceTexture(3, nullptr);
 	IDirect3DTexture9* source = shadowTexture;
 	for (UINT p = 0; p < description.Passes; p++) {
 		GpuProfileScope gpuPass(passTimers[p < 4 ? p : 3], Device);

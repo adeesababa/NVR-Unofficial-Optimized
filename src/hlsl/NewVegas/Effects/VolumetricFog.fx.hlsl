@@ -12,6 +12,10 @@
 #define TESR_HorizonColor TESR_FogHorizonColor
 #define TESR_SkyLowColor TESR_FogSkyLowColor
 #define TESR_SkyColor TESR_FogSkyColor
+// UNOFFICIAL 2026-10-30 WeatherFogColor: the weather's fog colour is the fog's own copy too, with the sky look on top of it outdoors
+// while today's fog takes it (ModernFogTerms); the raw colour indoors, with WeatherFogColor 0, LegacyFog, ClassicLook and the
+// FogReference test (Sky.cpp UpdateFogSky). The same register as before.
+#define TESR_FogColor TESR_FogWeatherColor
 
 float4 TESR_FogColor;
 float4 TESR_FogData;  // weather values : x: fogNear, y:fogFar, z: sunglare, w:fogpower
@@ -76,7 +80,7 @@ float4 TESR_VolumetricFogGlobal;     // x: Amount, y: NightDisableSkyMask, z: Mo
 // don't crowd Main as more of them get added.
 float4 TESR_VolumetricFogNight;        // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 float4 TESR_VolumetricFogNightScatter; // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
-float4 TESR_VolumetricFogSun;          // UNOFFICIAL 2026-10-15 x: SunGlow (1 = the glow round the sun as inherited from NVR)
+float4 TESR_VolumetricFogSun;          // UNOFFICIAL 2026-10-15 x: SunGlow (1 = the glow round the sun as inherited from NVR); 2026-10-30 y: WeatherFogColor
 float4 TESR_VolumetricFogNightTint;    // xyz: multiplicative night fog color tint, w: NightAmbientStrength
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -882,7 +886,15 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float3 nightAmbient = linearize(TESR_SunAmbient).rgb * MoonVisibility * NightAmbientStrength * nightFactor;
 	ambientColor = max(ambientColor, nightAmbient);
 
-	float4 ambientSkyColor = float4(lerp(ambientColor, skyColor.rgb, saturate(WeatherImpact)), 1);
+	// UNOFFICIAL 2026-10-30 WeatherFogColor ([Shaders.VolumetricFog.Main], TESR_VolumetricFogSun.y, 0 indoors; tester: "a weather's fog
+	// colour set to 100% red changes nothing"): the weather's side of this blend is the weather's own fog colour (the sky look on
+	// top, at the sky's strength) instead of the sky's colour, by that share (1; 0 = as before). Before, the fog colour reached the
+	// fog only through fogColor()'s pow(strength, 6) below: about 1 % at the usual density. Indoors skyColor is the fog colour.
+	// Not on the sky dome (isSkyDome): where the fog lies over the sky (Rainy / CloudyDisablesSkyFilter, NightDisableSkyMask) it keeps
+	// the sky's colour, as the game's own fog leaves the sky alone; else a cloudy weather's whole sky took its fog colour (slot run).
+	// (ClassicLook: 0, master's sky colour, as master.)
+	float3 weatherColor = lerp(skyColor.rgb, pureFogColor.rgb * TESR_SunsetColor.w, classic ? 0.0 : TESR_VolumetricFogSun.y * (1.0 - isSkyDome));
+	float4 ambientSkyColor = float4(lerp(ambientColor, weatherColor, saturate(WeatherImpact)), 1);
 
 	float4 fogColorFinal = fogColor(ambientSkyColor, pureFogColor, strength, FogSkyColorCoeff, sun, FogSaturation);
 	// Multiplicative recolor, same idea as aerialTint below -- fades in via nightFactor, so daytime

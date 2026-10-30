@@ -140,7 +140,7 @@ bool GodRaysEffect::ExtDrawPass(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 
 void GodRaysEffect::UpdateConstants() {
 	Constants.Data.z = std::lerp(nightMult, dayMult, TheShaderManager->GameState.transitionCurve);
-	Constants.Ray.w = rayVisibility * (sunGlareEnabled ? TheShaderManager->ShaderConst.sunGlare : 1.0f);	// UNOFFICIAL 2026-10-22: brackets (was (rayVisibility * sunGlareEnabled) ? ...); no shader reads Ray.w today
+	// UNOFFICIAL 2026-10-29: Ray.w is SunsetGlareFix (UpdateSettings); it held rayVisibility x the weather glare, which no shader read.
 }
 
 void GodRaysEffect::UpdateSettings(){
@@ -155,6 +155,10 @@ void GodRaysEffect::UpdateSettings(){
 	Constants.Ray.y = TheSettingManager->GetSettingF("Shaders.GodRays.Main", "RayLength");
 	Constants.Ray.z = TheSettingManager->GetSettingF("Shaders.GodRays.Main", "RayDensity");
 	rayVisibility = TheSettingManager->GetSettingF("Shaders.GodRays.Main", "RayVisibility");
+	// UNOFFICIAL 2026-10-29 SunsetGlareFix (GodRays.fx.hlsl GlareSunColor; missing key = on): the sky mask's sun glare takes the sunset
+	// colour boost at sunset, not with the sun high (the red tint in the glare and the rays from it).
+	SettingManager::Configuration::ConfigNode node;
+	Constants.Ray.w = TheSettingManager->Config.FillNode(&node, "Shaders.GodRays.Main", "SunsetGlareFix") && !node.BoolValue ? 0.0f : 1.0f;
 	Constants.RayColor.x = TheSettingManager->GetSettingF("Shaders.GodRays.Coloring", "RayR");
 	Constants.RayColor.y = TheSettingManager->GetSettingF("Shaders.GodRays.Coloring", "RayG");
 	Constants.RayColor.z = TheSettingManager->GetSettingF("Shaders.GodRays.Coloring", "RayB");

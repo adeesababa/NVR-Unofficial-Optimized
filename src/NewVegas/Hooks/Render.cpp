@@ -33,6 +33,8 @@
 #include "../../core/CasterView.h"	// UNOFFICIAL 2026-10-28, diagnostic: which objects cast into the sun cascade that covers them
 #include "../../core/LinearSceneCensus.h"	// UNOFFICIAL 2026-10-28, diagnostic: what draws into the world and how (linear-scene plan)
 #include "../../core/LinearScene.h"	// UNOFFICIAL 2026-10-28 LinearScene: the world's main list kept in linear light
+#define MIXCHECK_IMPLEMENTATION	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck: the check's bodies are compiled here, once
+#include "../../core/MixCheck.h"
 #include "../../core/CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals: the main list's surfaces write their smooth normals
 #include "../../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion: what moved, noted as the main list draws it
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
@@ -677,6 +679,9 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		CapturedNormals::BeginFrame(TheRenderManager->device, (snow && snow->Enabled && snow->CapturedNormals && snow->ShouldRender()) || CapturedNormals::MergeWanted());
 	}
 	ObjectMotion::BeginFrame();	// UNOFFICIAL 2026-10-29 ObjectMotion
+	// UNOFFICIAL 2026-10-30 [Main.Main.Performance] NvrDxvkMixCheck (core/MixCheck.h): the setup line at the first frame; with the check on
+	// (read at launch) its device hooks go in after LinearScene's and CapturedNormals' (theirs run inside them).
+	MixCheck::BeginFrame(TheRenderManager->device, TheShaderManager->Effects.ShadowsExteriors && TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.MSAA);
 	FoldFog::BeginFrame();	// UNOFFICIAL 2026-10-27 FoldFog
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
