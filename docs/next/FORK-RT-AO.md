@@ -387,3 +387,19 @@ helper's own timing).
   pixel: mean |diff| 0.83 (2 rays), 0.90 (1 ray), 0.88 (Interleave 2), 0.91 (2 + I2) of 255; pixels off by > 8: 59 / 147 / 182 / 210
   of 230400. The shared denoiser (Kernel 3) makes 2 rays look like 4 here. **Default RayCount 2** (DLL EA6439D2): -4.5 ms. In motion
   fewer rays show more grain while the history rebuilds; 1 ray / Interleave 2 left as user options.
+
+### rt-gi-14 cost summary at the new defaults (78d8d119, DLL EA6439D2; RayCount 2, Kernel 3, AOAlpha 1, GIReuse 8)
+iGPU (Radeon 610M-class), 720p, AlphaTested + HitTextures, helper per-pass GPU time + NVR's own denoisers:
+
+| scene | setting | RtAOTrace | RtGITrace | AO denoise | GI denoise | game "Ray tracing" p50 |
+|---|---|---|---|---|---|---|
+| Lucky 38 (20261030-040512-slotA) | AO | 9.7 | - | 4.6 | - | 12.3 |
+| Lucky 38 | AO + GI full rate | 9.2 | 28.6 | 4.3 | 5.9 | 44.1 |
+| Goodsprings (20261030-042959-slotC) | AO | 4.8 | - | 4.0 | - | 6.3 |
+| Goodsprings | AO + GI full rate | 6.1 | 20.0 | 4.0 | 5.4 | 27.3 |
+| (rtgi16/19, Lucky 38 in motion) | AO + GI GIInterleave 4 | 12-17 | 8.5-11.7 | ~4 | ~5.4 | - |
+
+GIInterleave 4's own row in rt-gi-14 is the trailing RT shot, so it has no per-pass print (lists from now on end with a spare RT
+shot). CPU frame intervals on the iGPU are dominated by 300-700 ms "Game render" spikes in these runs (Lucky 38: al 118 / ao 133 /
+aogi 162 / aogi-g4 156 ms; Goodsprings 127-191 ms) and are not used for verdicts. Recommended iGPU preset: AO on (RayCount 2),
+GI with GIInterleave 4 (reuse on): ~20-25 ms of helper GPU time at Lucky 38, ~11-13 at Goodsprings (estimate from the rows above).
