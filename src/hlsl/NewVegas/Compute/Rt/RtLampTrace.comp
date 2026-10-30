@@ -37,7 +37,8 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	                    // y: lamps a pixel traces (1-3)
 	                    // z: Interleave (1, 2 or 4): a pixel is traced every z-th frame; w: this frame's phase (0 .. z-1)
 	vec4 mask;          // EXTERIOR: x EdgeFade (TESR_PointShadowNear.y), y LampReachMask (.z: > 0 reach from it, < 0 no angle term),
-	                    // z ExteriorDebug (diagnostic: 1 = the mask 0 everywhere, 2 = 1 everywhere),
+	                    // z ExteriorDebug (diagnostic: 1 = the mask 0 everywhere, 2 = 1 everywhere); the other variants: RankBy
+	                    //   (0 the light a lamp brings, 1 the game's own falloff: as the game picks a draw's lamps by distance),
 	                    // w StartOffsetPerUnit (all variants): the start offset grows by this x the view depth
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
@@ -150,6 +151,10 @@ void main() {
 		if (ndl <= 0.0) continue;
 		float falloff = clamp(1.0 - d2 / max(c.y * c.y, 1.0), 0.0, 1.0);
 		float w = c.x * max(falloff, 0.02) * ndl * inversesqrt(d2);   // a floor, so lamps past their game radius still rank by intensity
+		// RankBy 1 (2026-10-30): the lamps the game would give the draw here: its own falloff over its radius, brightness left out
+		// (Novac, rtlamp-31: by light brought, each pixel's two strongest were not the draw's own lamps)
+		if (p.mask.z > 0.5) w = falloff > 0.0 ? falloff + 1e-3 : 0.0;
+		if (!(w > 0.0)) continue;
 #endif
 		if (w > weight[2]) {
 			if (w > weight[1]) {

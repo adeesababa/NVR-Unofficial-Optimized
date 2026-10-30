@@ -923,6 +923,28 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 		}
 		else Logger::Log("[ERROR] UNOFFICIAL RT lamp shadows: %s with outdoor lamp shadows did not load (ExteriorForward): it stays without them outdoors.", PixelShader->Name);
 	}
+	// UNOFFICIAL 2026-10-30 RT lamp shadows ExteriorForward on the land: the land shaders with lamps (TerrainTemplate, NUM_PT_LIGHTS) get an
+	// outdoor record with TERRAIN_LAMP_RT (their lamps matched by position to the traced entries). Only with terrain blending off: its
+	// depth takes s15, the one stage the land has left (register audit 2026-10-30).
+	if (PixelShader->ShaderProg[ShaderRecordType::Default] && Template.Name && !strcmp(Template.Name, "TerrainTemplate") &&
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "Enabled") && TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "ExteriorForward")) {
+		bool lamps = false;
+		for (const D3DXMACRO& d : Template.Defines) if (d.Name && !strcmp(d.Name, "NUM_PT_LIGHTS")) lamps = true;
+		if (lamps && TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled")) {
+			static bool told = false;
+			if (!told) { told = true; Logger::Log("UNOFFICIAL RT lamp shadows: the land gets no outdoor lamp shadows: Terrain Blending is on (it takes s15, the land's last free stage)."); }
+		}
+		else if (lamps) {
+			static D3DXMACRO terrainLamps[2] = { { "TERRAIN_LAMP_RT", "1" }, { NULL, NULL } };
+			ShaderRecordPixel* record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, "ExteriorLamps\\", terrainLamps);
+			if (record) {
+				PointShadowForward::ExteriorRecords[PixelShader] = record;
+				PointShadowForward::TerrainRecords.insert(PixelShader);
+				Logger::Log("UNOFFICIAL RT lamp shadows: %s (land) has an outdoor lamp-shadow record (ExteriorForward).", PixelShader->Name);
+			}
+			else Logger::Log("[ERROR] UNOFFICIAL RT lamp shadows: %s (land) with outdoor lamp shadows did not load (ExteriorForward).", PixelShader->Name);
+		}
+	}
 	PixelShader->Enabled = enabled;
 
 	if (PixelShader->ShaderProg[ShaderRecordType::Default] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Interior] != nullptr) {

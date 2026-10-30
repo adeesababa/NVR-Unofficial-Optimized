@@ -86,6 +86,39 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   filtered cube lookups add ~400-900 more. The fallback would also need the outdoor cube maps drawn again (14-16 ms iGPU in Freeside)
   only for the pixels the trace misses (off its screen, disoccluded, a lamp not among a pixel's 2 strongest), where outdoor lamps were
   unshadowed before anyway. So outdoors a lamp not traced at a pixel stays lit; without RT the switch does nothing (auto-off).
+- rtlamp-30 (be70de35, DLL 8CAF4FD7; 1st attempt timed out compiling the outdoor records on a cold cache, 13/17 shots; the retry
+  20261030-051602-slotA PASS): SKIN2011 loads at the 2-lamp level; Freeside again 36 % traced, 0.23 % darker. Novac and the Strip missed.
+- a888f059 (DLL 73448002): outdoors with ExteriorForward the shadow lamps are LightPoints (24), not the screen pass's 12 (UsesAllSlots),
+  no outdoor cube maps meanwhile; the fallback records' cache folders fixed (ExteriorLamps\Fit1, a lost backslash).
+- rtlamp-31 (20261030-061451-slotA, PASS): still no visible change at Novac (0.09 % = repeat noise; coverage yellow: each pixel's two
+  strongest traced lamps are not the draw's own) and the Strip spot lands in the Wasteland from the slim slot's lucky22 save (moveto
+  0013B3FD or the Strip-world flag 0013B6BC, then setpos: desert rocks, 1 lamp traced). Open: a Strip spot needs a save inside
+  TheStripWorldNew (the full slots' strip20 save; the slim slots have none); Novac needs its walkway lamps to rank first at the
+  pixels they light (LampsPerPixel 3, or ranking by the draws' own lamps).
+- rtlamp-32 (5b5911ce, DLL 2F959124, RankBy; 20261030-073352-slotA, PASS): ranking by the game's own falloff (RankBy 1) does not help:
+  Freeside coverage 36 % -> 8 % (yellow 20 -> 50 %), Novac 0 % green either way; RankBy stays 0. Novac's coverage is mostly GREY (the
+  draw's lamps have no traced slot), not yellow, with 24 lamps traced: the lamps lighting those walls are outside the published set.
+  rtlamp-33 (20261030-075631-slotA, PASS): LightPoints 63 -> 21-28 lamps traced (all ShadowManager offers there), grey 9 -> 1.8 %,
+  still 0 % green. The coverage view shows why: almost nothing near the camera is drawn by an outdoor lamp-shadow record: the ground
+  at that spot is LANDSCAPE (TerrainTemplate, not one of the eligible lit object shaders), the motel's walls far off. Freeside works
+  because its street and pavement are object meshes. So outdoor lamp shadows on the land need the terrain shaders too (NVR land does
+  get the game's lamps: Vanilla Plus Terrain); open item. Its catch: TerrainTemplate already takes s15 (TESR_TerrainBlendDepth), so
+  the traced buffer needs another free stage there (a register audit of the terrain records first).
+- Land support built (34849a3e, DLL C845BC41): register audit of the 28 land shaders (fxc /dumpbin): samplers 0-13 (base and normal
+  layers, displacement), s14 the sun atlas, s15 Terrain Blending's depth when that is on; constants up to c135 + c137-c145, c167, c191,
+  c223: c146-c166 and c168-c175 free; at most 3223 slots. The land's lamps are its own list (PointLightPosition, the land's space), so
+  TERRAIN_LAMP_RT matches them by POSITION: a lamp's camera-relative position = the pixel's (shadowWorldPos) + its vector to the lamp
+  (the same in every space); the trace's slot positions as traced (RtLampShadows::TracedLampWorld, slots 0-19) at c146-c165, the
+  reprojection c168-c171, c172, the traced buffer on s15; +135 slots on the largest (2639 -> 2774, offline). Only with Terrain Blending
+  off (logged otherwise).
+- rtlamp-34 (20261030-081600-slotA, PASS): all 21 land shaders with lamps load their outdoor record (0 refused); Freeside unchanged
+  (0.29 % darker). Novac's old spot: moonlight only on the ground (0.10 % = repeat noise). rtlamp-35 (20261030-084238-slotA, PASS),
+  right under the motel walkway lamps: one traced lamp shadow on an object (a lamp-lit fence face goes dark, 0.46 % vs 0.13 % noise);
+  no lamp pool on the land in either view, so the land path's visible effect is NOT proven yet (it runs, no artifacts, no regression).
+  Needs a land spot with a lamp pool on the ground (a lamp-lit dirt road at night); the coverage view does not cover the land.
+- The Strip showcase (parked, for the user to run): foundations\liststlamp-strip-showcase.txt (11 shots: today / traced x2 /
+  coverage, two headings, 23:00 clear) in a FULL game copy or the real folder with the strip20 save (the slim slots have none), run
+  toml bench\deep-roadmaptlampun-toml-igpu-rtlamp-extfwd.toml.
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the

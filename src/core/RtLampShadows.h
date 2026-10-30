@@ -104,6 +104,9 @@ namespace RtLampShadows {
 	// POINT_SHADOW_RT_ONLY (ShaderManager::LoadShader, PointShadowForward::ExteriorRecords), the table holds ShadowManager's shadow
 	// lamps by their index (PointShadowForward::PublishExterior gives the draws the same ids) and the per-pixel trace runs as indoors.
 	inline bool ExteriorForwardFrame = false;
+	// UNOFFICIAL 2026-10-30 the land (TerrainTemplate TERRAIN_LAMP_RT): each slot's world position in the traced frame (w 1 = traced),
+	// matched there by position (outdoor slots are ShadowLights indices, which may change order from frame to frame)
+	inline D3DXVECTOR4 TracedLampWorld[TableSlots] = {};
 	inline bool ExteriorForwardOn() { return TheSettingManager->GetSettingI(kSection, "ExteriorForward") != 0; }
 	// UNOFFICIAL 2026-10-30 Flashlight ([Shaders.ShadowsInteriors.RT] Flashlight, off): the flashlight's (Pip-Boy light's) shadow traced
 	// (RtFlashTrace.comp, 1 lit / 0 blocked, screen space); Flashlight's shadow pass reads it instead of its shadow map
@@ -442,6 +445,7 @@ namespace RtLampShadows {
 		c.params[0] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "Rays"), 1), 8);
 		c.params[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffset"), 0.0f);
 		c.mask[3] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffsetPerUnit"), 0.0f);	// 2026-10-30: x the view depth
+		c.mask[2] = (float)TheSettingManager->GetSettingI(kSection, "RankBy");	// 2026-10-30 (the mask variant sets its ExteriorDebug there)
 		c.params[2] = (std::max)(TheSettingManager->GetSettingF(kSection, "LampStop"), 0.0f);
 		c.params[3] = TheSettingManager->GetSettingI(kSection, "Jitter") ? fmodf((float)frame * 0.61803399f, 1.0f) : 0.0f;
 		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
@@ -520,6 +524,10 @@ namespace RtLampShadows {
 		// The next frame's draws reproject into this frame
 		Traced = { view, D3DXVECTOR3(camera.x + eye.x, camera.y + eye.y, camera.z + eye.z), proj._11, proj._22, cameraData->y, true };
 		memcpy(TracedMap, PendingMap, sizeof(TracedMap));
+		memset(TracedLampWorld, 0, sizeof(TracedLampWorld));
+		for (int i = 0; i < LampCount; i++)
+			if (Lamps[i].slot >= 0 && Lamps[i].slot < TableSlots)
+				TracedLampWorld[Lamps[i].slot] = D3DXVECTOR4(Lamps[i].position.x, Lamps[i].position.y, Lamps[i].position.z, 1.0f);
 		// Which lamps were traced (index -> cube slot -> where): matches the LAMPSLOT lines of LogLamps; now and then
 		if ((FramesTraced % 600) == 1 && FramesTraced <= 6001) {
 			char text[900]; int used = 0;
