@@ -45,6 +45,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h)
 	Settings.GlassReflect = std::clamp(TheSettingManager->GetSettingF(section, "GlassReflect"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-29 (core/GlassMask.h)
 	Settings.MaterialBufferRoughness = TheSettingManager->GetSettingI(section, "MaterialBufferRoughness") != 0;	// UNOFFICIAL 2026-10-30
+	Settings.CloudSky = TheSettingManager->GetSettingI(section, "CloudSky") != 0;	// UNOFFICIAL 2026-10-30
 	// UNOFFICIAL 2026-10-25 Reflectivity: the PBR section's one reflectivity control reaches the floor reflections too (a missing key: 1).
 	SettingManager::Configuration::ConfigNode node;
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
@@ -70,6 +71,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtContactSpread = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSpread"), 0.01f, 4.0f);
 	Settings.RtGlowBrightness = std::clamp(TheSettingManager->GetSettingF(rt, "GlowBrightness"), 0.0f, 16.0f);
 	Settings.RtHitTextures = TheSettingManager->GetSettingI(rt, "HitTextures") != 0;	// UNOFFICIAL 2026-10-29
+	Settings.RtHitAmbientGrid = TheSettingManager->GetSettingI(rt, "HitAmbientGrid") != 0;	// UNOFFICIAL 2026-10-30
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -604,6 +606,7 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
 		{ 1, 23, NVR_EXT_BIND_SAMPLED_IMAGE, 22, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-29 TESR_GlassMask (index 20: after the samplers)
 		{ 1, 24, NVR_EXT_BIND_SAMPLED_IMAGE, 23, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-30 TESR_MaterialBuffer (index 21)
+		{ 1, 25, NVR_EXT_BIND_SAMPLED_IMAGE, 24, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-30 TESR_CloudSkyProbe (index 22)
 	};
 	const UINT ReflTextureCount = 16;
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 1).
@@ -621,7 +624,7 @@ namespace {
 	// three outputs and the helper's hits (set 1, bindings 17-20, image slots 16-19).
 	const UINT RtUniformSlot = 2;
 	const NVR_EXT_BINDING_DESC ReflRtUniformBinding = { 2, 1, NVR_EXT_BIND_UNIFORM_BUFFER, RtUniformSlot, NVR_EXT_VIEW_2D, FALSE, 0 };
-	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, sunDir, sunColor, rt3, lamps[24]; };	// ReflectionsRT.glsl RtConstants (std140)
+	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, sunDir, sunColor, rt3, rt4, lamps[24]; };	// ReflectionsRT.glsl RtConstants (std140)
 	ReflRtUniforms RtUploaded;
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
@@ -791,7 +794,16 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		Logger::Log("UNOFFICIAL Reflections MaterialBufferRoughness: %s", materialBuffer ? "TESR_MaterialBuffer found" : "no TESR_MaterialBuffer in this build: off");
 	}
 	IDirect3DBaseTexture9* matbuf = Settings.MaterialBufferRoughness && materialBuffer ? *materialBuffer : nullptr;
-	uniforms.material2 = D3DXVECTOR4(matbuf ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	// UNOFFICIAL 2026-10-30 CloudSky: the cloud sky probe (VolumetricClouds RenderSkyProbe), outdoors, while it is fresh.
+	VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds;
+	IDirect3DTexture9* cloudSky = Settings.CloudSky && clouds && clouds->Enabled && clouds->SkyProbeReady() && TheShaderManager->GameState.isExterior ?
+		clouds->Textures.SkyProbeTexture : nullptr;
+	float cloudBrightness = 1.0f;
+	{
+		auto found = TheShaderManager->ConstantsTable.find("TESR_CloudsLayout");
+		if (found != TheShaderManager->ConstantsTable.end() && found->second) cloudBrightness = found->second->w;
+	}
+	uniforms.material2 = D3DXVECTOR4(matbuf ? 1.0f : 0.0f, cloudSky ? 1.0f : 0.0f, cloudBrightness, 0.0f);
 	ID3D9NvrExtBuffer* buffer = extUniforms.Buffer;
 	if (!buffer || memcmp(&uniforms, &ReflUploaded, sizeof(uniforms))) {
 		buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
@@ -811,6 +823,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	IDirect3DTexture9* glass = GlassMask::ThisFrame();
 	resources[20].Slot = 22; resources[20].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[20].pResource = glass ? (IUnknown*)glass : (IUnknown*)depth;
 	resources[21].Slot = 23; resources[21].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[21].pResource = matbuf ? (IUnknown*)matbuf : (IUnknown*)depth;	// UNOFFICIAL 2026-10-30
+	resources[22].Slot = 24; resources[22].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[22].pResource = cloudSky ? (IUnknown*)cloudSky : (IUnknown*)depth;	// UNOFFICIAL 2026-10-30
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
 		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
@@ -828,6 +841,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
 		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, Settings.RtContactSpread, Settings.RtGlowBrightness);
+		rtu.rt4 = D3DXVECTOR4(Settings.RtHitAmbientGrid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-30
 		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {

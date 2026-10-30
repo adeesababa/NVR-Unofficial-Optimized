@@ -27,6 +27,7 @@ layout(set = 1, binding = 14) uniform texture2D t_skyVis;      // NVR_Reflection
 layout(set = 1, binding = 15) uniform texture2D t_material;    // NVR_ReflectionsMaterial (POINT)
 layout(set = 1, binding = 23) uniform texture2D t_glass;       // UNOFFICIAL 2026-10-29 TESR_GlassMask (core/GlassMask.h; a placeholder when off)
 layout(set = 1, binding = 24) uniform texture2D t_matbuf;      // UNOFFICIAL 2026-10-30 TESR_MaterialBuffer (core/CapturedNormals.h; a placeholder when off)
+layout(set = 1, binding = 25) uniform texture2D t_cloudSky;    // UNOFFICIAL 2026-10-30 TESR_CloudSkyProbe (VolumetricClouds RenderSkyProbe; a placeholder when off)
 
 layout(set = 2, binding = 0, std140) uniform Constants {
     mat4 projectionTransform;   // TESR_ProjectionTransform
@@ -52,7 +53,8 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraPosition;        // TESR_CameraPosition
     vec4 sky;                   // NVR_ReflectionsSky
     vec4 flags;                 // x REFL_MATERIAL_ON, y REFL_ADD_ON, z REFL_SPECOCC_ON, w 1 = the material buffer is bound on stage 15
-    vec4 material2;             // UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess (MaterialBufferRoughness)
+    vec4 material2;             // UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess (MaterialBufferRoughness),
+                                // y 1: the cloud sky probe over the sky gradient (CloudSky), z the clouds' brightness (TESR_CloudsLayout.w)
 } cb;
 
 layout(push_constant) uniform Push {
@@ -235,7 +237,15 @@ vec3 EnvironmentFresnelF0(float roughness, float NdotV, vec3 F0) {
 // The sky along a world direction (below the horizon, nothing).
 vec3 SkyAlong(vec3 worldDir) {
     float up = saturate(worldDir.z);
-    return mix(linearize(cb.horizonColor.rgb), linearize(cb.skyColor.rgb), sqrt(up)) * smoothstep(0.0, 0.15, worldDir.z);
+    vec3 sky = mix(linearize(cb.horizonColor.rgb), linearize(cb.skyColor.rgb), sqrt(up));
+    // UNOFFICIAL 2026-10-30 CloudSky: the clouds over that part of the sky, from the cloud sky probe (hemi-octahedral, z up), laid on as
+    // the clouds' own composite lays them on the screen (sky x transmittance + their light x brightness).
+    if (cb.material2.y > 0.5 && worldDir.z > 0.0) {
+        vec3 v = worldDir / (abs(worldDir.x) + abs(worldDir.y) + worldDir.z);
+        vec4 clouds = textureLod(sampler2D(t_cloudSky, LINEAR_S), vec2(v.x + v.y, v.x - v.y) * 0.5 + 0.5, 0.0);
+        sky = sky * clouds.a + clouds.rgb * cb.material2.z;
+    }
+    return sky * smoothstep(0.0, 0.15, worldDir.z);
 }
 
 // Karis's reversible compression for averaging HDR samples: c / (1 + luminance), and back.
@@ -280,6 +290,28 @@ float CoveredAt(vec3 p) {
     vec3 depthAxis = vec3(cb.shadowOrtho[0][2], cb.shadowOrtho[1][2], cb.shadowOrtho[2][2]);
     float perUnit = length(depthAxis) / max(abs(cb.shadowOrtho[3][3]), 1.0e-6);
     return top < m.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
+}
+
+// UNOFFICIAL 2026-10-30 (RT hit shading, HitAmbientGrid): the light arriving at camera-relative point p on a surface facing worldN, from
+// the grid's cell there (one trilinear read); a: how far inside the grid p is (0 outside).
+vec4 GridIrradianceAt(vec3 p, vec3 worldN) {
+    float size = cb.grid.w;
+    vec3 dims = vec3(GridX, GridY, GridZ);
+    vec3 g = (p - cb.grid.xyz) / size - 0.5;
+    vec3 edge = min(g + 0.5, dims - 0.5 - g);
+    float fade = saturate(min(min(edge.x, edge.y), edge.z) / 2.0);
+    if (fade <= 0.0) return vec4(0.0);
+    g = clamp(g, vec3(0.0), dims - 1.0);
+    float z0 = floor(g.z), z1 = min(z0 + 1.0, GridZ - 1.0);
+    vec4 sh = mix(textureLod(sampler2D(t_gridLight, LINEAR_S), GridCellUV(vec3(g.xy, z0)), 0.0),
+        textureLod(sampler2D(t_gridLight, LINEAR_S), GridCellUV(vec3(g.xy, z1)), 0.0), g.z - z0);
+    float light = max(dot(sh, GridShBasis(-worldN)), 0.0);
+    vec3 hue = vec3(1.0);
+    if (cb.grid2.z > 0.5) {
+        vec4 colour = textureLod(sampler2D(t_gridColor, LINEAR_S), GridCellUV(vec3(g.xy, floor(g.z + 0.5))), 0.0);
+        if (colour.a > 1.0e-5) { hue = max(colour.rgb / colour.a, 0.0); hue = min(hue / max(luma(hue), 1.0e-4), 3.0); }
+    }
+    return vec4((light * GridIrradianceScale + cb.grid3.rgb) * hue * cb.grid2.y, fade);   // light arriving (the hit multiplies by its albedo)
 }
 
 // The light reaching a surface at camera-relative position start from world direction worldR, out of the grid.

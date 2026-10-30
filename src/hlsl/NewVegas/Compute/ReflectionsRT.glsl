@@ -26,6 +26,7 @@ layout(set = 2, binding = 1, std140) uniform RtConstants {
     vec4 sunColor;  // TESR_SunColor (gamma)
     vec4 rt3;       // 2026-10-29: x 1 = VNDF-sampled rays (RtVndf), y RoughShare's roughness (above: 1 ray per 2x2 block a frame; 0 off),
                     // z ContactSpread (the eye-distance share at which a hit counts as 'far' for the blur), w GlowBrightness
+    vec4 rt4;       // 2026-10-30: x 1 = the hit's ambient from the light grid at the hit (HitAmbientGrid), else the cube's
     vec4 lamps[24]; // 2026-10-29: the 12 nearest scene lamps: [2i] xyz camera-relative position, w reach; [2i + 1] rgb colour x dimmer (gamma)
 } rtc;
 
@@ -59,6 +60,12 @@ float RtFade(float roughness) { return 1.0 - smoothstep(0.75 * RtMaxRoughness, R
 // lamp (keyLamp >= 0, indoors / at night) through the helper's shadow ray (visible = shade.a then).
 vec3 RtShadeHit(vec3 hitW, vec3 normal, vec3 albedo, float visible, int keyLamp) {
     vec3 light = CubeOn > 0.0 ? EnvAlong(normal, 1.0).rgb : SkyAlong(vec3(0.0, 0.0, 1.0)) * 0.5;
+    // 2026-10-30 HitAmbientGrid: the light grid (AmbientLight's, world cells) where the hit is: the light that reaches that spot from
+    // around it (bounce included), facing the hit's normal; the cube (one probe near the camera) stays where the grid does not reach.
+    if (rtc.rt4.x > 0.5 && GridOn > 0.0) {
+        vec4 grid = GridIrradianceAt(hitW, normal);
+        light = mix(light, grid.rgb, grid.a);
+    }
     float sunAmount = rtc.rt2.z;
     if (sunAmount > 0.0) light += linearize(rtc.sunColor.rgb) * saturate(dot(normal, normalize(rtc.sunDir.xyz))) * sunAmount * visible;
     int count = int(rtc.rt2.w + 0.5);

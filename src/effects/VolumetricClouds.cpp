@@ -106,6 +106,8 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_CloudHistory1", &Textures.HistoryTexture[1], &Textures.HistorySurface[1], lowWidth, lowHeight, D3DFMT_A16B16G16R16F);
 	Textures.HistoryRead = Textures.HistoryTexture[0];
 	TheTextureManager->RegisterTexture("TESR_CloudHistory", (IDirect3DBaseTexture9**)&Textures.HistoryRead);
+	// UNOFFICIAL 2026-10-30 the cloud sky probe for reflections (RenderSkyProbe): 128 x 128, 128 KB.
+	TheTextureManager->InitTexture("TESR_CloudSkyProbe", &Textures.SkyProbeTexture, &Textures.SkyProbeSurface, 128, 128, D3DFMT_A16B16G16R16F);
 	// UNOFFICIAL 2026-10-14 ShadowResolution (read once, at start): the cloud shadow map's size, 256 (as before) to 2048. Over the
 	// same ShadowRange a bigger map gives crisper cloud shadow edges; its cost grows with the texel count (it is drawn every frame).
 	const int shadowResolution = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "ShadowResolution");
@@ -645,7 +647,19 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 
 	lastViewProj = viewProj;
 	lastRenderTime = now;
+	// UNOFFICIAL 2026-10-30: the cloud sky probe, when reflections want it (before frame++, with this frame's constants).
+	ReflectionsEffect* reflections = TheShaderManager->Effects.Reflections;
+	if (reflections && reflections->Enabled && reflections->Settings.CloudSky) RenderSkyProbe(Device);
 	frame++;
+}
+
+// UNOFFICIAL 2026-10-30: technique 12 into the 128 x 128 probe. Vulkan only (there is no D3D9 technique 12): ExtRender is called
+// itself, never through Render, so nothing can fall back to the .fx.
+void VolumetricCloudsEffect::RenderSkyProbe(IDirect3DDevice9* Device) {
+	if (!Textures.SkyProbeSurface || !DxvkCompute::PassesOn()) return;
+	static GpuTimer probeTimer("  Clouds sky probe");
+	GpuProfileScope gpu(probeTimer, Device);
+	if (ExtRender(Device, Textures.SkyProbeSurface, Textures.SkyProbeSurface, 12, false, Textures.SkyProbeSurface)) skyProbeFrame = frame;
 }
 
 // UNOFFICIAL 2026-10-21: the cloud shadow map, once a frame. SunFar asks first (it runs before the clouds in the frame), so the
@@ -870,10 +884,12 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 	case 1: case 6: case 7: case 8: pass = 1; break;
 	case 2: pass = 2; break;
 	case 4: case 10: case 11: pass = 3; break;	// (11: ShadowMapPrefilter, 2026-10-27: the same shader with push.prefilter)
+	case 12: pass = 4; break;	// UNOFFICIAL 2026-10-30 the cloud sky probe (RenderSkyProbe; Vulkan only, the march's inputs)
 	default: return false;	// 3 / 9 Reflection (drawn by hand), 5 LayerProbe (a game texture on stage 12): D3D9
 	}
 	if (ClearRenderTarget || (pass != 0 && RenderTarget != RenderedSurface)) return false;
-	static const char* const SpvNames[4] = { "VolumetricCloudsComposite", "VolumetricCloudsMarch", "VolumetricCloudsTemporal", "VolumetricCloudsShadowMap" };
+	static const char* const SpvNames[5] = { "VolumetricCloudsComposite", "VolumetricCloudsMarch", "VolumetricCloudsTemporal", "VolumetricCloudsShadowMap",
+		"VolumetricCloudsSkyProbe" };
 
 	const bool physicalSky = ParameterHandle(physicalSkyCache, "TESR_SkyViewLUT") != NULL;
 	IDirect3DBaseTexture9* weather = ExtFileTexture("TESR_CloudWeather");
@@ -888,10 +904,10 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 		textures[3] = Textures.ShadowTexture ? Textures.ShadowTexture : depth;	// no map: shadow strength 0, never read
 		textures[4] = Textures.HistoryRead; count = 5; break;
 	}
-	case 1: case 3:
+	case 1: case 3: case 4:
 		textures[0] = weather; textures[1] = ExtFileTexture("TESR_CloudShape"); textures[2] = ExtFileTexture("TESR_CloudDetail");
 		textures[3] = ExtFileTexture("TESR_NoiseVolume"); volume[1] = volume[2] = volume[3] = true; count = 4;
-		if (pass == 1) {
+		if (pass == 1 || pass == 4) {
 			textures[4] = blueNoise;
 			textures[5] = physicalSky ? CloudsNamedTexture("TESR_SkyViewLUT") : blueNoise;	// without PHYSICAL_SKY_ON never read
 			count = 6;
@@ -946,6 +962,7 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 	CloudsPush push = {};
 	push.fixedExit = techniqueIndex == 6 || techniqueIndex == 8 ? 1 : 0;
 	push.towers = techniqueIndex >= 7 && techniqueIndex <= 10 ? 1 : 0;
+	if (techniqueIndex == 12) push.towers = TowersOn(this) ? 1 : 0;	// the probe: the clouds' current kind
 	push.prefilter = techniqueIndex == 11 ? 1 : 0;
 	push.physicalSky = physicalSky ? 1 : 0;
 
