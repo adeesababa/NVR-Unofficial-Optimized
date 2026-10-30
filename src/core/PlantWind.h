@@ -157,6 +157,42 @@ namespace PlantWind {
 		return nullptr;
 	}
 
+	// UNOFFICIAL 2026-10-30 the ray tracing scene's share (RtCore AddGeometry, [Main.Main.RayTracing] PlantSway): a static plant's gust
+	// lean for its traced instance, so traced shadows / AO / reflections sway with the drawn plant. The BLAS stays as loaded; the lean
+	// goes into the instance transform as a shear rooted at the plant's base: P' = P + lean (P.z - base) / H, lean the drawn top's
+	// gust move (world units, along the wind; the gust taken at the plant's root, as the shader's waves barely change across a plant).
+	// Linear in height where the shader bends with (h / H)^2: base and top agree, half height is lean / 4 off; the flutter and the
+	// top's drop (both a fraction of a unit) are left out. False when the drawn plant does not move (wind off, indoors, not a plant,
+	// first-person, skinned) -- the same tests as ForGeometry, without its per-pass SAFETY bookkeeping.
+	inline bool RtLean(const NiGeometry* geometry, float lean[2], float& base, float& H) {
+		if (!StaticsOn || !geometry || geometry->skinInstance) return false;
+		BSShaderProperty* property = (BSShaderProperty*)const_cast<NiGeometry*>(geometry)->GetProperty(NiProperty::PropertyType::kType_Shade);
+		const UInt32 vtable = property ? *(UInt32*)property : 0;
+		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) return false;
+		const NiSourceTexture* diffuse = ((BSShaderPPLightingProperty*)property)->ppTextures[0] ? ((BSShaderPPLightingProperty*)property)->ppTextures[0][0] : nullptr;
+		if (!diffuse || !diffuse->ddsPath1) return false;
+		bool plant;
+		auto known = ByTexture.find(diffuse);
+		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) plant = known->second.second;
+		else {
+			if (ByTexture.size() >= 4096) ByTexture.clear();
+			plant = IsPlantTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), plant };
+		}
+		if (!plant) return false;
+		const NiAVObject* root = RootOf(geometry);
+		if (!root || !root->m_kWorldBound) return false;
+		base = root->m_worldTransform.pos.z;
+		H = (std::max)(root->m_kWorldBound->Center.z + root->m_kWorldBound->Radius - base, 10.0f);
+		const float top = S.Bend * Strength * (H * 0.01f) / (1.0f + (H / S.StiffHeight) * (H / S.StiffHeight));
+		const double X = root->m_worldTransform.pos.x, Y = root->m_worldTransform.pos.y;
+		const double along = X * K[0] + Y * K[1];
+		const double front = 0.5 + 0.5 * sin(ClockNow * 0.25 - along);
+		const double patch = 0.75 + 0.25 * sin(ClockNow * 0.25 - (X * 0.5 * (K[0] - K[1]) + Y * 0.5 * (K[1] + K[0])));
+		const float g = (float)(top * front * front * patch);
+		lean[0] = Dir[0] * g; lean[1] = Dir[1] * g;
+		return true;
+	}
+
 	// Right after ClothWind::ForGeometry for every object draw (the game's passes, RenderPassStandardHook, and NVR's sun shadow
 	// passes, RenderPass::RenderAccum): a static plant's move in c248-c253, or nothing (ForGeometry has cleaned c248, or put a cloth's
 	// values there: this draw is cloth). ClothWind::AfterDraw cleans it after the draw.
