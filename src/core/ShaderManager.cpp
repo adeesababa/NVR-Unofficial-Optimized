@@ -1874,6 +1874,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();	// UNOFFICIAL ExteriorLightPoints
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
+			// UNOFFICIAL 2026-10-29 RT lamp shadows Exteriors: the traced lamp mask over what those passes wrote (off: nothing)
+			if (GameState.isExterior && pointShadowsWere > 0.0f) RtLampShadows::ApplyExteriorMask(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
 		}
 		// UNOFFICIAL 2026-10-16 lamp contact shadows ([Shaders.ShadowsInteriors.Main] ContactShadows): PointShadows.fx technique 2
@@ -2227,7 +2229,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			RenderEffectToRT(Effects.FlashlightBeam->Textures.VolumetricSurface, Effects.FlashlightBeam, true);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		{ Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface); PixelInspector::AfterFrame(Effects.Flashlight); }
+		{ Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->TechniqueThisFrame(), true, SourceSurface); PixelInspector::AfterFrame(Effects.Flashlight); }
 		// Specular's two quarter-resolution steps (the blocks' normals, then the light they reflect) into its own buffers,
 		// then its main technique adds that to the image in the chain.
 		if (specularRenders) {

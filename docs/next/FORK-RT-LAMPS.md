@@ -35,6 +35,29 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Exteriors: night lamp shadows outdoors (39a1ec02 + b7c071ef, DLL 51D6B134; runs rtlamp-19..22, 2026-10-30)
+- Built (off, needs a restart + [Shaders.ShadowsExteriors.Main] UsePointShadowsNight): outdoors there are no per-draw lamp records,
+  the lamp shadows are the screen-space lamp mask (PointShadows.fx) in the shadow buffer's green. RtLampTraceExterior.spv writes that
+  mask itself from the same lamps (shadow lamps + tracked lamps, radius Spec.r x LightRadiusMult, weight luma x dimmer), each pixel's
+  2 strongest traced, the rest unshadowed; RtLampMaskCombine.frag writes it over the green; outdoor cube maps skipped meanwhile;
+  ExteriorLampStop 40 (outdoors the lamps' own heads are not told apart). ExteriorDebug (diagnostic) forces the mask to 0 / 1.
+- It runs: 7-24 lamps a frame, trace 10-15 ms (Freeside) / 6.5-7 ms (Novac) on the iGPU (cube maps 14-16 ms in Freeside).
+- But it changes nothing visible: rtlamp-21/22 (Freeside Kings street at 180, street lamps lit; Novac motel; 23:00 clear): cube vs
+  traced 0.01-0.03 %, and even the mask forced 0 -> 1 moves the whole picture by +0.12 / +0.35 of 255 (0.03 % of pixels). NVR's
+  outdoor lamp-shadow mechanism barely touches the night image, so there is nothing for RT to improve through it. Real outdoor lamp
+  shadows need the forward per-draw path (Interior records + POINT_SHADOW_RT) made to work outdoors: a project of its own.
+- rtlamp-19 crashed 2 s after the Freeside moveto inside the game's actor update (Blackjack Dealer, no NVR frame), with Actors on +
+  tai; rtlamp-20 (Actors off, no tai) passed. Not split yet.
+
+### Denoise: soft lamp shadows through the shared RtDenoise (rtlamp-18, 2026-10-29 23:03, 20261029-230326-slotA, PASS; 6a2646f2, DLL 9B8F8786)
+- Built as asked: LampRadius 16, 1 jittered ray; the trace's split variant writes ranks 0/1 apart, RtDenoise runs per rank with the
+  cube slot as its id (rt-sun-2 4d776164), RtLampRepack.frag writes the result again for s15. It runs (Denoise toggles live).
+- NO-GO here: it lightens real hard shadows (Lucky 38: 0.70 % of pixels brighter, 0.01 % darker: the rail shadows and the stair base;
+  vs 4 rays: soft1 0.02 %, soft1 + denoise 0.70 %); Vault 21 neutral (0.05-0.08 %). Cost: the iGPU frame +55..90 ms (L38 145 ->
+  199 / 236, V21 155 -> 216 / 247; two full-resolution denoiser runs). And there is nothing to fix: at 16 units 1-ray soft shadows
+  already match 4 rays (0.02-0.09 %). Stays off (needs a restart anyway; its 4 images are only made when it is on at start).
+- Soft lamp shadows: LampRadius + Jitter with 1 ray (TAA averages) is the answer on this hardware; the filter and the denoiser parked.
+
 ### ActorUpdateInterval 1/2/3 (rtlamp-17, 2026-10-29 22:42, 20261029-224156-slotA, PASS; bce83772, DLL CD1CA893, rebuilt helper)
 - Picture: the same at 1, 2 and 3 (L38 0.00 %, V21 0.03-0.07 % = the repeat's 0.07 %): rt-sun-core's default 2 is safe here.
 - Cost: not measurable. The whole frame drifts 20-30 ms within a run (V21 traced 147 -> 157 -> 123 -> 125 -> 121 ms in shot order

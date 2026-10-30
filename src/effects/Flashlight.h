@@ -69,6 +69,7 @@ public:
 	bool	spotLightActive;
 	double	aimingHoldUntil;	// real time the aiming latch holds until, see UpdateConstants
 	int		selectedPass;
+	int		TechniqueThisFrame();	// UNOFFICIAL 2026-10-30: selectedPass, or its shadowed technique while a traced shadow is there (RT lamp shadows Flashlight)
 
 	void	UpdateConstants();
 	void	RegisterConstants();
@@ -87,5 +88,6 @@ public:
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 private:
 	ExtPass				extShadows, extDepthBlur, extLight, extBoxBlur, extCombine;
+	ExtPass				extShadowsRt;		// UNOFFICIAL 2026-10-30 FlashlightShadowsRT (RT lamp shadows Flashlight)
 	ExtUniformBuffer	extUniforms;
 };
