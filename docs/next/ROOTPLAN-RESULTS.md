@@ -120,3 +120,23 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   compiled before keeps its bytecode. In game, run 20261029-201613-slotC (the user's toml + terrain blending): the four retried and
   loaded, no temp-register error left, PASS.
 - **7.** Asked the RT merge session (local_0076c7d1) to merge claude/material-buffer into the RT train.
+
+## Round 3 (2026-10-29 21:15), claude/rootplan-round3 e8da87a7, DLL 9748E7AF (on claude/material-buffer)
+- **8. CapturedNormals lean hook** (`[Main.Main.Quality] CapturedNormalsLeanHook`, live, default off; NVR DXVK only): render targets,
+  pixel shader and blend states are tracked from the device's Set calls (slots 37/57/107, re-synced after NVR's state-block applies)
+  instead of read back on every draw, and the write mask is only set when it changes. **PASS**, run 20261029-211101-slotB (Ultra-Luxe,
+  the user's toml, 960x540, CPU-bound: 0.00 ms waiting for the GPU), ABAB x4: frame 6.84 -> 6.68 ms (-0.16 ms, lean faster in 4 of 4
+  rounds), all of it in world draws (2.79 -> 2.64); pictures lean vs off = off vs off (<=0.03% of pixels >16 levels). On DXVK the hook
+  cost far less than the 1.5 ms measured on native D3D9 (where the lean path is not used). The first run (-204846-slotB) had the AI on,
+  the camera turned during it: no timing from it, its rounds 1-2 also showed equal pictures. Can be default on.
+- **9. FarHysteresis** (`[Shaders.Terrain.Displacement]`, game units, live, default 0) + the land log counts pieces whose near/far choice
+  flipped since the frame before. Run 20261029-210747-slotC (Goodsprings road, player stepped 64 units back and forth every 160 frames,
+  0 vs 256 ABAB): **0.00-0.01 flips per frame with or without it** -- no piece sat at FadeEnd+256 there (14-18 land pieces known), so
+  the pop was not reproduced; pictures 256 vs 0 = 0 vs 0 over time (outdoor noise, mean +-0.5). Harmless, unproven: stays 0 until a spot
+  with the pop (the flip count in the log now finds one).
+- **10. Live upscaler switching.** The menu hands the RenderScale over when FSR <-> DLSS is switched; TAA logs every change of upscaler /
+  RenderScale / on-off (and says why a picture went native); Choose() restarts history and frees the stopped FSR's textures on every
+  switch and logs it. Same run, FSR 3.1 -> FSR 2 -> DLSS(HelperTest) -> FSR 3.1 -> FSR 2 -> DLSS at its own RenderScale 1.0 -> FSR 3.1:
+  **PASS** -- one TAA line + one "switched live" line per change, FSR 2 / FSR 3.1 textures remade each time, no crash, the RenderScale 1.0
+  case logged as native "-- was upscaled before: each ... has its own RenderScale". The slot has no NvrDlssHelper.exe, so DLSS fell back
+  to FSR 2 (logged; one redundant "FSR 2.2.1 -> FSR 2.2.1 (DLSS not running)" line): the helper itself is untested here.
