@@ -26,6 +26,7 @@ layout(set = 1, binding = 13) uniform texture2D t_gridColor;   // TESR_Reflectio
 layout(set = 1, binding = 14) uniform texture2D t_skyVis;      // NVR_ReflectionsSkyVis (LINEAR)
 layout(set = 1, binding = 15) uniform texture2D t_material;    // NVR_ReflectionsMaterial (POINT)
 layout(set = 1, binding = 23) uniform texture2D t_glass;       // UNOFFICIAL 2026-10-29 TESR_GlassMask (core/GlassMask.h; a placeholder when off)
+layout(set = 1, binding = 24) uniform texture2D t_matbuf;      // UNOFFICIAL 2026-10-30 TESR_MaterialBuffer (core/CapturedNormals.h; a placeholder when off)
 
 layout(set = 2, binding = 0, std140) uniform Constants {
     mat4 projectionTransform;   // TESR_ProjectionTransform
@@ -51,6 +52,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraPosition;        // TESR_CameraPosition
     vec4 sky;                   // NVR_ReflectionsSky
     vec4 flags;                 // x REFL_MATERIAL_ON, y REFL_ADD_ON, z REFL_SPECOCC_ON, w 1 = the material buffer is bound on stage 15
+    vec4 material2;             // UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess (MaterialBufferRoughness)
 } cb;
 
 layout(push_constant) uniform Push {
@@ -198,7 +200,14 @@ float Reflectivity(vec2 uv, float depth, vec3 viewNormal, out float roughness) {
     float wetness = Wetness;
     if (wetness > 0.0 && RoofMaskOn > 0.5) wetness *= OpenAbove(uv, depth);   // the rain wets open ground only
     float amount = DryReflect + wetness;
-    roughness = mix(DryRoughness, WetRoughness, wetness / max(amount, 1.0e-4));
+    // UNOFFICIAL 2026-10-30 MaterialBufferRoughness: where the game's shader wrote the roughness it lit the surface with (TESR_MaterialBuffer:
+    // r class > 0, b roughness, -1 none), the dry surface takes it instead of the one DryRoughness (polished floors sharp, carpets blurred).
+    float dryRoughness = DryRoughness;
+    if (cb.material2.x > 0.5) {
+        vec4 written = textureLod(sampler2D(t_matbuf, POINT_S), uv, 0.0);
+        if (written.r > 0.5 && written.b >= 0.0) dryRoughness = saturate(written.b);
+    }
+    roughness = mix(dryRoughness, WetRoughness, wetness / max(amount, 1.0e-4));
     float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
     return min(amount, 2.0) * floorShare * fade;   // above 1: stronger than a real surface, for taste
 }

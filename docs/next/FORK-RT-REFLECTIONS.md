@@ -84,6 +84,10 @@ RayGen pass on top. The 1070 never gets that far: `RtCoreClient::Ready()` is fal
 **Denoising** for rough surfaces is the existing chain: one GGX-jittered ray per half-resolution pixel per frame (the same
 direction the march used), then temporal history (Temporal 0.85) and the edge-aware blur (wider when rough), then the firefly cap.
 Rougher than MaxRoughness gets no rays: blurred reflections gain little from exact hits and cost the same.
+2026-10-30: the shared RtDenoise (rt-sun-core) is NOT used here, on purpose: its RGB mode reprojects by the surface's depth (right for
+diffuse GI, not for a reflection, whose image moves with the reflected thing), and it costs 3.9 ms half-res 3x3 / 14.6 ms full 3x3 on
+the iGPU, more than this chain; repeat shots of the reflection alone already agree to 0.00-0.02 % of pixels. Revisit only with a
+specular mode (hit-distance reprojection) and a visible noise problem.
 
 **Roughness** comes from what the trace already uses: MaterialAware's `_rmaos` buffer where a surface has a map, else the
 Dry/WetRoughness of the floor guess.
@@ -181,6 +185,37 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 04:00 MaterialBufferRoughness (4b3c5ca7, DLL FE2ADFD6): wiring for the material buffer, effect waits for the merge round
+`[Shaders.Reflections.Main] MaterialBufferRoughness` (off, Vulkan passes): where the game's shader wrote the roughness it lit a surface
+with into TESR_MaterialBuffer (claude/material-buffer, `[Main.Main.Quality] MaterialBuffer`: r class, b roughness, -1 none), the floor
+guess takes it instead of the one DryRoughness: polished floors stay sharp, carpets and dirt blur and get no rays past MaxRoughness.
+That branch's readers were blocked by the D3D9 path's 16 samplers; the Vulkan passes bind it on binding 24 (cb.material2.x). The
+buffer is looked up once by name, so this branch (without it) builds and runs with the switch doing nothing.
+- luxe 20261030-035035-slotA (rtrefl-11, RT on): on vs off 0.14 % px (noise 0.16 %), reflection alone 0.03 %: no change without the
+  buffer, as meant; log "no TESR_MaterialBuffer in this build: off" (and the texture manager's one-time "[ERROR] Texture
+  TESR_MaterialBuffer not found", harmless). The real check needs a build with both branches (merge round).
+
+### 2026-10-30 02:10 people in the RT scene (rtrefl-8 with [Main.Main.RayTracing] Actors on; 33f84313 = rt-sun-2 0b138786, DLL F9E43B13)
+- lucky22 20261030-015913-slotA (fork-0033b, extra-p3; AlphaTested + HitTextures + Actors): no regression: textures vs average
+  8.29 % px alone (8.49 % without actors), repeats 0.01 %; 1810 skinned partitions posed in the first 60 exchanges.
+- People in reflections are NOT shown by this spot (no NPC where a reflected ray lands). rtrefl-10 (20261030-021403-slotA) turned
+  the player to z 0/90/180/270 with the reflection alone RT on vs off: RT adds 8.9 / 6.3 / 2.0 / 5.9 % px over SSR + cube, but the
+  Lucky 38 lobby has no NPC near; only a faint dark upright shape in the floor under the camera at z 90 (maybe the player's own
+  3rd-person body, which the core poses too): not proof. faces10 (Tops casino floor, NPCs on screen;
+  20261030-023418-slotA): RT vs SSR only 0.1-1.4 % px at the four headings: the Tops floor is carpet and hardly reflects. No slim
+  save has a crowded shiny floor; people in reflections stay unproven here (the core's own rtsun-26 verified textured actors).
+- Cost (across launches, so rough): "Reflections RT" 14.3-16.1 ms vs 10.6-10.8 without actors (the exchange waits for the
+  helper); helper passes 10.35 vs 9.47 ms, builds 0.89 ms (ActorUpdateInterval 2).
+
+### 2026-10-30 01:55 glow at hits (rtrefl-9; f7b1b776 = rt-sun-2 35f88f09 merged, DLL 1C6828D4; fork-0033b, helper extra-p3)
+The core now sets NVR_RT_RECORD_GLOW on draws with a glow map (neon, lit signs and windows, lamp globes); a glowing hit the screen
+cannot show adds its colour x `[Shaders.Reflections.RT] GlowBrightness` (3) to its shading. First real check of the core's flag.
+- luxe 20261030-005110-slotA: reflection alone GlowBrightness 3 vs 0: 3.01 % px > 2 (noise 0.02 %), 17403 px brighter / 567
+  darker; full picture 0.53 % vs 0.19 %, at most +27 levels: no blowout. On the out-of-view wall panels in the floor.
+- lucky22 20261030-014310-slotA: small: 0.32 % alone (noise 0.01 %, 652 brighter / 126 darker); the full
+  picture is in noise (0.16 % vs 0.20 %): the casino's neon is on screen, where the screen tier already reflects it exactly.
+- Cost: none measurable (one multiply-add in Resolve); "Reflections RT" 10.1-13.2 ms across the shots, glow or not.
+
 ### 2026-10-30 00:20 hit textures (rtrefl-8; 8de4960b, DLL 485F9B82; core rt-sun-2 4d776164, fork-0033, helper protocol 3)
 `[Shaders.Reflections.RT] HitTextures` (true, inside RT Enabled false) with the core's `[Main.Main.RayTracing] HitTextures` (off by
 default; on in the run toml with AlphaTested): a hit the screen cannot show takes its texture's colour at the hit (RtHit.glsl
@@ -190,6 +225,9 @@ ReflectionsRTTex / ReflectionsRTAlphaTex (albedo atlas on binding 6 / 7).
   vs 0.25 %. The change is in the floor where the out-of-view wall panels and fountain base reflect. GPU "Reflections RT" 8.7 ms
   either way (no in-launch cost); helper passes 7.8 ms a frame with AlphaTested + HitTextures on (4.7 in earlier runs without them:
   the core's alpha/albedo atlas work and the alpha pass, not this switch).
+- noon 20261030-025546-slotA (outdoor, forced rain wetness, AlphaTested + HitTextures, 92 atlas slots): NOT measurable: with the
+  alpha-tested foliage in the scene every pair, the noise pairs included, differs on ~40 % of pixels (swaying grass and shrubs, top
+  half too), as in the foliage run. No outdoor verdict; needs a still spot without foliage.
 - lucky22 20261030-001029-slotA: 8.49 % vs 0.00 % noise alone; full 0.64 % vs 0.20 %; "Reflections RT" 10.8 / 10.6 ms (tex / avg,
   pads 10.7-10.8: in noise); helper passes 9.5 ms (3082 instances, 325k triangles).
 
