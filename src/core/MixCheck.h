@@ -17,7 +17,11 @@
 //   EDGE   read on one path in the same frame it was written on the other (D3D9 -> Vulkan or Vulkan -> D3D9), the hand-overs to look at.
 // Every 600 frames a "MIXCHECK intermittent" line (once per read) for reads that were stale in some frames and fresh in others: a flicker.
 // EMPTY / STALE, EDGE and intermittent lines have their own caps, so the hand-overs never crowd out the empty and stale reads. File textures
-// (no render-target usage) are never tracked. Off (the default): nothing is hooked; one bool test at each call site.
+// (no render-target usage) are never tracked. Depth-stencil images count as written by draws with depth writes on and by depth clears.
+// No read is judged for 300 frames after the player changes cell and 120 after the mode changes (loads, arrival, the first frames of a
+// new list would log what every mode logs). A normal frame still logs cached images (point-shadow cubes, atlas cascades) and ping-pong
+// history buffers: the broken edge is what only the failing mode logs. tools/mixcheck_diff.py prints that from the log.
+// Off (the default): nothing is hooked; one bool test at each call site.
 #include <d3d9.h>
 #include <unordered_map>
 #include <string>
@@ -56,7 +60,8 @@ namespace MixCheck {
 	};
 
 	inline bool Decided = false, Hooked = false;
-	inline UInt32 Frame = 1, Serial = 0;
+	inline UInt32 Frame = 1, Serial = 0, QuietUntil = 0;	// reads before QuietUntil are not judged (warm-up)
+	inline void* LastCell = nullptr;
 	inline std::string Mode;
 	inline std::unordered_map<void*, Stamp> Stamps;
 	inline std::unordered_map<std::string, Count> Reads;
@@ -134,6 +139,7 @@ namespace MixCheck {
 	}
 
 	void NoteReadImpl(IDirect3DResource9* resource, UInt8 path) {
+		if (Frame < QuietUntil) return;
 		void* key = KeyOf(resource);
 		if (!key) return;
 		const Stamp& s = StampOf(key);
@@ -206,6 +212,11 @@ namespace MixCheck {
 			ps->Release();
 			for (DWORD stage = 0; stage < 16; stage++) if ((mask >> stage) & 1 && Bound[stage]) NoteReadImpl(Bound[stage], kD3D9);
 		}
+		DWORD zEnable = 0, zWrite = 0;
+		if (SUCCEEDED(d->GetRenderState(D3DRS_ZENABLE, &zEnable)) && zEnable && SUCCEEDED(d->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite)) && zWrite) {
+			IDirect3DSurface9* depth = nullptr;
+			if (SUCCEEDED(d->GetDepthStencilSurface(&depth)) && depth) { NoteWriteImpl(depth, kD3D9, nullptr); depth->Release(); }	// shadow maps drawn as depth
+		}
 		DWORD write = 0xF;
 		if (SUCCEEDED(d->GetRenderState(D3DRS_COLORWRITEENABLE, &write)) && !(write & 0xF)) return;	// depth only
 		for (DWORD i = 0; i < 4; i++) {
@@ -221,6 +232,10 @@ namespace MixCheck {
 	inline HRESULT STDMETHODCALLTYPE DIPUPHook(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT mi, UINT nv, UINT n, const void* i, D3DFORMAT f, const void* v, UINT st) {
 		BeforeDraw(d); return NextDIPUP(d, t, mi, nv, n, i, f, v, st); }
 	inline HRESULT STDMETHODCALLTYPE ClearHook(IDirect3DDevice9* d, DWORD count, const D3DRECT* rects, DWORD flags, D3DCOLOR color, float z, DWORD stencil) {
+		if (flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)) {
+			IDirect3DSurface9* depth = nullptr;
+			if (SUCCEEDED(d->GetDepthStencilSurface(&depth)) && depth) { NoteWriteImpl(depth, kD3D9, nullptr); depth->Release(); }
+		}
 		if (flags & D3DCLEAR_TARGET) {
 			for (DWORD i = 0; i < 4; i++) {
 				IDirect3DSurface9* target = nullptr;
@@ -291,8 +306,11 @@ namespace MixCheck {
 		Frame++;
 		char mode[192];
 		_snprintf_s(mode, sizeof(mode), _TRUNCATE, "passes %s, keep \"%s\"", DxvkCompute::PassesOn() ? "Vulkan" : "D3D9", TheSettingManager->SettingsMain.Main.NvrDxvkKeepD3D9);
+		if (Mode != mode) QuietUntil = (std::max)(QuietUntil, Frame + 120);	// a new list: its first frames settle
 		Mode = mode;
 		Pass = "the game";
+		void* cell = Player ? (void*)Player->parentCell : nullptr;
+		if (cell != LastCell) { LastCell = cell; QuietUntil = (std::max)(QuietUntil, Frame + 300); }	// a load or a door: the arrival settles
 		if (Frame % 600 == 0) {
 			for (auto& entry : Reads) {
 				Count& c = entry.second;
