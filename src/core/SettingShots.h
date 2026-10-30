@@ -116,6 +116,7 @@ namespace SettingShots {
 	inline bool StageCapture = false;			// 'stage' (2026-10-18): each shot also saves the picture after the AmbientLight step
 	inline bool NoReload = false;				// 'noreload' (2026-10-21): shots without changes skip the settings reload
 	inline float TurnRate = 0.0f;				// 'turn' (2026-10-25): degrees per second the player turns while the shots run
+	inline float WalkRate = 0.0f, WalkPeriod = 2.0f;	// 'walk <units/s> [seconds]' (2026-10-30): the player glides forward / back, turning round every period
 	inline size_t StageTaken = (size_t)-1;		// the shot whose stage picture is saved already
 	inline IDirect3DSurface9* WorldResolve = nullptr;
 	inline IDirect3DSurface9* WorldReadback = nullptr;
@@ -123,7 +124,7 @@ namespace SettingShots {
 
 	inline bool Parse(std::string& error) {
 		Kept.clear();
-		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false; TurnRate = 0.0f;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false; TurnRate = 0.0f; WalkRate = 0.0f; WalkPeriod = 2.0f;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
 		std::ifstream in(RequestFile);
@@ -145,6 +146,7 @@ namespace SettingShots {
 			else if (command == "noreload") NoReload = true;
 			else if (command == "keep") { if (List.empty()) { error = "line " + std::to_string(number) + ": 'keep' before any 'shot'"; return false; } List.back().keep = true; }
 			else if (command == "turn") { words >> TurnRate; TurnRate = std::clamp(TurnRate, -360.0f, 360.0f); }
+			else if (command == "walk") { words >> WalkRate >> WalkPeriod; WalkRate = std::clamp(WalkRate, -2000.0f, 2000.0f); WalkPeriod = std::clamp(WalkPeriod, 0.1f, 60.0f); }
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			// 2026-10-19: 'menu <section>' = this shot's picture is NVR's menu open at that page ("@NewInPatch" = the new tab),
 			// taken after the menu is drawn (CaptureMenu); 'menutests' also ticks Display > "Show test settings" for it.
@@ -444,6 +446,24 @@ namespace SettingShots {
 			g_ConsoleInterface->RunScriptLine(line, nullptr);
 		}
 		else lastTurn = 0;
+		// 'walk' (2026-10-30): forward along the facing, back the same way after WalkPeriod seconds (stays in the same place over a run)
+		static ULONGLONG lastWalk = 0;
+		static float walkClock = 0.0f;
+		if (Running && WalkRate != 0.0f && g_ConsoleInterface && Player) {
+			const ULONGLONG now = GetTickCount64();
+			const float dt = lastWalk ? (float)min(now - lastWalk, 100ULL) / 1000.0f : 0.0f;
+			lastWalk = now;
+			walkClock = fmodf(walkClock + dt, 2.0f * WalkPeriod);
+			const float step = (walkClock < WalkPeriod ? WalkRate : -WalkRate) * dt;
+			if (step != 0.0f) {
+				char line[64];
+				sprintf_s(line, "player.setpos x %.3f", Player->pos.x + sinf(Player->rot.z) * step);
+				g_ConsoleInterface->RunScriptLine(line, nullptr);
+				sprintf_s(line, "player.setpos y %.3f", Player->pos.y + cosf(Player->rot.z) * step);
+				g_ConsoleInterface->RunScriptLine(line, nullptr);
+			}
+		}
+		else { lastWalk = 0; walkClock = 0.0f; }
 	}
 
 	// 'renderdoc' (2026-10-26): RenderDoc's in-application API (renderdoc_app.h, RENDERDOC_API_1_1_2: the entries up to TriggerCapture),
