@@ -191,7 +191,9 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 - People in reflections are NOT shown by this spot (no NPC where a reflected ray lands). rtrefl-10 (20261030-021403-slotA) turned
   the player to z 0/90/180/270 with the reflection alone RT on vs off: RT adds 8.9 / 6.3 / 2.0 / 5.9 % px over SSR + cube, but the
   Lucky 38 lobby has no NPC near; only a faint dark upright shape in the floor under the camera at z 90 (maybe the player's own
-  3rd-person body, which the core poses too): not proof. Still open: a crowded shiny floor (e.g. the Tops / Gomorrah casino floor).
+  3rd-person body, which the core poses too): not proof. faces10 (Tops casino floor, NPCs on screen;
+  20261030-023418-slotA): RT vs SSR only 0.1-1.4 % px at the four headings: the Tops floor is carpet and hardly reflects. No slim
+  save has a crowded shiny floor; people in reflections stay unproven here (the core's own rtsun-26 verified textured actors).
 - Cost (across launches, so rough): "Reflections RT" 14.3-16.1 ms vs 10.6-10.8 without actors (the exchange waits for the
   helper); helper passes 10.35 vs 9.47 ms, builds 0.89 ms (ActorUpdateInterval 2).
 
