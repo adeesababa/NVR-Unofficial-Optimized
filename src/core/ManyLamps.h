@@ -156,6 +156,8 @@ namespace ManyLamps {
 	static_assert(TableRows == 31, "LIGHT_COMMON_ROWS 31.0f in ObjectTemplate.hlsl");
 	inline int TilesX = 0, TilesY = 0;
 	inline bool ClusterLive = false;	// this frame: compiled in, the setting on, the lists made
+	inline bool WorldDraw = false;		// the pass being set up is drawn in the world scene (the only camera / viewport the lists are made for)
+	inline UInt32 ListsFrame = 0;		// FrameId the froxel lists were made for (at the frame's first world draw)
 	inline double StatClusterMs = 0;
 	inline unsigned long long StatClusterLamps = 0, StatClusterEntries = 0, StatClusterOver = 0, StatClusterFrames = 0;
 	inline IDirect3DTexture9* Table = nullptr;
@@ -272,7 +274,8 @@ namespace ManyLamps {
 			if (*(const UInt16*)(raw8 + 0x110) != 0xFF && !(((const UInt8*)source)[0x30] & 1) && !raw8[0xEC]) active.push_back(light);
 		}
 		ClusterLive = false;
-		if (ClusterAtStartup()) BinFroxels(t, r.Pitch / (int)sizeof(float), active);
+		// (the lists only at a world-scene draw: an earlier draw of the frame may be a reflection or a cube map, with its own camera and size)
+		if (ClusterAtStartup() && WorldDraw) { ListsFrame = FrameId; BinFroxels(t, r.Pitch / (int)sizeof(float), active); }
 		Table->UnlockRect(0);
 		StatTableLamps = n;
 	}
@@ -287,7 +290,8 @@ namespace ManyLamps {
 
 	// The object's lamps for this pass as table indices (the same choice and order as SetForPass below).
 	inline void SetForPassTable(const PointShadowForward::RenderPassView* pass) {
-		if (TableFrame != FrameId) BuildTable();
+		// UNOFFICIAL 2026-10-30 ClusteredLamps: made again at the frame's first world draw (a discarding lock: earlier draws keep theirs)
+		if (TableFrame != FrameId || (ClusterAtStartup() && WorldDraw && ListsFrame != FrameId)) BuildTable();
 		if (TableFailed) return;
 		int idx[MaxLamps];
 		int count = 0;
@@ -332,7 +336,7 @@ namespace ManyLamps {
 		BlockRegisters = 8;
 		if (ClusterAtStartup()) {	// UNOFFICIAL 2026-10-30 ClusteredLamps: c45 view depth from the object's space, c46-c47 the froxel grid
 			D3DXMATRIX toWorld;
-			const bool on = ClusterLive && !FirstPerson && D3DXMatrixInverse(&toWorld, nullptr, &ToObject);
+			const bool on = ClusterLive && ListsFrame == FrameId && WorldDraw && !FirstPerson && D3DXMatrixInverse(&toWorld, nullptr, &ToObject);
 			if (on) {	// view depth = (object point, 1) x toWorld - camera, along the camera's forward axis
 				const D3DXMATRIX& iv = TheRenderManager->InvViewMatrix;
 				const float f[3] = { iv._31, iv._32, iv._33 };
@@ -420,15 +424,17 @@ namespace ManyLamps {
 
 	// Before every object's draw (Render.cpp), and when the game binds a pass's shaders (SetShadersHook, BSBatchRenderer::BeginPass: the run's
 	// first object, from BSShaderManager::pCurrentRenderPass).
-	inline void ForPass(const PointShadowForward::RenderPassView* pass, bool firstPerson) {
+	inline void ForPass(const PointShadowForward::RenderPassView* pass, bool firstPerson, bool world = false) {
 		if (!Bound || !Active()) return;
 		FirstPerson = firstPerson;
+		WorldDraw = world;
 		SetForPass(pass);
 	}
-	inline void OnBind(const char* pixelShaderName, bool nvrRecord, bool firstPerson) {
+	inline void OnBind(const char* pixelShaderName, bool nvrRecord, bool firstPerson, bool world = false) {
 		Bound = nvrRecord && IsOurs(pixelShaderName) && Active();
 		if (!Bound) return;
 		FirstPerson = firstPerson;
+		WorldDraw = world;
 		const PointShadowForward::RenderPassView* pass = *(const PointShadowForward::RenderPassView* const*)0x011F91E0;
 		if (pass && (pass != LastPass || LastFrame != FrameId)) SetForPass(pass);
 	}

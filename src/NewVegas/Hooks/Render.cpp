@@ -2904,7 +2904,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 #endif
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
-	ManyLamps::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the run's first object
+	ManyLamps::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the run's first object
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
 	OnePassDepth::Reapply(TheRenderManager->device);	// UNOFFICIAL LampsDepthFirst: a bind inside a depth-only draw keeps the depth-only shader
 	if (profiling) ShaderSplit::EndBind(bindStart);
@@ -3040,7 +3040,7 @@ static void MaterialForPass(void* Pass) {
 static void ForwardShadowsForPass(void* Pass) {
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) MaterialForPass(Pass);	// UNOFFICIAL 2026-10-29 MaterialBuffer
 	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
-	ManyLamps::ForPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the object's lamps in c37-c63
+	ManyLamps::ForPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the object's lamps in c37-c63
 	LampsInOnePass::GlowForPass((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsGlow: the glow map on s4
 	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
