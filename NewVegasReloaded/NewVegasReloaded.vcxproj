@@ -185,6 +185,7 @@
     <ClCompile Include="..\src\core\UpscalerFsr31.cpp" />
     <ClCompile Include="..\src\core\RtCore.cpp" />
     <ClCompile Include="..\src\core\RtSunShadows.cpp" />
+    <ClCompile Include="..\src\core\RtDenoise.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
@@ -271,6 +272,7 @@
     <ClInclude Include="..\src\core\DxvkCompute.h" />
     <ClInclude Include="..\src\core\RtCore.h" />
     <ClInclude Include="..\src\core\RtSunShadows.h" />
+    <ClInclude Include="..\src\core\RtDenoise.h" />
     <ClInclude Include="..\src\core\HiZ.h" />
     <ClInclude Include="..\src\core\Upscaler.h" />
     <ClInclude Include="..\src\core\PixelInspector.h" />

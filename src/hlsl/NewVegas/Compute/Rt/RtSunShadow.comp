@@ -20,7 +20,8 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 bias;          // x normal offset (units), y normal offset per unit of view distance, z start offset along the ray, w ray length
 	vec4 range;         // x RT range (view distance), y fade length, z cull mask, w debug (1: hit distance / 4096 instead of visibility,
 	                    // 2: state codes, 3: a primary camera ray's hit distance / 8192: FORK-RT-SUN.md "Debug views")
-	vec4 alpha;         // x 1: test alpha-tested casters (the core's AlphaTested; binding 5 is the alpha atlas), 0: binding 5 is a stand-in
+	vec4 alpha;         // x 1: test alpha-tested casters (the core's AlphaTested; binding 5 is the alpha atlas), 0: binding 5 is a stand-in;
+	                    // y the frame (jitter), z tan(the sun disc's half-angle): 0 = one hard ray toward the sun's centre
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
@@ -73,10 +74,21 @@ void main() {
 			// Bias: along the normal (grows with distance: depth and normal precision), then a little toward the sun
 			vec3 start = position + normal * (p.bias.x + p.bias.y * viewZ) + p.sun.xyz * p.bias.z;
 			rayQueryEXT q;
-			// Alpha-tested casters (non-opaque, mask 0x04) come as candidates: their diffuse alpha decides (RtAlpha.glsl)
+			// Soft shadows: one ray a pixel toward a point of the sun's disc, a different one each pixel and frame (the denoiser averages)
+			vec3 toSun = p.sun.xyz;
+			if (p.alpha.z > 0.0) {
+				const vec3 t1 = normalize(abs(toSun.z) < 0.9 ? cross(toSun, vec3(0.0, 0.0, 1.0)) : cross(toSun, vec3(1.0, 0.0, 0.0)));
+				const vec3 t2 = cross(toSun, t1);
+				// interleaved gradient noise + the frame's golden-ratio step: a low-discrepancy disc point
+				const float n1 = fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)) + 0.618034 * p.alpha.y);
+				const float n2 = fract(n1 * 1.618034 + 0.7548777 * p.alpha.y + 0.5 * float((pixel.x ^ pixel.y) & 1));
+				const float r = sqrt(n1) * p.alpha.z, phi = 6.2831853 * n2;
+				toSun = normalize(toSun + (t1 * cos(phi) + t2 * sin(phi)) * r);
+			}
+			// Alpha-tested casters (non-opaque, mask 0x10) come as candidates: their diffuse alpha decides (RtAlpha.glsl)
 			const bool testAlpha = p.alpha.x > 0.5;
 			rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | (testAlpha ? 0u : gl_RayFlagsOpaqueEXT),
-				uint(p.range.z) & (testAlpha ? 0xFFu : 0xEFu), start, 0.0, p.sun.xyz, p.bias.w);
+				uint(p.range.z) & (testAlpha ? 0xFFu : 0xEFu), start, 0.0, toSun, p.bias.w);
 			while (rayQueryProceedEXT(q))
 				if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
 					rtAlphaPass(rayQueryGetIntersectionInstanceIdEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false),
