@@ -226,6 +226,35 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   the crash came with `tai` + the cross-world moveto (MultithreadedAI in the slot), not the RT actors. One run each way: a rare
   crash is not ruled out; the hardening stays.
 
+### Robustness round (2026-10-30): helper death, scene cost, soak, the RTX arena fault
+
+- **Helper death** (rtsun-kill-1, 20261030-045703-slotA, round-7 build, every RT switch on): the helper killed by PID mid-run
+  (`rtwatch.ps1 -KillAt`). NVR's watchdog logged "ray tracing core off for this session: the helper process exited" once, 2.6 s
+  later; the run finished (all 5 shots), the picture after the loss is the clean non-RT one, the Freeside cell change after it
+  ran normally. No code change needed.
+- **Scene cost** (e7f56980; rtsun-27 off 20261030-053509-slotC vs on 20261030-044734-slotC, og-goodsprings -> Freeside -> Vault 21
+  -> Novac): `Compact` cuts the helper's structure memory 4-5x (Goodsprings 215 -> 45 MB, after the V21 jump 273 -> 112 MB, Novac
+  94 -> 32 MB) at the same GPU and response times; `CullSmallAngle 0.004` drops ~6 % of the instances; `BuildTrianglesPerFrame
+  150000` deferred 135 far builds on the first load but did not change the frame spikes after a jump (the ~585 ms worst frames are
+  the game's own cell loading, identical on and off). Empty structure blocks are given back (192 -> 128 MB in blocks after Novac).
+  A real fix in the same commit: release ops that did not fit a frame's op list were dropped (the helper kept those structures);
+  they are queued now.
+- **Soak**: not done as a 20-30 min run. The test plugin caps a launch at 600 s (`approved/dryrun3`, not touched) and NVR's
+  self-test a warm-slot job at 480 s; with every RT switch on the iGPU runs ~5 fps (helper GPU ~40 ms an exchange). The 10 minutes
+  that ran (rtsun-soak-1, Lucky 38 -> Freeside): helper memory flat (318 MB, 474 MB after Freeside), 348 releases on the cell
+  change, nothing waiting, no growth. A longer soak needs a real RT GPU or a longer plugin limit.
+- **RTX GPU fault (Conor, rt-test-7)**: fork patch 0028's FlushStagedGeometry copies the staging buffer into the arena with
+  `copyBufferToImage`; the conversions write that staging by device address, so DXVK saw neither resource used in the command
+  list and `prepareOutOfOrderTransfer` put the copy in the init command buffer, which runs before the conversions: the arena got
+  the previous flush's data and the helper built from stale indices. Fork patch 0034 (1.8-rt-seq) tracks both as written before
+  the copy (it stays in the exec buffer, after the conversions and the barrier) and adds `ID3D9NvrExtRtSeq::FlushStagedGeometrySeq`,
+  which writes a sequence texel after the conversions; NVR passes it (`arenaTexels` bit 31) and the helper's arena guard
+  (`tools/nvr-rt-helper/RtArenaGuard.comp`, embedded) clamps out-of-range indices before every build and builds stale geometry
+  empty, logged once. a5e04304, fork-0033c (D58B4425), helper 629543AD; rtsun-28-c PASS 20261030-062315-slotC.
+  rtsun-28-b (20261030-063324-slotC, the OLD fork-0033b + this helper): PASS, NVR logged the expected "no arena sequence
+  check" line, the helper's guard was on and never met an out-of-range index in the whole run (cell changes included): on the AMD
+  iGPU the wrong order never fed indices past a geometry's vertex count (timing), which is why only the RTX card faulted.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),

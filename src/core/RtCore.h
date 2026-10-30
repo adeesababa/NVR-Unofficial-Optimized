@@ -47,6 +47,8 @@ public:
 
 	// Record only:
 	static bool			CopyIn(int Image, IUnknown* Source, const RECT* Rect = nullptr);
+	// Up to 12 images (2026-10-30): Images[0..7] at bindings 2..9, Images[8..11] at 12..15 (records 10, geometry 11 unchanged;
+	// a helper older than 2026-10-30 skips a pass with more than 8)
 	static bool			AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize,
 							UINT GroupsX, UINT GroupsY);
 	static bool			CopyOut(int Image, IUnknown* Target);
@@ -79,6 +81,9 @@ public:
 	// UNOFFICIAL 2026-10-29 hit textures ([Main.Main.RayTracing] HitTextures): the albedo atlas' image index (RGBA8; -1: none). A pass
 	// that shades its hits adds it to its images and uses Compute\Rt\RtHit.glsl (rtHitAlbedo: the texture's colour, else the average).
 	static int			AlbedoAtlasImage();
+	// UNOFFICIAL 2026-10-30 glow textures ([Main.Main.RayTracing] GlowTextures, needs HitTextures): the glow atlas' image index (RGBA8,
+	// same slots and texcoords as the albedo atlas; -1: none). A pass adds it to its images, #define RT_GLOW_ATLAS and calls rtHitGlow.
+	static int			GlowAtlasImage();
 	// UNOFFICIAL 2026-10-29 (rt-lamp-shadows): true while the scene holds the posed skinned actors ([Main.Main.RayTracing] Actors +
 	// fork patch 0033; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
 	static bool			Actors();
