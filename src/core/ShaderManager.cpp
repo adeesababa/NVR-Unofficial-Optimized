@@ -1086,7 +1086,9 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// frames back; lamps not measured yet follow in the old order, lamps that light nothing visible go last. LampSwitchMargin favours the
 	// slot holders as before; ShadowHold above 0 keeps a slot holder first for that many seconds after it last ranked inside the slots, while
 	// it still lights something visible. Off: the ranking above, unchanged.
-	LampVisibility::On = indoorsForward && !LampVisibility::Failed && LampVisibility::Setting();
+	const int visibleRanking = indoorsForward && !LampVisibility::Failed ? LampVisibility::Setting() : 0;
+	LampVisibility::On = visibleRanking != 0;
+	ShadowHold::VisiblePixels = LampVisibility::On ? &LampVisibility::Pixels : nullptr;
 	if (LampVisibility::On) {
 		std::vector<LampVisibility::Want> wants;
 		wants.reserve(SceneLights.size());
@@ -1095,16 +1097,18 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			if (L) wants.push_back({ e.second, D3DXVECTOR3(L->m_worldTransform.pos.x, L->m_worldTransform.pos.y, L->m_worldTransform.pos.z), L->Spec.r * Settings->LightRadiusMult });
 		}
 		LampVisibility::Request(wants);
+	}
+	if (visibleRanking == 1) {
 		auto inSlots = [&](const void* light) { for (int s = 0; s < ShadowCubeMapsMax; s++) if (previousSlots[s] == light) return true; return false; };
 		std::vector<std::pair<float, ShadowSceneLight*>> keyed;
 		keyed.reserve(SceneLights.size());
 		for (const auto& e : SceneLights) {
 			NiPointLight* L = e.second->sourceLight;
-			const int pixels = LampVisibility::Pixels(e.second);
+			const float pixels = LampVisibility::Pixels(e.second);
 			const float brightness = L ? (std::max)(0.0f, (L->Diff.r + L->Diff.g + L->Diff.b) / 3.0f * L->Dimmer) : 0.0f;
 			float key;
-			if (pixels > 0) key = -brightness * (float)pixels * (switchMargin > 0.0f && inSlots(e.second) ? 1.0f + switchMargin : 1.0f);
-			else if (pixels < 0) key = 1.0e6f + e.first;	// not measured yet: after every lamp lighting something visible, in the old order
+			if (pixels > 0.5f) key = -brightness * pixels * (switchMargin > 0.0f && inSlots(e.second) ? 1.0f + switchMargin : 1.0f);
+			else if (pixels < 0.0f) key = 1.0e6f + e.first;	// not measured yet: after every lamp lighting something visible, in the old order
 			else key = 2.0e6f + e.first;					// lights nothing visible
 			keyed.push_back({ key, e.second });
 		}
@@ -1115,7 +1119,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			const int inside = (std::max)(1, Settings->LightPoints);
 			for (size_t k = 0; k < keyed.size() && (int)k < inside; k++) LampVisibility::Lamps[keyed[k].second].lastInside = now;
 			for (auto& k : keyed)
-				if (inSlots(k.second) && LampVisibility::Pixels(k.second) != 0 && now - LampVisibility::Lamps[k.second].lastInside <= hold) {
+				if (inSlots(k.second) && LampVisibility::Pixels(k.second) != 0.0f && now - LampVisibility::Lamps[k.second].lastInside <= hold) {
 					if (GpuTimer::Enabled && k.first > -1.0e7f) ShadowHold::StatLiveHeld++;
 					k.first -= 1.0e7f;
 				}

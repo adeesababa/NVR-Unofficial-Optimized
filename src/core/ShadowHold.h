@@ -31,6 +31,8 @@ namespace ShadowHold {
 	inline UInt32 StatFrames = 0, StatGained = 0, StatLost = 0, StatLiveGained = 0, StatLiveLost = 0, StatShadowed = 0, StatHeld = 0, StatStale = 0, StatNear = 0, StatCulled = 0, StatDimmed = 0, StatLiveHeld = 0;
 	inline double StatStart = 0.0;
 	inline std::vector<const void*> Prev, PrevLive;
+	inline float (*VisiblePixels)(const void*) = nullptr;	// LampVisibility::Pixels while VisibleRanking measures (1 or 2)
+	inline UInt32 StatVisGained = 0, StatVisLost = 0, StatVisShadowed = 0;
 
 	inline double Now() {
 		LARGE_INTEGER frequency, counter;
@@ -58,8 +60,9 @@ namespace ShadowHold {
 		for (const void* l : live) Map[l].liveFrame = next;
 		if (GpuTimer::Enabled) {
 			auto in = [](const std::vector<const void*>& set, const void* l) { for (const void* x : set) if (x == l) return true; return false; };
-			for (const void* l : now) if (!in(Prev, l)) StatGained++;
-			for (const void* l : Prev) if (!in(now, l)) StatLost++;
+			for (const void* l : now) if (!in(Prev, l)) { StatGained++; if (VisiblePixels && VisiblePixels(l) > 0.5f) StatVisGained++; }
+			for (const void* l : Prev) if (!in(now, l)) { StatLost++; if (VisiblePixels && VisiblePixels(l) > 0.5f) StatVisLost++; }
+			if (VisiblePixels) for (const void* l : now) if (VisiblePixels(l) > 0.5f) StatVisShadowed++;
 			for (const void* l : live) if (!in(PrevLive, l)) StatLiveGained++;
 			for (const void* l : PrevLive) if (!in(live, l)) StatLiveLost++;
 			StatShadowed += (UInt32)now.size();
@@ -70,10 +73,13 @@ namespace ShadowHold {
 				const float shadowed = StatShadowed / (float)StatFrames;
 				Logger::Log("SHADOW FLIPS ShadowHold %.2f: %.1f lamps with a shadow per frame; per second %.2f gained / %.2f lost (%.3f flips per lamp per second), "
 					"live slots %.2f gained / %.2f lost; held in the pool by ShadowHold %.1f, stale pool maps used %.2f, near-current maps not redrawn %.2f per frame; "
-					"per second lamps with a shadow that the game culled %.2f / switched off or dimmed %.2f; live slots kept by ShadowHold (VisibleRanking) %.2f per frame",
+					"per second lamps with a shadow that the game culled %.2f / switched off or dimmed %.2f; live slots kept by ShadowHold (VisibleRanking) %.2f per frame; "
+					"lamps lighting something visible: %.1f with a shadow per frame, per second %.2f gained / %.2f lost",
 					Seconds(), shadowed, StatGained / seconds, StatLost / seconds, shadowed > 0.0f ? (StatGained + StatLost) / seconds / shadowed : 0.0,
 					StatLiveGained / seconds, StatLiveLost / seconds, StatHeld / (float)StatFrames, StatStale / (float)StatFrames, StatNear / (float)StatFrames,
-					StatCulled / seconds, StatDimmed / seconds, StatLiveHeld / (float)StatFrames);
+					StatCulled / seconds, StatDimmed / seconds, StatLiveHeld / (float)StatFrames,
+					StatVisShadowed / (float)StatFrames, StatVisGained / seconds, StatVisLost / seconds);
+				StatVisShadowed = StatVisGained = StatVisLost = 0;
 				StatFrames = StatGained = StatLost = StatLiveGained = StatLiveLost = StatShadowed = StatHeld = StatStale = StatNear = StatCulled = StatDimmed = StatLiveHeld = 0;
 			}
 		}

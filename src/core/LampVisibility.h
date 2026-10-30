@@ -29,7 +29,8 @@ namespace LampVisibility {
 		IDirect3DQuery9* query[Slots] = {};
 		UInt32 issued[Slots] = {};
 		UInt32 answerFrame = 0;		// the frame the newest answer was issued in
-		DWORD pixels = 0;			// of W x H
+		DWORD pixels = 0;			// of W x H (the newest answer)
+		float smooth = -1.0f;		// the answers smoothed (a quarter of each new one), -1 = none yet
 		UInt32 requested = 0;		// last frame it was a candidate
 		double lastInside = -1e9;	// ShadowHold: when it last ranked inside the live slots
 	};
@@ -43,13 +44,14 @@ namespace LampVisibility {
 	inline IDirect3DPixelShader9* PS = nullptr;
 	inline unsigned StatFrames = 0; inline double StatMeasured = 0, StatAnswered = 0, StatVisible = 0, StatCandidates = 0;
 
-	inline bool Setting() { return TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "VisibleRanking") != 0; }
+	// 0 off, 1 on, 2 measured only (the ranking unchanged; the SHADOW FLIPS line then splits the flips of lamps that light something visible).
+	inline int Setting() { return TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "VisibleRanking"); }
 
-	// The pixels of the visible picture within this lamp's reach, of W x H; -1 = no answer yet (or too old).
-	inline int Pixels(const void* light) {
+	// The pixels of the visible picture within this lamp's reach, of W x H, smoothed over its last answers; -1 = no answer yet (or too old).
+	inline float Pixels(const void* light) {
 		auto f = Lamps.find(light);
-		if (f == Lamps.end() || !f->second.answerFrame || Frame - f->second.answerFrame > MaxAge) return -1;
-		return (int)f->second.pixels;
+		if (f == Lamps.end() || !f->second.answerFrame || Frame - f->second.answerFrame > MaxAge || f->second.smooth < 0.0f) return -1.0f;
+		return f->second.smooth;
 	}
 
 	// GetNearbyLights: the candidates in ranking order (it calls this once a frame, before choosing). Collects newest answers.
@@ -71,6 +73,7 @@ namespace LampVisibility {
 				DWORD pixels = 0;
 				if (l.query[slot]->GetData(&pixels, sizeof(pixels), 0) != S_OK) continue;
 				l.pixels = pixels; l.answerFrame = l.issued[slot];
+				l.smooth = l.smooth < 0.0f ? (float)pixels : l.smooth + 0.25f * ((float)pixels - l.smooth);
 				if (GpuTimer::Enabled) { StatAnswered += 1; if (pixels) StatVisible += 1; }
 				break;
 			}
