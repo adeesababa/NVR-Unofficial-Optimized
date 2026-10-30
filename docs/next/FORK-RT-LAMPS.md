@@ -35,6 +35,69 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### PLAN (2026-10-30): outdoor lamps that really cast shadows (forward per-draw lamp term outdoors) -- not built yet
+Why: outdoors NVR's lamp shadows are only the screen-space mask (Exteriors above: wired, but the mask 0 -> 1 moves the night picture
+by < 0.4 / 255). Modern RT games shadow each light inside its own lighting. Indoors NVR already does that: the lit pixel shaders get an
+Interior record (INTERIOR_SHADOWS 1, PointShadowForward.hlsl) that multiplies each lamp's own light by its shadow (cube map or the
+traced buffer, POINT_SHADOW_RT). Outdoors the Default / Exterior records are used (Player->GetWorldSpace(), ShaderRecord.cpp), with no
+lamp shadow term at all. The lamps do light outdoor draws: rtlamp-24's census in Freeside at night: ~960 world draws a frame, 25 shiny
+objects in multi-pass with 3-14 lamps each, OPT lamp passes C9 59 / CD 16 / CF 20 / D0 31 a frame.
+Steps:
+1. Measure (diagnostic, LogLamps): per exterior pixel shader name, draws a frame with point lights at night, lamps per draw, and
+   whether the draw's lamps are in the published set (Freeside Kings street, the Strip, Novac). Decides which records need it.
+2. Exterior lamp-shadow records ([Shaders.ShadowsInteriors.RT] ExteriorForward, off, needs a restart): for the same eligible lit
+   shaders, a record compiled from the EXTERIOR defines (sun code kept) + INTERIOR_SHADOWS 1 + POINT_SHADOW_RT 1. The six-lamp
+   shiny shaders sit near the instruction limit indoors even without the sun code, so: a POINT_SHADOW_RT_ONLY level (no cube-map
+   code: one point-sampled read of the traced buffer a lamp) tried first, the full cube + RT version only where it fits; the
+   Fit levels' scheme (log what loaded). Record choice in ShaderRecordPixel::SetupShader: outdoors with the mode on -> that record.
+   Check first: which sampler stages the exterior records use (the sun's maps): the traced buffer needs one free stage (s15 indoors).
+3. Per draw outdoors: publish the outdoor lamp set (ShadowManager's ShadowLights + tracked lamps, ids 0-62 = the table) like
+   Publish indoors; SetForPass matches each draw's lights to ids (TracedSlot) -> c216-c217; the same c206-c209 reprojection.
+4. Trace: outdoors with ExteriorForward, the per-pixel lamp selection variant (RtLampTrace.spv, entries + depth code) instead of the
+   mask variant; the same table (SubmitExterior). Fallback where a lamp is not traced at a pixel: unshadowed (as today), or the
+   cube map where the full record fits and the outdoor cube maps are drawn.
+5. Test: night, same spot A/B (Live 0 = today's unshadowed lamps, Live 1 = traced), Freeside Kings street (heading 180), the Strip,
+   Novac; DebugView 3 per lamp; the GPU's verdict on each record (instruction slots) from the startup log; iGPU cost.
+Risks: the instruction limit with the sun code (the RT-only level is the answer); sampler / constant register clashes with exterior
+code (c206-c217, s15); more records to compile at startup (the shader cache); lamps that light a draw but are not in the set (the
+game's light list outdoors is larger than ShadowLights + tracked lamps: they stay unshadowed).
+
+### ExteriorForward built (e0db92bb + 22691757, DLL 09C9436D): runs rtlamp-25/26, 2026-10-30
+- rtlamp-25: the GPU refused 64 of 68 outdoor records: ps_3_0 has 224 constants (c0-c223), the reprojection was on c228. Moved to
+  c200-c203 (free in the object pixel shaders: ParticleLight / ClothWind use them in other shaders).
+- rtlamp-26 (20261030-030851-slotA, PASS): 67 of 68 outdoor records load (SKIN2011: its constant table failed). Freeside Kings street
+  at 23:00: coverage 35 % of pixels use a traced lamp lookup (the street, facades, the wreck casting a blocked shadow); traced vs today
+  0.68 % of pixels darker (repeats 0.02 / 0.09 %); trace 12.5-14 ms (helper, iGPU). Novac motel: 0 % traced (its lamps are far from
+  that spot): needs a closer spot. Open: the left street lamp's own pool on the ground and the facade beside it go dark: the lamp's
+  head shadowing its own light? rtlamp-27 tries ExteriorLampStop 40 / 100 / 200.
+- rtlamp-27: not the lamp head (darker pixels 0.67 / 0.64 / 0.58 % at stop 40 / 100 / 200). rtlamp-28 (each lamp alone, DebugView 3):
+  the traced shadows themselves are right (lamp 0 lights the street, the wreck's shadow sharp; each other lamp its own patch); OneSided
+  changes 0.12 %. Cause: far surfaces shadowing themselves (the fixed 0.5-unit start offset is less than the depth-rebuilt position's
+  error 1000s of units away). Fix 9c7d2b09 (DLL 63ADFB41): StartOffsetPerUnit 0.002, the offset grows with the view depth (all lamp
+  traces). rtlamp-29 (20261030-035748-slotA, PASS): darker pixels vs today 0.64 % (0) -> 0.23 % (0.002) -> 0.20 % (0.005); the facade
+  gets its lamp light back; coverage 35-36 %. Default 0.002 (0.005 gains little and leaks more at contacts).
+- SKIN2011 (be70de35): its outdoor record ran out of ps_3_0's 32 TEMP registers (X4505 in Skin.hlsl's SG irradiance; the skin rewrite's
+  SkinTemplate MANY POINTS 3, sun code + lamp lookups): fallback levels for the skin shaders, SkinTemplate SKIN_PT_LAMPS = the first 2,
+  then 1 lamp of a draw shadowed (logged when used).
+- Why traced-only outdoors (register audit, 2026-10-30, the 67 outdoor records disassembled with fxc /dumpbin): sampler stages in
+  use 0-7, 9 (the sun atlas), 10 (the live cube), 15 (the traced buffer): 8 and 11-14 would be free for five cube maps, and the
+  constants fit (c174-c189, c200-c203, c215-c217). But the instruction slots do not: the largest outdoor records already take 3873
+  (SLS2034 / SLS2036) and 4212 (SKIN2010) slots (accepted here through DXVK; the user's GPU refused ~3600-3870 indoors), and six
+  filtered cube lookups add ~400-900 more. The fallback would also need the outdoor cube maps drawn again (14-16 ms iGPU in Freeside)
+  only for the pixels the trace misses (off its screen, disoccluded, a lamp not among a pixel's 2 strongest), where outdoor lamps were
+  unshadowed before anyway. So outdoors a lamp not traced at a pixel stays lit; without RT the switch does nothing (auto-off).
+
+### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
+- [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
+  flashlight's reach toward it (people included, lamp glass not), stopping FlashlightStop 40 short (the player's body and weapon);
+  Flashlight's shadow pass reads it (FlashlightShadowsRT.frag) instead of its shadow map, the shadowed technique runs with it whatever
+  RenderShadows says (TechniqueThisFrame), and the shadow map is not drawn. Toggles live (its image is made at start).
+- Lucky 38 + Vault 21, flashlight forced on (TestForceOn), Actors on: it works: chair backs and the table's side darken where the
+  flashlight (a little off the eye) is blocked; repeats 0.00-0.01 %; vs no flashlight shadows L38 0.06 %, V21 0.27 % of pixels (small:
+  a light near the eye hides most of its own shadows behind the objects). Trace 3.7-5.8 ms on the iGPU (helper); frame +2..6 ms (noisy).
+- Live RenderShadows changes did not take (map shots = none), so the shadow map was not compared; with Flashlight off nothing changes.
+- Known: if the NVR DXVK path failed in a frame, the D3D9 technique would read the undrawn shadow map (not seen).
+
 ### Exteriors: night lamp shadows outdoors (39a1ec02 + b7c071ef, DLL 51D6B134; runs rtlamp-19..22, 2026-10-30)
 - Built (off, needs a restart + [Shaders.ShadowsExteriors.Main] UsePointShadowsNight): outdoors there are no per-draw lamp records,
   the lamp shadows are the screen-space lamp mask (PointShadows.fx) in the shadow buffer's green. RtLampTraceExterior.spv writes that
@@ -47,7 +110,12 @@
   outdoor lamp-shadow mechanism barely touches the night image, so there is nothing for RT to improve through it. Real outdoor lamp
   shadows need the forward per-draw path (Interior records + POINT_SHADOW_RT) made to work outdoors: a project of its own.
 - rtlamp-19 crashed 2 s after the Freeside moveto inside the game's actor update (Blackjack Dealer, no NVR frame), with Actors on +
-  tai; rtlamp-20 (Actors off, no tai) passed. Not split yet.
+  tai; rtlamp-20 (Actors off, no tai) passed. Not split yet. NB the "noactors" run toml of rtlamp-20..22 turned off EVERY `Actors`
+  key (also [Shaders.ShadowsInteriors.Main] and three other sections' actor shadows), not only [Main.Main.RayTracing]: the same in all
+  their shots, so the exterior verdict stands, but rtlamp-20 is no clean split; rtlamp-24 = rtlamp-19's toml (all on) without tai.
+  rtlamp-24 (2026-10-30 02:21, 20261030-022109-slotA): PASS, 15 shots, actors posed (1810 partitions in exchanges 1-60), the same
+  Freeside + Novac route: the crash came with tai before the cross-world moveto (MultithreadedAI in the slot), not with RT actors
+  (one clean run each way; a rare crash is not ruled out).
 
 ### Denoise: soft lamp shadows through the shared RtDenoise (rtlamp-18, 2026-10-29 23:03, 20261029-230326-slotA, PASS; 6a2646f2, DLL 9B8F8786)
 - Built as asked: LampRadius 16, 1 jittered ray; the trace's split variant writes ranks 0/1 apart, RtDenoise runs per rank with the

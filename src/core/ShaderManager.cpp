@@ -893,6 +893,36 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 			PointShadowForward::Refused = true;
 		}
 	}
+	// UNOFFICIAL 2026-10-30 RT lamp shadows ExteriorForward: the same lit shaders get an outdoor record too, from the shader the game uses
+	// outdoors (the Exterior record's folder, else the default) with the lamps' traced shadows added (INTERIOR_SHADOWS + POINT_SHADOW_RT_ONLY:
+	// no cube-map code, the sun's code kept). Only with the RT lamp shadows and the switch on at startup; a refused one leaves that shader
+	// without outdoor lamp shadows (logged), the others keep theirs.
+	if (PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Interior]->PointShadowForward &&
+		PointShadowForward::Eligible(PixelShader->Name, Template) &&
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "Enabled") && TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "ExteriorForward")) {
+		// levels: every lamp; then (the skin shaders, SkinTemplate SKIN_PT_LAMPS) the first 2, the first 1 (SKIN2011 ran out of temp registers)
+		static D3DXMACRO exteriorLamps[3][4] = {
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "2" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "1" }, { NULL, NULL } } };
+		static const char* const exteriorCache[3] = { "ExteriorLamps\\", "ExteriorLamps\\Fit1\\", "ExteriorLamps\\Fit2\\" };
+		const bool customExterior = PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr;
+		const bool skin = Template.Name && strstr(Template.Name, "SkinTemplate") == Template.Name;
+		ShaderRecordPixel* record = nullptr;
+		int exteriorLevel = 0;
+		for (; exteriorLevel < (skin ? 3 : 1) && !record; exteriorLevel++)
+			record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, customExterior ? "Exteriors\\" : NULL, Template,
+				exteriorCache[exteriorLevel], exteriorLamps[exteriorLevel]);
+		if (record && exteriorLevel > 1)
+			Logger::Log("UNOFFICIAL RT lamp shadows: %s's outdoor lamp-shadow record shadows only the first %d lamp(s) of a draw (the full one did not fit).",
+				PixelShader->Name, exteriorLevel == 2 ? 2 : 1);
+		if (record) {
+			record->PointShadowForward = true;
+			PointShadowForward::ExteriorRecords[PixelShader] = record;
+			Logger::Log("UNOFFICIAL RT lamp shadows: %s has an outdoor lamp-shadow record (ExteriorForward).", PixelShader->Name);
+		}
+		else Logger::Log("[ERROR] UNOFFICIAL RT lamp shadows: %s with outdoor lamp shadows did not load (ExteriorForward): it stays without them outdoors.", PixelShader->Name);
+	}
 	PixelShader->Enabled = enabled;
 
 	if (PixelShader->ShaderProg[ShaderRecordType::Default] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Interior] != nullptr) {

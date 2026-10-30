@@ -1873,7 +1873,10 @@ void ShadowManager::RenderShadowMaps() {
 
 	TheShaderManager->GetNearbyLights(ShadowLights, Lights, SpotLights);
 	// UNOFFICIAL 2026-10-29 RT lamp shadows Exteriors (off): outdoors, the lamp mask's lamps go to the trace
-	if (TheShaderManager->GameState.isExterior) RtLampShadows::SubmitExterior(ShadowLights, ShadowCubeMapsMax, Lights, TrackedLightsMax);
+	if (TheShaderManager->GameState.isExterior) {
+		RtLampShadows::SubmitExterior(ShadowLights, ShadowCubeMapsMax, Lights, TrackedLightsMax);
+		PointShadowForward::PublishExterior(ShadowLights, ShadowCubeMapsMax);	// UNOFFICIAL 2026-10-30 ExteriorForward
+	}
 
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	ShadowsExteriorEffect::ExteriorsStruct* ShadowsExteriors = &Shadows->Settings.Exteriors;

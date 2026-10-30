@@ -982,6 +982,15 @@ void NiD3DPixelShaderEx::SetupShader(IDirect3DPixelShader9* CurrentPixelHandle) 
 		}
 	}
 
+	// UNOFFICIAL 2026-10-30 RT lamp shadows ExteriorForward: outdoors, the lit shader's lamp-shadow record while the traced lamps are live
+	if (PointShadowForward::ExteriorActive && Player->GetWorldSpace()) {
+		auto found = PointShadowForward::ExteriorRecords.find(this);
+		if (found != PointShadowForward::ExteriorRecords.end()) {
+			ShaderHandle = found->second->ShaderHandle;
+			if (CurrentPixelHandle != ShaderHandle) found->second->SetCT();
+			return;
+		}
+	}
 	if (GetShaderRecord(ShaderRecordType::Exterior) && Player->GetWorldSpace()) {
 		ShaderHandle = GetShaderRecord(ShaderRecordType::Exterior)->ShaderHandle;
 		if (CurrentPixelHandle != ShaderHandle) GetShaderRecord(ShaderRecordType::Exterior)->SetCT();
