@@ -109,3 +109,14 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
 - **4. The rest of INTERIOR-SHADOWS-MODERN:** lamp contact shadows (ContactShadows 0.5) with the pool on: no visible change (0.01%) for
   0.036 ms -- left off. Capsule shadows: not built -- people's shadows from more lamps measured invisible here (step 3). RT lamps: the
   rt-lamp-shadows sessions. Nothing left in that plan pays off on this evidence.
+
+## Round 2 (2026-10-29 20:20), claude/material-buffer 9eb91a64, DLL 3EC44507
+- **5. MaterialBuffer readers: blocked.** Reflections already uses all 16 sampler registers on its D3D9 path, and it already gets per-pixel
+  roughness + metal from MaterialAware where an _rmaos map is bound. Skin/SSS cannot read thickness from it: skin pixels are not in it
+  (the skin templates' COLOR2 is the skin blur's). The buffer stays for the RT passes (format sent to rt-sun-core / rt-reflections).
+- **6. SLS2132-2138 (6-layer land) X4505: FIXED.** Fails at flags 0 exactly with terrain blending + captured normals (32 of 256 option
+  combinations; 5 and 7 layers compile: a D3DX allocation quirk). Shaders that hit X4505 are compiled again with
+  D3DXSHADER_PREFER_FLOW_CONTROL (ShaderRecord::LoadShader and the parallel precompiler): all 256 combinations compile; every shader that
+  compiled before keeps its bytecode. In game, run 20261029-201613-slotC (the user's toml + terrain blending): the four retried and
+  loaded, no temp-register error left, PASS.
+- **7.** Asked the RT merge session (local_0076c7d1) to merge claude/material-buffer into the RT train.
