@@ -71,3 +71,16 @@ nothing here is pushed, released or installed unless the user says so.
 - Bench PASS: 1070 RT off (20261029-212551-slotC) vs round 0 = 7/7 at noise level; iGPU interior (214436-slotA): RT as round 3
   (lamp core p50 27 ms, GI bounce, all on 154 ms; cube A/B 0.04 %).
 - DLL CRC32 956D1566; helper 3B01C4F1 and fork-0033 B8CF2308 unchanged. Package `H:\_NVR-pkg\rt-test-bd4cd0b2\`.
+
+## Round 5 (2026-10-29 ~23:50): c1171da1
+- In: claude/rt-sun-2 74f4b30d (actors as whole bodies with helper refit; ActorUpdateInterval 2; RtDenoise RGB mode + half res
+  with the crash fix 02222b6d; sun HalfResolution off; HitTextures off + RtHit.glsl; helper per-pass GPU times; protocol 3 kept);
+  claude/rt-ao-gi d42bbf80 (RT AO through RtDenoise at half res, GI RGB denoise, Interleave v2, GIInterleave; all under RT
+  Enabled off); claude/rootplan-round3 635de460 (SharedDrawState default ON, -0.25 ms CPU, same picture; ShadowContrast 0).
+- Not taken: rt-sun-2 4d776164 (RtDenoise Ids, untested); rt-lamps-2 / rt-refl-2 had no newer READY lines.
+- Merges clean; ROOTPLAN-RESULTS.md back to CRLF; toml parses; includers of the changed headers touched; helper rebuilt.
+- Bench PASS: 1070 RT off (20261029-233914-slotC): interiors at noise level vs round 0, outdoors 10 % px = a tumbleweed in
+  front of the truck + bush sway (checked against round 4's picture: same scene noise as round 0's RT-on run); iGPU Goodsprings
+  (233037-slotC, list rtm-igpu-ext5): helper by LUID, sun hard / soft / actors + alpha-tested, AO + GI, reflections, all on
+  trace; core p50 2.9 ms (sun), 8.3 ms (all on).
+- DLL CRC32 9C8D82F0, NvrRtHelper 0DEFB626 (protocol 3), fork-0033 B8CF2308. Package `H:\_NVR-pkg\rt-test-c1171da1\`.
