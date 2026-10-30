@@ -50,6 +50,10 @@
 // diffuse alpha is the alpha atlas' slot (flags >> 16) (RtCore::AlphaAtlasImage(): R16F 2048x2048, 64x64 texels a slot, 32 a row), and
 // a candidate hit counts where alpha >= ((flags >> 8) & 0xFF) / 255. src/hlsl/NewVegas/Compute/Rt/RtAlpha.glsl does it.
 #define NVR_RT_RECORD_ALPHA_TESTED  0x20u
+// UNOFFICIAL 2026-10-29 hit textures ([Main.Main.RayTracing] HitTextures): the geometry's texcoords are in binding 11 at
+// floatBitsToUint(albedo.w) (as alpha-tested ones) and its diffuse colour is the albedo atlas' slot (flags >> 16) (RGBA8, the same
+// slots as the alpha atlas). src/hlsl/NewVegas/Compute/Rt/RtHit.glsl reads it.
+#define NVR_RT_RECORD_TEXTURED      0x40u
 #define NVR_RT_MASK_ACTOR           0x20u     // UNOFFICIAL 2026-10-29: skinned actors ([Main.Main.RayTracing] Actors), posed every frame
 #define NVR_RT_MASK_ALPHA           0x10u     // the instance mask of alpha-tested geometry (rays that cannot test alpha leave it out)
 #define NVR_RT_ALPHA_SLOT_SIZE      64u
