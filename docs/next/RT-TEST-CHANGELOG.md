@@ -84,3 +84,20 @@ nothing here is pushed, released or installed unless the user says so.
   (233037-slotC, list rtm-igpu-ext5): helper by LUID, sun hard / soft / actors + alpha-tested, AO + GI, reflections, all on
   trace; core p50 2.9 ms (sun), 8.3 ms (all on).
 - DLL CRC32 9C8D82F0, NvrRtHelper 0DEFB626 (protocol 3), fork-0033 B8CF2308. Package `H:\_NVR-pkg\rt-test-c1171da1\`.
+
+## Round 6 (2026-10-30 ~02:00): f0fc7031
+- In: claude/rt-lamps-2 6a2646f2 (people proven in the lamp rays, Interleave 1, Denoise via RtDenoise Ids off, Filter off;
+  brings rt-sun-2 4d776164 RtDenoise Ids, which it was tested with); claude/rt-refl-2 1fbf3004 (glass reflections via
+  core/GlassMask.h, [Shaders.Reflections.Main] GlassReflect 0 = nothing hooked; GlowBrightness reader, inert until the core sets
+  the glow record flag; hit textures under RT Enabled off); claude/rt-ao-gi 79a6d04a (GI bounce albedo from hit textures, GI and
+  HitTextures off); claude/rootplan-round3 525ba81c (ShadowContrast for the game's multi-pass lamp passes + F10 timer, default 0).
+- Not taken: rt-sun-2 past 74f4b30d (cell-change actor release, textured actors with the amended patch 0033 = fork-0033b, glow
+  flag): no READY line yet. Fork stays rtsun\fork-0033 (no branch in this round contains 4a71bb3a).
+- Conflict: ReflectionsTemporal.spv (rootplan's ObjectMotion .frag + rt-refl's Reflections.glsl) recompiled from the merged
+  source (glslangValidator 1.3.296, spirv-val OK); every other shader this round touched recompiles byte-identical.
+  ROOTPLAN-RESULTS.md back to CRLF. MaterialBuffer alpha note (a >= 0.5, not == 1): no RT/compute code reads it.
+- Bench PASS: 1070 RT off (20261030-015139-slotC) vs round 0 = 7/7 at noise level; iGPU interior (005916-slotA): lamp RT core
+  p50 24.4 ms (Vault 21 117 -> 145 ms), people in the lamp rays +0.05 % px, reflections + AO + GI trace, all on 150 ms,
+  cube A/B 0.04 %.
+- DLL CRC32 8B889510, NvrRtHelper CFF056B2 (protocol 3, same source as round 5), fork-0033 B8CF2308.
+  Package `H:\_NVR-pkg\rt-test-f0fc7031\`.
