@@ -333,3 +333,13 @@ helper's own timing).
   no loss in the pictures, never slower, maybe 2x cheaper among foliage. AO + GI full rate now 28-29 ms in both scenes
   (from 38-67), GIInterleave 4 + Interleave 2 ~16-18 ms (rt-gi-8). Open: a still-camera outdoor spot for clean A/Bs (og-* spots
   drift); next step for GI quality per ray = ReSTIR GI temporal reuse.
+
+### ReSTIR GI temporal reuse (e39c8048, DLL 838D0C5B; bench rt-gi-10 queued 2026-10-30 ~01:25)
+- `GIReuse` (0-32, default 8; GI itself stays off by default): the bounce leaves the AO pass for its own helper pass, RtGITrace.spv
+  (RtAOTrace.comp built with `-DRT_GI_PASS`, own 512-byte constants with last frame's view). Each half-res texel keeps a reservoir
+  (Ouyang et al. 2021, temporal step): A = rgb the estimate (chosen sample's light x W; this is NVR_RTGIRaw), a = W; B = M, view
+  distance, octahedral world normal. Two RGBA16F pairs, swapped each frame (8 images = the helper's per-pass maximum). History is
+  last frame's reservoir of the reprojected point when depth (5 %) and normal (~25 deg) match; M capped at GIReuse. A new candidate
+  (cosine-sampled bounce: RIS weight = luminance) each frame in the GIInterleave tiles and wherever there is no history.
+  One candidate alone gives exactly the old value; GIReuse 0 runs the bounce in the AO pass as before (the A/B).
+- v1 limits: no re-trace of the kept sample (a light switched off fades over GIReuse frames), no spatial reuse, no Jacobian.
