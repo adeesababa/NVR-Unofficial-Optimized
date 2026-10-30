@@ -8,7 +8,9 @@
 // the slots went to hidden lamps while the ones lighting what the player looks at took turns.
 // Here each candidate lamp's light is measured against the picture itself: after the depth combine, a 160 x 90 pass per lamp keeps the
 // pixels whose surface (TESR_DepthBuffer, so walls in between hide what is behind them) lies within the lamp's reach, inside an occlusion
-// query. The answer (read a few frames later, without a flush: HiddenObjectCulling's way) is how much of the visible picture that lamp
+// query. UNOFFICIAL 2026-10-30 (user: a partly hidden lamp lost its shadow while its shadow was still in view): each pixel counts as much
+// as the lamp lights it ((1 - d^2 / r^2)^2, kept against a per-pixel dither), so a lamp that lights a visible ceiling strongly ranks above
+// one whose reach only grazes a large far wall; the count is then that lamp's light on the visible picture, not its reach's area. The answer (read a few frames later, without a flush: HiddenObjectCulling's way) is how much of the visible picture that lamp
 // lights. ShaderManager::GetNearbyLights then ranks by brightness x that share: lamps that light nothing visible go last. LampSwitchMargin
 // still favours the lamps that have a slot, and with ShadowHold above 0 a lamp keeps its slot for that many seconds after it last ranked
 // inside the slots (while it still lights something visible).
@@ -96,7 +98,10 @@ namespace LampVisibility {
 			"  float z = tex2D(Z, uv * S.xy).x * F.w;"
 			"  float3 p = (F.xyz + (R.w * (2.0f * uv.x - 1.0f)) * R.xyz + (-U.w * (2.0f * uv.y - 1.0f)) * U.xyz) * z;"
 			"  float3 d = p - L.xyz;"
-			"  clip(z < F.w * 0.995f && dot(d, d) < L.w * L.w ? 1.0f : -1.0f);"
+			"  float a = saturate(1.0f - dot(d, d) / (L.w * L.w)); a *= a;"
+			"  float2 q = uv * float2(160.0f, 90.0f);"
+			"  float n = frac(52.9829189f * frac(dot(q, float2(0.06711056f, 0.00583715f))));"
+			"  clip(z < F.w * 0.995f && a > n ? 1.0f : -1.0f);"
 			"  return 0.0f; }";
 		ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
 		const bool ok = SUCCEEDED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_2_0", 0, &code, &errors, NULL)) && code &&
