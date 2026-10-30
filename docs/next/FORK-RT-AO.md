@@ -435,3 +435,16 @@ game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial out
   facade glowing whole. Ultra-Luxe: GlowGI 1 +3 % (fewer glow meshes); its GlowGI 2 shot is a different view (the camera moved), not
   compared. Verdict: works, opt-in; it reads as a warm fill more than as distinct coloured pools (the bounce is one ray at half res,
   denoised). ReSTIR sampling of emissive instances (aiming rays at them) would make pools; not done.
+
+## GI merged back into the AO pass at full rate (2026-10-30)
+- **1e82b5bc -> 50ab0656 (DLL 1D0EE95D), helper extra-p3d (rt-sun-core 6b9784c3: up to 12 images a pass), fork-0033c.** With GIReuse at
+  Interleave 1 and GIInterleave 1 the reuse step runs inside the AO pass (10 images: last frame's reservoirs at bindings 8 / 9, this
+  frame's at 12 / 13); interleaved GI keeps RtGITrace. The reuse step is one shared function (ReuseGI). Last frame's view goes in the
+  AO constants' 32 free bytes as matrix rows 0 and 1 + the determinant's sign (row 2 = their cross): the first try (a quaternion,
+  rtgi24 20261030-075206-slotA) failed its self-check because the game's view matrix has determinant -1 (a mirrored axis), and the
+  fallback kept the separate pass as designed.
+- **rt-gi-17 rerun (rtgi25, 20261030-081152-slotA, Lucky 38): PASS**, the first 10-image RT pass: logged "inside the AO pass (one pass,
+  10 images; view determinant sign -1)", no helper error, no crash. Pictures equal to the separate pass's (rt-gi-10): raw bounce mean
+  17.38 (no reuse) / 19.58 (reuse), sd 9.71 / 8.90; denoised 18.84 (rt-gi-10: 17.38 / 19.57, 9.70 / 8.90, 18.84). Cost at full rate:
+  no reuse 30.6 ms (RT p50 33.5); **merged reuse 34.8-34.9 ms (RT p50 37.1-37.3)**; the separate passes were 9.3-10.2 + 32.2-33.6 ms
+  (RT p50 43.0-46.3, rtgi24): **-6 to -9 ms**. GIInterleave 4 still runs RtGITrace (AO 10.1 + GI 12.4 ms, RT p50 24.0).
