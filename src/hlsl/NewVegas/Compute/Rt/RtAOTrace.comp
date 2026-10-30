@@ -77,6 +77,7 @@ layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D curB;
 // (2026-10-30) the bounce light out (the reservoir's estimate + GlowDirect: what AmbientLight takes, NVR_RTGIRaw) and the glow lights
 layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D giOut;
 layout(set = 0, binding = 13, rgba16f) uniform readonly image2D glowList;
+layout(set = 0, binding = 14, rgba8) uniform readonly image2D glowAtlas;   // (2026-10-30) the core's glow atlas (GlowTextures), bound when sunColor.w 1
 #else
 // (2026-10-30) GIReuse inside this pass at full rate (gi3.z 1): last frame's reservoirs at 8 / 9, this frame's at 12 / 13 (the helper's
 // images 8-11 bind at 12-15; 10 / 11 stay the records and the geometry). Bound only then (the helper's descriptors are partially bound).
@@ -84,8 +85,9 @@ layout(set = 0, binding = 8, rgba16f) uniform readonly image2D prevA;
 layout(set = 0, binding = 9, rgba16f) uniform readonly image2D prevB;
 layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D curA;
 layout(set = 0, binding = 13, rgba16f) uniform writeonly image2D curB;
-layout(set = 0, binding = 14, rgba16f) uniform writeonly image2D giOut;      // (2026-10-30) as the GI pass's 12 / 13
-layout(set = 0, binding = 15, rgba16f) uniform readonly image2D glowList;
+layout(set = 0, binding = 14, rgba16f) uniform writeonly image2D giOut;      // (2026-10-30) as the GI pass's 12
+layout(set = 0, binding = 15, rgba8) uniform readonly image2D glowAtlas;     // (2026-10-30) the core's glow atlas, bound when sunColor.w 1
+                                                                             // (GlowDirect's list is the GI pass's only: no 13th image here)
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
 #endif
@@ -101,6 +103,7 @@ layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; }
 #define RT_ALPHA_ATLAS alphaAtlas
 #include "RtAlpha.glsl"
 #define RT_ALBEDO_ATLAS albedoAtlas
+#define RT_GLOW_ATLAS glowAtlas
 #include "RtHit.glsl"
 
 // Proceeds a ray query to its end, confirming alpha-tested candidates only where their alpha is solid. Opaque geometry commits by itself.
@@ -258,6 +261,11 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     if (cb.ambient.w > 0.0 && (r.flags & 0x04u) != 0u) {
         float peak = max(albedo.r, max(albedo.g, albedo.b));
         glow = albedo * (smoothstep(0.35, 0.8, peak) * cb.ambient.w);
+        // (2026-10-30) with the core's glow atlas bound (sunColor.w 1, [Main.Main.RayTracing] GlowTextures): the glow map's own colour
+        // at the hit, only the lit parts (rt-sun-core d40b6645), in place of the whole mesh's brightness-gated colour
+        if (cb.sunColor.w > 0.5)
+            glow = rtHitGlow(rayQueryGetIntersectionInstanceIdEXT(q, true), uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true)),
+                             rayQueryGetIntersectionBarycentricsEXT(q, true)) * cb.ambient.w;
     }
     return vec4(Clamped(albedo * e * cb.gi2.x + glow), t / cb.gi.x);
 }
@@ -281,6 +289,7 @@ float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // bounds round half the room, greyish average colours, and every texel inside them took their full colour unshadowed.) Now NVR sends
 // the emitting radius (the bound's, at most 32 units; meshes over 256 left out) and the colour already gated by its brightness (as
 // GlowGI: its strongest channel from 0.35 to 0.8), so only small bright emitters count.
+#ifdef RT_GI_PASS
 vec3 GlowDirect(ivec2 texel, vec3 p, vec3 n, float bias) {
     vec4 head = imageLoad(glowList, ivec2(0, 2));
     int count = min(int(head.x + 0.5), 32);
@@ -316,6 +325,7 @@ vec3 GlowDirect(ivec2 texel, vec3 p, vec3 n, float bias) {
     }
     return vec3(0.0);
 }
+#endif
 
 void ReuseGI(ivec2 texel, vec3 p, vec3 n, float viewZ, float bias, bool giTile, vec3 v, float reuse) {
     // Last frame's reservoir of this surface. (2026-10-30, v2) Outside the frame's tiles a texel without its own history (a
@@ -387,7 +397,11 @@ void ReuseGI(ivec2 texel, vec3 p, vec3 n, float viewZ, float bias, bool giTile, 
     float W = m > 0.0 && target > 0.0 ? weightSum / (m * target) : 0.0;
     imageStore(curA, texel, vec4(chosen * W, W));
     imageStore(curB, texel, vec4(m, viewZ, OctEncode(n)));
+#ifdef RT_GI_PASS
     imageStore(giOut, texel, vec4(chosen * W + GlowDirect(texel, p, n, bias), 1.0));
+#else
+    imageStore(giOut, texel, vec4(chosen * W, 1.0));
+#endif
 }
 
 #ifndef RT_GI_PASS
