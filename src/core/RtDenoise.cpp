@@ -11,6 +11,12 @@ namespace RtDenoise {
 		std::string			name;
 		IDirect3DTexture9*	history[2] = {};	// RGBA16F: value, second moment, history length, view depth (ping-pong by frame)
 		IDirect3DTexture9*	chain[2] = {};		// RGBA16F: the a-trous ping-pong
+		// RGB mode (Settings.Channels 3): A = (rgb, history length) in history / chain, B = (luma second moment, view depth) here
+		IDirect3DTexture9*	historyB[2] = {};
+		IDirect3DTexture9*	chainB[2] = {};
+		IDirect3DTexture9*	scratchB = nullptr;		// the last a-trous pass' B output (not needed after)
+		IDirect3DTexture9*	park = nullptr;			// 8 x 8: the device's render target while the passes run (a pass may not draw into it)
+		int					channels = 0;
 		UINT				width = 0, height = 0;
 		UInt32				frame = 0;
 		bool				hasHistory = false;
@@ -21,6 +27,8 @@ namespace RtDenoise {
 	namespace {
 		ID3D9NvrExtPipeline* temporal = nullptr;
 		ID3D9NvrExtPipeline* atrous = nullptr;
+		ID3D9NvrExtPipeline* temporalRgb = nullptr;
+		ID3D9NvrExtPipeline* atrousRgb = nullptr;
 		bool tried = false;
 
 		IDirect3DBaseTexture9* Texture(const char* name) {
@@ -32,11 +40,11 @@ namespace RtDenoise {
 			return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
 		}
 
-		ID3D9NvrExtPipeline* Make(const char* name, UINT images, UINT pushSize) {
+		ID3D9NvrExtPipeline* Make(const char* name, UINT images, UINT pushSize, UINT targets = 1) {
 			std::vector<char> spirv;
 			ID3D9NvrExt* ext = DxvkCompute::Extension();
 			if (!ext || !DxvkCompute::LoadSpirv(name, spirv)) return nullptr;
-			NVR_EXT_BINDING_DESC bindings[4] = {};
+			NVR_EXT_BINDING_DESC bindings[8] = {};	// images + the sampler
 			for (UINT i = 0; i < images; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
 			bindings[images] = { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, pushSize - 16 };	// samplerIndex: the last 16 bytes
 			NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
@@ -48,7 +56,7 @@ namespace RtDenoise {
 			desc.UsesSamplerHeap = TRUE;
 			desc.SamplerHeapSet = 0;
 			desc.SamplerHeapBinding = 0;
-			desc.ColorTargetCount = 1;
+			desc.ColorTargetCount = targets;
 			desc.Blend = NVR_EXT_BLEND_NONE;
 			desc.ColorWriteMask = 0xFu;
 			desc.pDebugName = name;
@@ -58,14 +66,16 @@ namespace RtDenoise {
 			return pipeline;
 		}
 
-		bool Draw(ID3D9NvrExtPipeline* pipeline, IDirect3DSurface9* target, IUnknown* const* images, UINT count, const void* push, UINT pushSize) {
-			NVR_EXT_RESOURCE_BINDING bindings[4] = {};
+		bool Draw(ID3D9NvrExtPipeline* pipeline, IDirect3DSurface9* target, IUnknown* const* images, UINT count, const void* push, UINT pushSize,
+			IDirect3DSurface9* target2 = nullptr) {
+			NVR_EXT_RESOURCE_BINDING bindings[8] = {};	// images + the sampler
 			for (UINT i = 0; i < count; i++) { bindings[i].Slot = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].pResource = images[i]; }
 			bindings[count].Slot = 0; bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].pResource = DxvkCompute::PointClamp();
 			NVR_EXT_DRAW_DESC draw = {};
 			draw.pPipeline = pipeline;
-			draw.TargetCount = 1;
+			draw.TargetCount = target2 ? 2 : 1;
 			draw.Targets[0].pResource = target;
+			draw.Targets[1].pResource = target2;
 			draw.BindingCount = count + 1;
 			draw.pBindings = bindings;
 			draw.pPushData = push;
@@ -91,7 +101,11 @@ namespace RtDenoise {
 			tried = true;
 			temporal = Make("RtDenoiseTemporal", 3, 160);
 			atrous = Make("RtDenoiseAtrous", 2, 48);
+			temporalRgb = Make("RtDenoiseTemporalRgb", 4, 160, 2);
+			atrousRgb = Make("RtDenoiseAtrousRgb", 3, 48, 2);
 		}
+		const bool rgb = S.Channels == 3;
+		if (rgb && (!temporalRgb || !atrousRgb)) return false;
 		IDirect3DBaseTexture9* depth = Texture("TESR_DepthBuffer");
 		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
 		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
@@ -99,14 +113,18 @@ namespace RtDenoise {
 
 		const UINT scale = S.Downscale == 2 ? 2u : 1u;
 		const UINT w = (std::max)(1u, (UINT)TheRenderManager->width / scale), h = (std::max)(1u, (UINT)TheRenderManager->height / scale);
-		if (d->width != w || d->height != h || !d->history[0]) {
-			for (IDirect3DTexture9*& t : d->history) if (t) { t->Release(); t = nullptr; }
-			for (IDirect3DTexture9*& t : d->chain) if (t) { t->Release(); t = nullptr; }
-			for (IDirect3DTexture9*& t : d->history) Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &t, nullptr);
-			for (IDirect3DTexture9*& t : d->chain) Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &t, nullptr);
+		if (d->width != w || d->height != h || !d->history[0] || d->channels != S.Channels) {
+			IDirect3DTexture9** all[] = { &d->history[0], &d->history[1], &d->chain[0], &d->chain[1], &d->historyB[0], &d->historyB[1],
+				&d->chainB[0], &d->chainB[1], &d->scratchB, &d->park };
+			for (IDirect3DTexture9** t : all) if (*t) { (*t)->Release(); *t = nullptr; }
+			const int count = rgb ? 9 : 4;
+			for (int i = 0; i < count; i++) Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, all[i], nullptr);
+			Device->CreateTexture(8, 8, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &d->park, nullptr);
 			d->width = w; d->height = h;
+			d->channels = S.Channels;
 			d->hasHistory = false;
-			if (!d->history[0] || !d->history[1] || !d->chain[0] || !d->chain[1]) return false;
+			for (int i = 0; i < count; i++) if (!*all[i]) return false;
+			if (!d->park) return false;
 		}
 
 		// The camera: this frame's basis (as RtSunShadows / SunShadows.glsl), last frame's view-projection and the camera's move since
@@ -129,42 +147,59 @@ namespace RtDenoise {
 		t.params[0] = (std::max)(S.MaxHistory, 1.0f); t.params[1] = S.DepthTolerance; t.params[2] = 1.0f / w; t.params[3] = 1.0f / h;
 
 		IDirect3DSurface9* current = nullptr;
-		Device->GetRenderTarget(0, &current);	// a pass may not draw into the device's current target: park it on a chain texture
-		IDirect3DTexture9* last = d->history[d->frame & 1];
-		IDirect3DTexture9* now = d->history[(d->frame + 1) & 1];
-		bool ok = true;
-		IDirect3DSurface9* nowSurface = Surface(now);
-		IDirect3DSurface9* park = Surface(d->chain[1]);
+		Device->GetRenderTarget(0, &current);	// a pass may not draw into the device's current target: park it on an 8 x 8 texture
+		IDirect3DSurface9* park = Surface(d->park);
 		Device->SetRenderTarget(0, park);
-		IUnknown* temporalImages[3] = { Noisy, last, depth };
-		ok = nowSurface && Draw(temporal, nowSurface, temporalImages, 3, &t, sizeof(t));
-
-		// a-trous: history -> chain[0] -> chain[1] -> ... ; the last one into Output
 		struct { float params[4], size[4]; UInt32 samplerIndex, pad[3]; } a = {};
 		a.params[1] = S.DepthSigma; a.params[2] = S.NormalPower; a.params[3] = S.ValueSigma;
 		a.size[0] = 1.0f / w; a.size[1] = 1.0f / h;
-		IDirect3DTexture9* source = now;
 		const int iterations = (std::max)(0, (std::min)(S.Iterations, 5));
-		if (ok && iterations == 0) {
-			IUnknown* images[2] = { now, normals };
-			a.params[0] = 0.0f;	// step 0: every tap is the centre (a copy of the temporal result)
-			ok = Draw(atrous, Output, images, 2, &a, sizeof(a));
+		const UInt32 last = d->frame & 1, now = (d->frame + 1) & 1;
+		bool ok = true;
+		if (!rgb) {
+			IDirect3DSurface9* nowSurface = Surface(d->history[now]);
+			IUnknown* temporalImages[3] = { Noisy, d->history[last], depth };
+			ok = nowSurface && Draw(temporal, nowSurface, temporalImages, 3, &t, sizeof(t));
+			if (nowSurface) nowSurface->Release();
+			// a-trous: history -> chain[0] -> chain[1] -> ... ; the last one into Output (no iterations: a copy, step 0)
+			IDirect3DTexture9* source = d->history[now];
+			for (int i = 0; ok && i < (std::max)(iterations, 1); i++) {
+				const bool lastPass = i == (std::max)(iterations, 1) - 1;
+				IDirect3DSurface9* target = lastPass ? nullptr : Surface(d->chain[i & 1]);
+				a.params[0] = iterations ? (float)(1 << i) : 0.0f;
+				IUnknown* images[2] = { source, normals };
+				ok = Draw(atrous, lastPass ? Output : target, images, 2, &a, sizeof(a));
+				if (target) target->Release();
+				source = d->chain[i & 1];
+			}
 		}
-		for (int i = 0; ok && i < iterations; i++) {
-			const bool lastPass = i == iterations - 1;
-			IDirect3DTexture9* target = d->chain[i & 1];
-			IDirect3DSurface9* targetSurface = lastPass ? nullptr : Surface(target);
-			if (!lastPass && targetSurface == park) Device->SetRenderTarget(0, nowSurface);	// never draw into the parked target
-			a.params[0] = (float)(1 << i);
-			IUnknown* images[2] = { source, normals };
-			ok = Draw(atrous, lastPass ? Output : targetSurface, images, 2, &a, sizeof(a));
-			if (targetSurface) targetSurface->Release();
-			source = target;
+		else {
+			IDirect3DSurface9* nowA = Surface(d->history[now]);
+			IDirect3DSurface9* nowB = Surface(d->historyB[now]);
+			IUnknown* temporalImages[4] = { Noisy, d->history[last], depth, d->historyB[last] };
+			ok = nowA && nowB && Draw(temporalRgb, nowA, temporalImages, 4, &t, sizeof(t), nowB);
+			if (nowA) nowA->Release();
+			if (nowB) nowB->Release();
+			IDirect3DTexture9* sourceA = d->history[now];
+			IDirect3DTexture9* sourceB = d->historyB[now];
+			IDirect3DSurface9* scratch = Surface(d->scratchB);
+			for (int i = 0; ok && i < (std::max)(iterations, 1); i++) {
+				const bool lastPass = i == (std::max)(iterations, 1) - 1;
+				IDirect3DSurface9* targetA = lastPass ? nullptr : Surface(d->chain[i & 1]);
+				IDirect3DSurface9* targetB = lastPass ? nullptr : Surface(d->chainB[i & 1]);
+				a.params[0] = iterations ? (float)(1 << i) : 0.0f;
+				IUnknown* images[3] = { sourceA, normals, sourceB };
+				ok = Draw(atrousRgb, lastPass ? Output : targetA, images, 3, &a, sizeof(a), lastPass ? scratch : targetB);
+				if (targetA) targetA->Release();
+				if (targetB) targetB->Release();
+				sourceA = d->chain[i & 1];
+				sourceB = d->chainB[i & 1];
+			}
+			if (scratch) scratch->Release();
 		}
 		Device->SetRenderTarget(0, current);
 		if (current) current->Release();
 		if (park) park->Release();
-		if (nowSurface) nowSurface->Release();
 
 		d->prevViewProj = TheRenderManager->ViewProjMatrix;
 		d->prevCamera = camera;

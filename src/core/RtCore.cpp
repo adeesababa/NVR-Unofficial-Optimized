@@ -138,7 +138,7 @@ namespace {
 		int indexStream = -1; UInt32 indexOffset = 0, indexFormat = 0;
 	};
 
-	struct PendingCopy { int image; IUnknown* target; };
+	struct PendingCopy { int image; IUnknown* target; UINT width, height; };	// 0, 0: the image's registered size
 
 	struct Core {
 		enum State { Idle, Starting, Running, Off };
@@ -149,6 +149,7 @@ namespace {
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
+		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
 		UInt32		partitionFate[5] = {};				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
@@ -203,6 +204,9 @@ namespace {
 		UInt32		atlasUsed = 0, atlasThisFrame = 0;
 		std::unordered_map<const void*, int> alphaSlots;		// texture -> slot (-1: unreadable)
 		IDirect3DTexture9* alphaUpload = nullptr;			// 64 x 64 R16F, dynamic: one slot's alpha on its way to the atlas
+		IDirect3DTexture9* albedoUpload = nullptr;			// 64 x 64 A8R8G8B8: one slot's colour on its way to the albedo atlas
+		bool		hitTextures = false;				// [Main.Main.RayTracing] HitTextures (read at each helper start)
+		int			albedoAtlasImage = -1;
 		PositionElement lastElement;						// Describe's: where the texcoords are
 		int			AlphaSlotOf(IDirect3DBaseTexture9* texture);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
@@ -239,13 +243,15 @@ namespace {
 		if (atlasThisFrame >= 8) return -2;
 		atlasThisFrame++;
 		const UInt32 S = NVR_RT_ALPHA_SLOT_SIZE;
-		static ID3D9NvrExtPipeline* pipeline = nullptr;
-		static bool tried = false;
-		if (!tried) {
-			tried = true;
+		static ID3D9NvrExtPipeline* pipelines[2] = {};	// [0] alpha only (RtAlphaToAtlas), [1] alpha + colour (RtTextureToAtlas)
+		static bool triedPipelines[2] = {};
+		const int which = albedoAtlasImage >= 0 ? 1 : 0;
+		ID3D9NvrExtPipeline*& pipeline = pipelines[which];
+		if (!triedPipelines[which]) {
+			triedPipelines[which] = true;
 			std::vector<char> spirv;
 			ID3D9NvrExt* ext = DxvkCompute::Extension();
-			if (ext && DxvkCompute::LoadSpirv("RtAlphaToAtlas", spirv)) {
+			if (ext && DxvkCompute::LoadSpirv(which ? "RtTextureToAtlas" : "RtAlphaToAtlas", spirv)) {
 				NVR_EXT_BINDING_DESC bindings[2] = {
 					{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
 					{ 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 4 },
@@ -259,40 +265,46 @@ namespace {
 				desc.UsesSamplerHeap = TRUE;
 				desc.SamplerHeapSet = 0;
 				desc.SamplerHeapBinding = 0;
-				desc.ColorTargetCount = 1;
+				desc.ColorTargetCount = which ? 2 : 1;
 				desc.Blend = NVR_EXT_BLEND_NONE;
 				desc.ColorWriteMask = 0xFu;
-				desc.pDebugName = "RtAlphaToAtlas";
+				desc.pDebugName = which ? "RtTextureToAtlas" : "RtAlphaToAtlas";
 				if (FAILED(ext->CreateGraphicsPipeline(&desc, &pipeline))) pipeline = nullptr;
 			}
 			if (!pipeline) Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters: the alpha pass could not be made (Compute\\RtAlphaToAtlas.spv; the DXVK log says why)");
 		}
 		int slot = -1;
 		if (!alphaUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &alphaUpload, nullptr);
+		if (which && !albedoUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &albedoUpload, nullptr);
 		ID3D9NvrExtSampler* sampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
 		IDirect3DSurface9* target = nullptr;
-		if (pipeline && sampler && alphaUpload && SUCCEEDED(alphaUpload->GetSurfaceLevel(0, &target))) {
+		IDirect3DSurface9* target2 = nullptr;
+		if (which && (!albedoUpload || FAILED(albedoUpload->GetSurfaceLevel(0, &target2)))) target2 = nullptr;
+		if (pipeline && sampler && alphaUpload && (!which || target2) && SUCCEEDED(alphaUpload->GetSurfaceLevel(0, &target))) {
 			NVR_EXT_RESOURCE_BINDING bindings[2] = {};
 			bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = texture;
 			bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = sampler;
 			const UInt32 push[4] = { 0, 0, 0, 0 };
 			NVR_EXT_DRAW_DESC draw = {};
 			draw.pPipeline = pipeline;
-			draw.TargetCount = 1;
+			draw.TargetCount = which ? 2 : 1;
 			draw.Targets[0].pResource = target;
+			draw.Targets[1].pResource = target2;
 			draw.BindingCount = 2;
 			draw.pBindings = bindings;
 			draw.pPushData = push;
 			draw.PushDataSize = sizeof(push);
 			const RECT all = { 0, 0, (LONG)S, (LONG)S };
 			const UInt32 at = atlasUsed;
-			if (SUCCEEDED(DxvkCompute::Extension()->Draw(&draw)) &&
-				SUCCEEDED(share->CopyToShared(images[atlasImage], (at % NVR_RT_ALPHA_ATLAS_SLOTS) * S, (at / NVR_RT_ALPHA_ATLAS_SLOTS) * S, alphaUpload, &all))) {
+			const UInt32 x = (at % NVR_RT_ALPHA_ATLAS_SLOTS) * S, y = (at / NVR_RT_ALPHA_ATLAS_SLOTS) * S;
+			if (SUCCEEDED(DxvkCompute::Extension()->Draw(&draw)) && SUCCEEDED(share->CopyToShared(images[atlasImage], x, y, alphaUpload, &all)) &&
+				(!which || SUCCEEDED(share->CopyToShared(images[albedoAtlasImage], x, y, albedoUpload, &all)))) {
 				slot = (int)at;
 				atlasUsed++;
 			}
 			target->Release();
 		}
+		if (target2) target2->Release();
 		alphaSlots.emplace(texture, slot);
 		return slot;
 	}
@@ -378,14 +390,23 @@ namespace {
 		imageDescs.push_back({ kArenaWidth, AlignImage(arenaMB * 1024u * 1024u / 4u / kArenaWidth), NVR_EXT_SHARED_R32F, nullptr });
 		imageSizes.push_back({ imageDescs.back().Width, imageDescs.back().Height });
 		alphaOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "AlphaTested") != 0;
+		hitTextures = TheSettingManager->GetSettingI("Main.Main.RayTracing", "HitTextures") != 0;
 		atlasImage = -1;
+		albedoAtlasImage = -1;
 		atlasUsed = 0;
 		alphaSlots.clear();
-		if (alphaOn) {
+		if (alphaOn || hitTextures) {	// the slots are shared: hit textures keep the alpha atlas too
 			atlasImage = (int)imageDescs.size();
 			imageNames.push_back("NVR RT alpha atlas");
 			const UINT side = NVR_RT_ALPHA_SLOT_SIZE * NVR_RT_ALPHA_ATLAS_SLOTS;
 			imageDescs.push_back({ side, side, NVR_EXT_SHARED_R16F, nullptr });
+			imageSizes.push_back({ side, side });
+		}
+		if (hitTextures) {
+			albedoAtlasImage = (int)imageDescs.size();
+			imageNames.push_back("NVR RT albedo atlas");
+			const UINT side = NVR_RT_ALPHA_SLOT_SIZE * NVR_RT_ALPHA_ATLAS_SLOTS;
+			imageDescs.push_back({ side, side, NVR_EXT_SHARED_RGBA8, nullptr });
 			imageSizes.push_back({ side, side });
 		}
 		inSetup = true;
@@ -540,6 +561,7 @@ namespace {
 		geometries.clear();
 		alphaSlots.clear();
 		if (alphaUpload) { alphaUpload->Release(); alphaUpload = nullptr; }
+		if (albedoUpload) { albedoUpload->Release(); albedoUpload = nullptr; }
 	}
 
 	void Core::Poll() {
@@ -737,21 +759,29 @@ namespace {
 			if (entry.refused) continue;
 			entry.lastSeen = sceneFrame;
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
+			// ActorUpdateInterval: a posed partition is re-posed only every Nth frame (staggered by id), the frames between keep the
+			// last pose (a frame or two late: unseen in shadows; rt-lamp: actors were most of the RT cost indoors, ~60 partitions a frame)
+			const bool pose = !entry.sent || actorInterval <= 1 || ((sceneFrame + entry.id) % actorInterval) == 0;
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
-			if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
-			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity || record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
-			if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
-			NvrRtGeometryOp& op = record->ops[record->opCount++];
-			op = NvrRtGeometryOp();
-			op.op = NVR_RT_OP_BUILD;
-			op.id = entry.id;
-			op.vertexCount = info.VertexCount;
-			op.triangleCount = info.TriangleCount;
-			op.arenaTexel = arenaUsed;
-			op.flags = NVR_RT_OP_FLAG_DYNAMIC;
-			arenaUsed += info.Texels;
-			entry.sent = true;
-			actorPartitions++;
+			if (pose && FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
+			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
+			if (pose) {
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
+				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
+				else {
+					NvrRtGeometryOp& op = record->ops[record->opCount++];
+					op = NvrRtGeometryOp();
+					op.op = NVR_RT_OP_BUILD;
+					op.id = entry.id;
+					op.vertexCount = info.VertexCount;
+					op.triangleCount = info.TriangleCount;
+					op.arenaTexel = arenaUsed;
+					op.flags = NVR_RT_OP_FLAG_DYNAMIC;
+					arenaUsed += info.Texels;
+					entry.sent = true;
+					actorPartitions++;
+				}
+			}
 
 			NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 			extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
@@ -817,6 +847,21 @@ namespace {
 			if (alphaSlot < 0) { skip[kAlpha]++; alphaFate[5]++; return; }
 			desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
 		}
+		// Hit textures ([Main.Main.RayTracing] HitTextures): opaque geometry with a diffuse texture keeps its texcoords and gets an atlas
+		// slot, so a ray's hit can read the texture's colour (RtHit.glsl). Without a slot this frame (upload budget) it waits a frame.
+		bool textured = false;
+		if (!alphaTested && hitTextures && lastElement.uvStream == lastElement.stream && shaderProperty->IsLightingProperty()) {
+			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
+			NiTexture* texture = textures ? *textures : nullptr;
+			if (texture && texture->rendererData && texture->rendererData->dTexture) {
+				alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
+				if (alphaSlot == -2) { waiting++; return; }
+				if (alphaSlot >= 0) {
+					textured = true;
+					desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
+				}
+			}
+		}
 		GeometryEntry& entry = geometries[key];
 		if (entry.refused) return;
 		entry.lastSeen = sceneFrame;
@@ -824,7 +869,8 @@ namespace {
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
 			if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; return; }
-			if (alphaTested && info.Texels != 3u * (info.VertexCount + info.TriangleCount) + 2u * info.VertexCount) {
+			if ((alphaTested || textured) && info.Texels != 3u * (info.VertexCount + info.TriangleCount) + 2u * info.VertexCount) {
+				hitTextures = false;
 				alphaOn = false;	// a fork without 1.8-rt-uv (patch 0029): no texcoords staged, so no alpha-tested casters this session
 				Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters off: this d3d9.dll does not stage texcoords (fork patch 0029, 1.8-rt-uv).");
 				return;
@@ -838,7 +884,7 @@ namespace {
 			op.vertexCount = info.VertexCount;
 			op.triangleCount = info.TriangleCount;
 			op.arenaTexel = arenaUsed;
-			op.flags = alphaTested ? (NVR_RT_OP_FLAG_TEXCOORDS | NVR_RT_OP_FLAG_ALPHA) : 0u;
+			op.flags = alphaTested ? (NVR_RT_OP_FLAG_TEXCOORDS | NVR_RT_OP_FLAG_ALPHA) : textured ? NVR_RT_OP_FLAG_TEXCOORDS : 0u;
 			arenaUsed += info.Texels;
 			entry.sent = true;
 			static int probes = 0;
@@ -867,6 +913,7 @@ namespace {
 		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
 		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u);
 		if (alphaTested) extra.flags |= NVR_RT_RECORD_ALPHA_TESTED | ((UInt32)alpha->alphaTestRef << 8) | ((UInt32)alphaSlot << 16);
+		else if (textured) extra.flags |= NVR_RT_RECORD_TEXTURED | ((UInt32)alphaSlot << 16);
 		extra.geometryId = entry.id;
 		extra.vertexOffset = extra.indexOffset = 0;	// the helper's
 		NvrRtInstance& instance = record->instances[record->instanceCount++];
@@ -952,6 +999,7 @@ namespace {
 		sceneFrame++;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
+		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
 		arenaUsed = 0;
 		waiting = 0;
 		atlasThisFrame = 0;
@@ -1048,7 +1096,13 @@ bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteM
 
 bool RtCore::CopyOut(int Image, IUnknown* Target) {
 	if (!TheCore.recording || Image <= 0 || Image >= (int)TheCore.images.size() || !Target) return false;
-	TheCore.copiesOut.push_back({ Image, Target });
+	TheCore.copiesOut.push_back({ Image, Target, 0, 0 });
+	return true;
+}
+
+bool RtCore::CopyOut(int Image, IUnknown* Target, UINT Width, UINT Height) {
+	if (!TheCore.recording || Image <= 0 || Image >= (int)TheCore.images.size() || !Target || !Width || !Height) return false;
+	TheCore.copiesOut.push_back({ Image, Target, (std::min)(Width, TheCore.imageSizes[Image].first), (std::min)(Height, TheCore.imageSizes[Image].second) });
 	return true;
 }
 
@@ -1122,7 +1176,8 @@ namespace {
 		c.share->SignalShared(c.inputsReady, n);
 		c.share->WaitShared(c.outputReady, n);
 		for (const PendingCopy& copy : c.copiesOut) {
-			const RECT used = { 0, 0, (LONG)c.imageSizes[copy.image].first, (LONG)c.imageSizes[copy.image].second };
+			const RECT used = { 0, 0, (LONG)(copy.width ? copy.width : c.imageSizes[copy.image].first),
+				(LONG)(copy.height ? copy.height : c.imageSizes[copy.image].second) };
 			c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], &used);
 		}
 		c.copiesOut.clear();
@@ -1191,5 +1246,6 @@ UInt32 RtCore::Geometries() { return (UInt32)TheCore.geometries.size(); }
 UInt32 RtCore::Waiting() { return TheCore.waiting; }
 UInt32 RtCore::Released() { return TheCore.released; }
 bool RtCore::AlphaTested() { return TheCore.state == Core::Running && TheCore.alphaOn && TheCore.atlasImage >= 0; }
-int RtCore::AlphaAtlasImage() { return TheCore.alphaOn ? TheCore.atlasImage : -1; }
+int RtCore::AlphaAtlasImage() { return TheCore.alphaOn || TheCore.hitTextures ? TheCore.atlasImage : -1; }	// shared slots
+int RtCore::AlbedoAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.albedoAtlasImage : -1; }
 bool RtCore::Actors() { return TheCore.state == Core::Running && TheCore.actorsOn && TheCore.rtSkin; }
