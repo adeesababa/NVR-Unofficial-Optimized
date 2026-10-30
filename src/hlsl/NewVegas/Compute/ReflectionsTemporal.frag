@@ -7,6 +7,7 @@ void main() {
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 uv = (vpos + 0.5) * LowTexel;
     vec4 current = textureLod(sampler2D(t_trace, POINT_S), uv, 0.0);
+    if (any(isnan(current)) || any(isinf(current))) current = vec4(0.0);   // (UNOFFICIAL 2026-10-30: no non-finite value into the history)
     float depth = readDepthLod(uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy));
 
     vec4 low = current, high = current;
@@ -14,6 +15,7 @@ void main() {
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             vec4 tap = textureLod(sampler2D(t_trace, POINT_S), uv + vec2(x, y) * LowTexel, 0.0);
+            if (any(isnan(tap)) || any(isinf(tap))) continue;   // (2026-10-30)
             low = min(low, tap); high = max(high, tap);
         }
     }
@@ -28,6 +30,7 @@ void main() {
     if (WeaponAt(uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy))) last = uv;
     float inside = float(all(greaterThan(last, vec2(0.0))) && all(lessThan(last, vec2(1.0))) && current.a + high.a > 0.0);
     vec4 history = textureLod(sampler2D(t_history, POINT_S), last, 0.0);
+    if (any(isnan(history)) || any(isinf(history))) history = current;   // (2026-10-30: a bad texel never survives)
     history = clamp(history, low, high);
     o_color = mix(current, history, HistoryWeight * inside);
 }

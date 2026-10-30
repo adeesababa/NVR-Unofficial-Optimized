@@ -61,6 +61,7 @@ void main() {
     }
     else share = vec3(saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a));
     vec3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
+    if (any(isnan(reflected)) || any(isinf(reflected)) || isnan(reflection.a)) { o_color = color; return; }   // (UNOFFICIAL 2026-10-30)
     // REFL_SPECOCC_ON: SpecularOcclusion.
     if (SpecOccOn && cb.data4.w > 0.0) {
         float surfaceLight = luma(linearize(color.rgb));

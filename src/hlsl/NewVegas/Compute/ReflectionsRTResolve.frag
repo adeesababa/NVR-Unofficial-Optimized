@@ -156,4 +156,6 @@ void main() {
     float brightest = max(colour.r, max(colour.g, colour.b));
     colour *= min(1.0, mix(BrightestReflection, 3.0, saturate(roughness * 2.0)) / max(brightest, 1.0e-4));
     o_color = vec4(Tame(colour) * confidence, confidence);
+    // UNOFFICIAL 2026-10-30: never hand a non-finite value on (the temporal history would keep it: the weapon's history is screen-locked).
+    if (any(isnan(o_color)) || any(isinf(o_color))) o_color = vec4(0.0);
 }
