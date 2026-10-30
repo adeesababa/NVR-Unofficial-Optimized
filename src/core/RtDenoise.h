@@ -3,7 +3,7 @@
 // UNOFFICIAL 2026-10-29 (NVR DXVK) the shared RT denoiser: for one-sample-a-pixel ray traced signals (soft sun shadows, AO, sky,
 // lamp shadows, reflection masks). SVGF / ReBLUR-style, on the game's GPU with NVR DXVK passes: a temporal pass (the signal blended
 // with last frame's history, reprojected through the depth and last frame's camera; disocclusions restart) and 3 edge-stopping
-// a-trous passes (steps 1, 2, 4; depth, view normal and variance-guided value weights). One channel (.r) for now.
+// a-trous passes (steps 1, 2, 4; depth, view normal and variance-guided value weights). One channel (.r) or RGB (Settings.Channels).
 // docs\next\FORK-RT-SUN.md "Denoiser". Use:
 //   static RtDenoise::Denoiser* d = RtDenoise::Create("my effect");
 //   RtDenoise::Run(d, Device, noisyTexture, outputSurface, settings);   // once a frame, after the noisy signal is there
@@ -19,6 +19,7 @@ namespace RtDenoise {
 		float	NormalPower = 64.0f;
 		float	ValueSigma = 4.0f;
 		bool	Reset = false;			// drop the history this frame
+		int		Channels = 1;			// 1: Noisy .r -> Output .r; 3: Noisy .rgb -> Output .rgb (RGBA16F output; GI / sky colour)
 		int		Downscale = 1;			// 1 full screen, 2 half (Noisy and Output must then be w/2 x h/2; ~4x cheaper; the caller upsamples)
 	};
 	struct Denoiser;
