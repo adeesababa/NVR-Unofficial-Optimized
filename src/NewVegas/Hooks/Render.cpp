@@ -2985,14 +2985,16 @@ namespace LampCountStats {
 	// (named by the first pixel shader seen drawing it), its objects a frame, and against each object's own active lamps (its lighting
 	// property's list +0x60, filtered as GetNumberOfActiveNonShadowLights, as ManyLamps reads it) the lamps none of its passes this frame
 	// carried: objects short of lamps and the lamps left out.
-	struct Obj { UInt8 type; int own; std::vector<const void*> seen; };
+	struct Obj { UInt8 type; std::vector<const void*> own, seen; };	// (own: listed when first drawn; the geometry is not read again)
 	struct Cap { unsigned long long objects = 0, draws = 0, own = 0, short_ = 0, leftOut = 0; char shader[16] = ""; };
 	static Cap Caps[256];
-	static std::unordered_map<const NiGeometry*, Obj> Objects;
+	static std::unordered_map<NiGeometry*, Obj> Objects;
 	static unsigned CapFrames = 0;
 	static UInt32 CapFrame = 0;
-	static int OwnLamps(const NiGeometry* geometry, std::vector<const void*>* list) {
-		const UInt8* property = (const UInt8*)geometry->propertyState.m_spShadeProperty;
+	static int OwnLamps(NiGeometry* geometry, std::vector<const void*>* list) {
+		// only a lighting property has the light list at +0x60 (run 20261030-193412-slotA crashed reading it from another kind)
+		BSShaderProperty* shade = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
+		const UInt8* property = shade && shade->IsLightingProperty() ? (const UInt8*)shade : nullptr;
 		int n = 0;
 		for (const UInt32* node = property ? *(const UInt32* const*)(property + 0x60) : nullptr; node; node = (const UInt32*)node[0]) {
 			const UInt8* light = (const UInt8*)node[2];
@@ -3008,11 +3010,9 @@ namespace LampCountStats {
 		for (auto& e : Objects) {
 			Cap& cap = Caps[e.second.type];
 			cap.objects++;
-			cap.own += e.second.own;
-			std::vector<const void*> own;
-			OwnLamps(e.first, &own);
+			cap.own += e.second.own.size();
 			int missing = 0;
-			for (const void* l : own) if (std::find(e.second.seen.begin(), e.second.seen.end(), l) == e.second.seen.end()) missing++;
+			for (const void* l : e.second.own) if (std::find(e.second.seen.begin(), e.second.seen.end(), l) == e.second.seen.end()) missing++;
 			if (missing) { cap.short_++; cap.leftOut += missing; }
 		}
 		Objects.clear();
@@ -3035,7 +3035,7 @@ namespace LampCountStats {
 		cap.draws++;
 		if (!cap.shader[0] && PointShadowForward::LastPixelShaderName) strncpy_s(cap.shader, PointShadowForward::LastPixelShaderName, _TRUNCATE);
 		auto found = Objects.find(pass->geometry);
-		if (found == Objects.end()) found = Objects.emplace(pass->geometry, Obj{ type, OwnLamps(pass->geometry, nullptr), {} }).first;
+		if (found == Objects.end()) { found = Objects.emplace(pass->geometry, Obj{ type, {}, {} }).first; OwnLamps(pass->geometry, &found->second.own); }
 		for (int k = 0; pass->lights && k < pass->numLights; k++) if (pass->lights[k]) found->second.seen.push_back(pass->lights[k]);
 	}
 	static void Count(const PointShadowForward::RenderPassView* pass) {
