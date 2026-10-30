@@ -273,3 +273,90 @@ results) or not a same-picture cut (the sky), so step 18's rule (cut while each 
 
 Pictures: every variant vs base is within base vs base (>16/255: 0.01-0.04 % of pixels). Run 20261030-025208-slotB (cut-2);
 cut-1 (-023913-slotB) is void: another session's game overlapped it until 02:40 and every variant slowed by 2x for that window.
+
+## Round 8
+
+**Step 19: SkipRedundantConstants confirmation. Default stays true (unchanged).** Lists rootplan-skip-luxe / -v21 (6 ABBA rounds,
+600 frames, AI off) on claude/rootplan-round3 1f828641 (DLL 5A8F5401). No attempt ran alone: all 7 overlapped an RT session's game
+(the RT sessions keep the machine busy), so a clean run is not possible right now. Frame interval ms, base / noskip:
+
+| run | scene | base | noskip | diff | overlap |
+|---|---|---|---|---|---|
+| 20261030-034548-slotA | Ultra-Luxe | 8.86 | 9.25 | +0.39 | rtao6 (heavy) |
+| 20261030-035202-slotB | Ultra-Luxe | 6.22 | 6.29 | +0.07 | rtrefl21 |
+| 20261030-035856-slotB | Ultra-Luxe | 6.44 | 6.39 | -0.05 | rtlamp |
+| 20261030-040618-slotB | Ultra-Luxe | 10.27 | 11.57 | +1.30 | rtgi20 + rtm-r7 (heavy) |
+| 20261030-041148-slotA | Vault 21 | 6.89 | 6.83 | -0.06 | rtm-r7-igpu-ext |
+| 20261030-042853-slotA | Vault 21 | 9.52 | 8.71 | -0.81 | rtgi20 (heavy) |
+| 20261030-045807-slotB | Vault 21 | 6.92 | 6.86 | -0.06 | rtsun-kill |
+
+The quiet runs give -0.05..+0.07 ms in Ultra-Luxe and -0.06 ms in Vault 21: under the 0.1 ms bar and not the same sign in every
+scene, so round 7's -0.08..-0.15 was the other games. Freeside was not run (the rule already fails in Ultra-Luxe).
+
+**ObjectMotion on by default** (eee49d29, toml only, DLL unchanged 5A8F5401): it is a fix (moving people and objects keep a sharp TAA /
+FSR history), its read-back check passed (run 20261029-174247-slotC) and it costs 0.03 ms GPU.
+
+**Step 20: road pop, second try. No pop spot found; FarHysteresis stays 0.** Lists rootplan-road-2 / -3 (eee49d29): at each place the
+player steps 384 units back and forth every 160 frames, 10 steps with FarHysteresis 0 and 10 with 256. The land log's mean
+"pieces flipped since the frame before" per block:
+
+| place | far passes | switches | flips/frame h0 | flips/frame h256 |
+|---|---|---|---|---|
+| Highway 95 north of Goodsprings (setpos -67850 / -67466, 2450) | 16 | 8 | 0.000 | 0.000 |
+| The Strip approach (setpos 2493 / 2877, 90239) | 0 | 0 | 0.000 | 0.000 |
+| Primm (moveto 000CDF46 +0 / +384), run 2 | 9-13 | 9-10 | 0.000 | 0.000 |
+| Primm, run 3 (h256 first) | 29-30 | 13-14 | 0.010 | 0.000 |
+| Novac (moveto 0009289B +2048 / +2432) | 26 | 14 | 0.002 | 0.000 |
+
+Runs 20261030-072313-slotC (road-2, clean) and -075309-slotC (road-3; overlap does not change a count). At most one piece flips
+every 100-500 frames while walking, and FarHysteresis 256 takes that to 0. On the Strip approach no far land is drawn. A pop players
+would see is not there at these spots, so the hysteresis default is left alone (no picture A/B was needed). If a tester names a
+road where land pops, run the same list there.
+
+## Round 9
+
+**Step 21: the dedicated full-screen interior shadow pass.** effects/ShadowsInteriors.cpp (D3D9 technique DedicatedInteriorShadows,
+Vulkan ShadowsInteriorsBlur/Apply.frag), called from ShaderManager.cpp (interiorApply, about line 2024).
+
+When it runs:
+- **Forward lamp shadows on** (`[Shaders.ShadowsInteriors.Forward] Enabled`, default, and PBR drawing this frame): the pass is only
+  `KeepDarkening` (default true): the lamp mask (PointShadows.fx) is drawn with its cube-map lookups switched off
+  (TESR_ShadowFade.z = 0) and applied unblurred (no DarkeningBlur) in one pass, darkening (Darkness 0.65) what no lamp in the mask's
+  list reaches. It is not a shadow. The mask's list = 12 shadow lamps + 12 tracked + the extra list (the 40 nearest lamps).
+  With KeepDarkening off, neither the mask nor the pass is drawn (the buffer is cleared once).
+- **Forward off, or PBR off**: the old full path: PointShadows.fx with the live cube slots 0-11, both blurs on the two G16R16 targets,
+  then the apply. That path reads the same live cube maps, so TwoSidedCasters reaches it (it changes how the cubes are drawn); the
+  ShadowPool does not (pool cubes are published to the forward shaders only), and ShadowContrast does not (forward shaders only).
+
+So with forward on there is nothing of the rework's (pool lamps, two-sided, contrast) to bring to it: those are about lamp shadows,
+and this pass draws none. What is left is its cost and its look.
+
+Run 20261030-084344-slotB (list rootplan-int-1, user toml, 600 frames, GPU profile, 2 rounds forward + reversed; overlapped rtlamp,
+so the GPU timer per pass is the number to read). GPU ms per pass (GTX 1070, FSR 3.1 at 0.67), mean of the 2 rounds:
+
+| room | base mask + apply | KeepDarkening off | InteriorShadowFold | MaskHalfRes |
+|---|---|---|---|---|
+| Lucky 38 | 0.071 + 0.022 = 0.093 | 0 | 0.071 + 0 (fog +0.019) = 0.090 | 0.044 + 0.017 = 0.061 |
+| Vault 21 | 0.068 + 0.023 = 0.091 | 0 | 0.070 + 0 (fog +0.020) = 0.090 | 0.048 + 0.018 = 0.066 |
+| saloon | 0.075 + 0.021 = 0.096 | 0 | 0.075 + 0 (fog +0.012) = 0.087 | 0.047 + 0.019 = 0.066 |
+| bar | 0.084 + 0.028 = 0.112 | 0 | 0.065 + 0 (fog +0.015) = 0.080 | 0.053 + 0.024 = 0.077 |
+
+Pictures (960x540; base vs base is 9-10 % of pixels > 2, 0.00-0.01 % > 16):
+
+| room | KeepDarkening off: > 16 / mean | Fold: > 16 / mean | MaskHalfRes: > 16 / mean |
+|---|---|---|---|
+| Lucky 38 | 0.01 % / +0.08 | 0.01 % / +0.08 | 0.00 % / +0.01 |
+| Vault 21 | 0.33 % / +0.42 | 0.01 % / +0.22 | 0.00 % / +0.04 |
+| saloon | 0.00 % / +0.16 | 0.00 % / +0.17 | 0.00 % / +0.03 |
+| bar | 0.00 % / +0.10 | 0.00 % / +0.09 | 0.00 % / +0.01 |
+
+What the darkening still adds with forward on: almost nothing. Its only visible part (Vault 21, 1781 pixels, 101 -> 119 of 255) is
+not unlit corners but distant rooms lit by their OWN lamps (the window room upper left, the far doorways: rootplan\round9\
+v21-dark-diff.png): those lamps are not among the mask's 40 nearest, so the pass darkens light that is really there. Everywhere else
+it is within base vs base. Cost 0.09-0.11 ms GPU per room (the old "about 0.8 ms" in the toml text predates LampMaskScissor and
+MaskSkipFar). MaskHalfRes saves ~0.03 ms with the same picture; Fold saves 0.01-0.03 ms but still differs next to the void.
+
+**Proposal: retire the darkening with forward on: KeepDarkening default false** (the switch already exists; no new code). It
+removes 0.09-0.11 ms GPU and one full-screen pass, and its only visible effect is a wrong one (far lamp-lit rooms darkened). Not
+flipped here: it changes the image (Vault 21), so it is the user's call. The full old path stays for forward off / PBR off (it is the
+only lamp shadow there). If the darkening is kept, MaskHalfRes on is the free part (-0.03 ms, same picture).
