@@ -9,13 +9,14 @@
 //     LinearScene has encoded it back (NoteOpaque);
 //   - RenderWorldSceneGraphHook, when the game's world scene ends and its depth is resolved into TESR_DepthBufferWorld (no NVR effect
 //     yet; read before that resolve, the depth texture gave 0 everywhere, run 20261030-190111-slotA), copies the colour again and draws mask = largest
-//     channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build), and 0 where the world's
-//     depth there is farther than ReactiveMaxDistance: the sky and the distant land are drawn after the main list too (run
-//     20261030-182413-slotA marked them), and no alpha draw writes depth. (The blended stage alone, 0xB650C0, holds almost none of it:
+//     channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build);
+//   - the FSR prep shaders keep it only nearer than ReactiveMaxDistance (their own depth): the sky and the distant land are drawn after
+//     the main list too (run 20261030-182413-slotA marked them), and no alpha draw writes depth. (A D3D9 pass reads the INTZ world depth
+//     as 0 under NVR DXVK, run 20261030-190349-slotA; CombineDepth reads it through the extension too.) (The blended stage alone, 0xB650C0, holds almost none of it:
 //     the windows' glow cards and the neon are drawn outside it, run 20261030-183310-slotA, 0.00 %.)
 //   - FSRPrep.comp / FSRUpPrep.comp (FSR 2, FSR 3.1, RenderScale v1 and v2) take max(weapon, mask) as the reactive value.
 // Off: nothing is copied or drawn and the readers keep the weapon-only mask, as before.
-// ReactiveDebug (diagnostic): the mask drawn over the world. With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
+// ReactiveDebug (diagnostic): the mask drawn over the world (before the distance cut). With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
 
 #include "GpuProfiler.h"
 
@@ -38,6 +39,7 @@ namespace ReactiveMask {
 	inline UInt32 StatFrames = 0, StatMade = 0, StatCounted = 0;
 	inline double StatShare = 0.0;
 
+	inline float MaxDistance() { return (std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMaxDistance")); }
 	inline float Scale() { return (std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMask")); }
 	inline UInt32 FrameNumber() { return TheFrameRateManager ? TheFrameRateManager->FrameNumber : 0; }
 	// This frame's mask is made (the readers' switch).
@@ -68,21 +70,15 @@ namespace ReactiveMask {
 
 	inline bool Compile(IDirect3DDevice9* d) {
 		if (PS) return true;
-		// s0 the opaque copy, s1 the final copy, s2 the world's depth (INTZ, device depth); c0 x ReactiveMask, y ReactiveMax,
-		// z ReactiveThreshold; c1 x near, y far, z ReactiveMaxDistance.
+		// s0 the opaque copy, s1 the final copy; c0 x ReactiveMask, y ReactiveMax, z ReactiveThreshold.
 		static const char* kPS =
-			"sampler2D O : register(s0); sampler2D C : register(s1); sampler2D Z : register(s2); float4 K : register(c0); float4 N : register(c1);"
+			"sampler2D O : register(s0); sampler2D C : register(s1); float4 K : register(c0);"
 			"float reactive(float2 uv) {"
-			"  float d = tex2D(Z, uv).r;"
-			"  float z = N.x / max(1.0f - d * (N.y - N.x) / N.y, 1e-6f);"
-			"  if (z > N.z) return 0.0f;"
 			"  float3 o = max(tex2D(O, uv).rgb, 0.0f); float3 c = max(tex2D(C, uv).rgb, 0.0f);"
 			"  float3 e = abs(c / (1.0f + c) - o / (1.0f + o));"
 			"  float r = max(max(e.r, e.g), e.b) * K.x;"
 			"  return r < K.z ? 0.0f : min(r, K.y); }"
-			"float4 main(float2 uv : TEXCOORD0) : COLOR0 { float r = reactive(uv);"
-			"  if (K.w > 1.5f) { float d = tex2D(Z, uv).r; r = K.w > 2.5f ? d : saturate(N.x / max(1.0f - d * (N.y - N.x) / N.y, 1e-6f) / 4096.0f); }"
-			"  return float4(r, r, r, 1.0f); }"
+			"float4 main(float2 uv : TEXCOORD0) : COLOR0 { float r = reactive(uv); return float4(r, r, r, 1.0f); }"
 			"float4 count(float2 uv : TEXCOORD0) : COLOR0 { clip(reactive(uv) - 0.1f); return 0.0f; }";
 		auto build = [&](const char* entry, IDirect3DPixelShader9*& out) {
 			ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
@@ -108,7 +104,7 @@ namespace ReactiveMask {
 
 	// GrassFirst::MainListHook, after the game's main list (and LinearScene's re-encode), world context only. True = copied.
 	inline bool NoteOpaque(IDirect3DDevice9* d) {
-		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber() || !TheTextureManager->DepthTexture) return false;
+		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber()) return false;
 		D3DSURFACE_DESC t = {};
 		IDirect3DSurface9* rt0 = MainTarget(d, t);
 		if (!rt0) return false;
@@ -155,13 +151,9 @@ namespace ReactiveMask {
 		d->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
 		d->SetTexture(0, Opaque);
 		d->SetTexture(1, Final);
-		d->SetTexture(2, TheTextureManager->DepthTexture);	// (the depth surface is unbound above)
 		const float k[4] = { scale, std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMax"), 0.0f, 1.0f),
-			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveThreshold")), (float)TheSettingManager->GetSettingI("Shaders.TAA.FSR", "ReactiveDebug") };
-		const float n[4] = { TheRenderManager->CameraData.x, TheRenderManager->CameraData.y,
-			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMaxDistance")), 0.0f };
+			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveThreshold")), 0.0f };
 		d->SetPixelShaderConstantF(0, k, 1);
-		d->SetPixelShaderConstantF(1, n, 1);
 		struct V { float x, y, z, w, u, v; };
 		const float w = (float)Width, h = (float)Height;
 		const V quad[4] = { { -0.5f, -0.5f, 0, 1, 0, 0 }, { w - 0.5f, -0.5f, 0, 1, 1, 0 }, { -0.5f, h - 0.5f, 0, 1, 0, 1 }, { w - 0.5f, h - 0.5f, 0, 1, 1, 1 } };
