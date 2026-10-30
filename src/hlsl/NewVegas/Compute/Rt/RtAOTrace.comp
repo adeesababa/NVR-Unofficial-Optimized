@@ -197,14 +197,17 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
 }
 
 void main() {
-    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
     // (2026-10-29) Interleave: only every 2nd (checkerboard) or every 4th (one texel of each 2 x 2, in turn) texel is traced a frame;
-    // the others keep the result they last had (the shared images persist) and AmbientLight's history blends them. Cost / 2 or / 4.
+    // the others keep the result they last had (the shared images persist) and AmbientLight's history blends them. The dispatch is
+    // that much smaller and each thread maps to a traced texel (v1 let the skipped threads exit inside full groups: rt-gi-5 measured
+    // Interleave 2 at only -17 %, the groups ran as long as their slowest traced texel).
+    ivec2 thread = ivec2(gl_GlobalInvocationID.xy);
     int interleave = int(cb.gi2.w + 0.5);
     int turn = int(cb.origin.w + 0.5);
-    if (interleave == 2 && ((texel.x + texel.y + turn) & 1) != 0) return;
-    if (interleave >= 4 && ((texel.x & 1) + 2 * (texel.y & 1)) != (turn & 3)) return;
+    ivec2 texel = interleave >= 4 ? ivec2(2 * thread.x + (turn & 1), 2 * thread.y + ((turn >> 1) & 1))
+                : interleave == 2 ? ivec2(2 * thread.x + ((thread.y + turn) & 1), thread.y)
+                : thread;
+    if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
     vec4 input_ = imageLoad(inputImage, texel);
     float viewZ = input_.x;
     if (!(viewZ > 0.0)) {

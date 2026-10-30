@@ -580,7 +580,8 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
 	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
