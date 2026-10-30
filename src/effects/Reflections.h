@@ -55,6 +55,7 @@ public:
 		float	RtRoughShare;		// 2026-10-29: above this roughness, 1 ray per 2x2 pixels a frame (0 = every pixel)
 		float	RtContactSharpness;	// 2026-10-29: the blur radius share at contact (1 = off: the blur as before)
 		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
+		float	RtGlowBrightness;	// 2026-10-29: glowing hits (the core's emissive flag) add their colour x this as light
 	};
 	SettingsStruct	Settings;
 

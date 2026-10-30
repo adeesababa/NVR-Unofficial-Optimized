@@ -78,7 +78,10 @@ void main() {
                 rtGuessShare = missing - rtCubeShare;
                 vec3 hitNormal = (hitFlags & 4u) != 0u ? OctDecode(hitData.zw) : -worldR;
                 int keyLamp = int(hitFlags >> 4u) - 1;   // -1: none (outdoors by day shade.a is the sun's)
-                sum += env.rgb * rtCubeShare + RtShadeHit(hitW, hitNormal, shade.rgb, shade.a, keyLamp) * rtGuessShare;
+                vec3 shaded = RtShadeHit(hitW, hitNormal, shade.rgb, shade.a, keyLamp);
+                // 2026-10-29: a glowing draw (the core's record flag: emissive material) gives its own light too (neon, lit glass).
+                if ((hitFlags & 8u) != 0u) shaded += shade.rgb * rtc.rt3.w;
+                sum += env.rgb * rtCubeShare + shaded * rtGuessShare;
             }
             confidence += missing;
         }
