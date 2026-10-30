@@ -181,6 +181,14 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 02:10 people in the RT scene (rtrefl-8 with [Main.Main.RayTracing] Actors on; 33f84313 = rt-sun-2 0b138786, DLL F9E43B13)
+- lucky22 20261030-015913-slotA (fork-0033b, extra-p3; AlphaTested + HitTextures + Actors): no regression: textures vs average
+  8.29 % px alone (8.49 % without actors), repeats 0.01 %; 1810 skinned partitions posed in the first 60 exchanges.
+- People in reflections are NOT shown by this spot (no NPC where a reflected ray lands); a spot with a person behind the camera
+  over a shiny floor is still to find.
+- Cost (across launches, so rough): "Reflections RT" 14.3-16.1 ms vs 10.6-10.8 without actors (the exchange waits for the
+  helper); helper passes 10.35 vs 9.47 ms, builds 0.89 ms (ActorUpdateInterval 2).
+
 ### 2026-10-30 01:55 glow at hits (rtrefl-9; f7b1b776 = rt-sun-2 35f88f09 merged, DLL 1C6828D4; fork-0033b, helper extra-p3)
 The core now sets NVR_RT_RECORD_GLOW on draws with a glow map (neon, lit signs and windows, lamp globes); a glowing hit the screen
 cannot show adds its colour x `[Shaders.Reflections.RT] GlowBrightness` (3) to its shading. First real check of the core's flag.
