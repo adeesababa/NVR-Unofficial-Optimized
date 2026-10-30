@@ -228,3 +228,16 @@ nothing here is pushed, released or installed unless the user says so.
   (round 10's 10.8 s ran while rtlamp slot runs used the machine), 15 shaders, no errors, no crash.
 - DLL CRC32 92341FB0, NvrRtHelper B1ACA97E (protocol 4, source unchanged), fork-0033c D58B4425. Package
   `H:\_NVR-pkgt-test-e4e76fdd\` (carries VolumetricFog.fx.hlsl, VolumetricFog.glsl + the 44 fog .spv, FSRPrep/FSRUpPrep.spv).
+
+## Round 12 (2026-10-30 20:00, 92a85dab)
+- Merged on round 11 (aa854b4a): claude/rt-leaves 144df98c (rt-ao-sky: [Main.Main.RayTracing] LeafCards 0 = off, 2 = two crossed
+  upright cards a leaf, 3 = plus a level card; SpeedTree leaves in the traced scene, one BLAS per tree model, alpha-tested, mask
+  0x10; needs AlphaTested; live; LeafCardsOpaque false debug; with LeafCards on a tree ref's root is not fade-tested) and
+  claude/motion-ring-fix cc568c00 (replaces 888133d1: final ReactiveMask built after NVR's world depth resolve, ReactiveMaxDistance
+  12000 in FSRPrep / FSRUpPrep, round 11b results; ReactiveMask stays 0 = off).
+- Conflicts: none. ReactiveMask.h came back LF: CRLF restored (92a85dab).
+- Check (one iGPU run, 20261030-194922-slotC, rtm-igpu-ext5 Goodsprings): verdict PASS, helper ready in 0.47 s (protocol 4,
+  20 images, 10 shaders), each RT toggle changes the picture vs off (sun 2-6 %, AO+GI 17 %, reflections 9 %, all on 20 %), no
+  errors, no crash. LeafCards stays off in this list (rt-ao-sky's own bench covered it).
+- DLL CRC32 7B09B501, NvrRtHelper C8D088CE (protocol 4, source unchanged), fork-0033c D58B4425. Package
+  `H:\_NVR-pkgt-test-92a85dab\`.
