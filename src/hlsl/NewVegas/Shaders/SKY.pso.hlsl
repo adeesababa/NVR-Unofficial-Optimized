@@ -16,7 +16,10 @@ float4 TESR_SunsetColor: register(c14); // sunsetColor.w is sky strength multipl
 float4 TESR_HDRBloomData: register(c15);
 float4 TESR_SunDiskColor: register(c16);
 float4 TESR_SkyTint: register(c19);     // UNOFFICIAL 2026-10-25 rgb: [Shaders.Sky.Main] TintDay / TintNight for this hour (white = no change)
-float4 TESR_SkyTintHorizon: register(c20);  // UNOFFICIAL 2026-10-26 rgb: TintHorizonDay / TintHorizonNight for this hour (white = no change)
+// UNOFFICIAL 2026-10-29: c32, not c20. c20 is the sky object id the SkyShader hook (Hooks/Shaders.cpp) writes for SKYTEX.pso on every sky
+// draw, after NVR's constants are set: here it overwrote the horizon tint with (2, the sun light's red, green), so the horizon came out
+// red x 2 (a pink band, red at dusk, in the sky and its water reflection) whatever TintHorizonDay / Night or ColorLook said.
+float4 TESR_SkyTintHorizon: register(c32);  // UNOFFICIAL 2026-10-26 rgb: TintHorizonDay / TintHorizonNight for this hour (white = no change)
 float4 TESR_SkyLook: register(c21);     // UNOFFICIAL 2026-10-26 x: Saturation for this hour (1 = no change), y: TintGradientHeight
 // UNOFFICIAL 2026-10-26: for the true view direction (Includes/Sky.hlsl SkyViewDirection)
 float4 TESR_ReciprocalResolution: register(c22);
