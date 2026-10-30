@@ -251,6 +251,9 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   which writes a sequence texel after the conversions; NVR passes it (`arenaTexels` bit 31) and the helper's arena guard
   (`tools/nvr-rt-helper/RtArenaGuard.comp`, embedded) clamps out-of-range indices before every build and builds stale geometry
   empty, logged once. a5e04304, fork-0033c (D58B4425), helper 629543AD; rtsun-28-c PASS 20261030-062315-slotC.
+  rtsun-28-b (20261030-063324-slotC, the OLD fork-0033b + this helper): PASS, NVR logged the expected "no arena sequence
+  check" line, the helper's guard was on and never met an out-of-range index in the whole run (cell changes included): on the AMD
+  iGPU the wrong order never fed indices past a geometry's vertex count (timing), which is why only the RTX card faulted.
 
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
