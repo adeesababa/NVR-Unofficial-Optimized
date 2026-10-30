@@ -41,6 +41,8 @@ namespace RtAmbient {
 		int		DenoiseKernel = 3;		// (2026-10-30) RtDenoise's a-trous kernel for both denoisers: 3 (9 taps) or 5 (25 taps)
 		int		GIInterleave = 1;		// 1, 2 or 4 (2026-10-29): the GI rays in every / every 2nd / every 4th 8 x 8 tile a frame			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
+		int		GIReuse = 8;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
+										// texel, at most this many frames of samples behind it; 0 = the bounce inside the AO pass as before
 	};
 	inline Settings Current;
 
@@ -64,6 +66,7 @@ namespace RtAmbient {
 		{ const int i = TheSettingManager->GetSettingI(s, "GIInterleave"); Current.GIInterleave = i >= 4 ? 4 : i >= 2 ? 2 : 1; }
 		{ const int i = TheSettingManager->GetSettingI(s, "AOAlpha"); Current.AOAlpha = i <= 0 ? 0 : i >= 2 ? 2 : 1; }
 		Current.DenoiseKernel = TheSettingManager->GetSettingI(s, "DenoiseKernel") >= 5 ? 5 : 3;
+		Current.GIReuse = std::clamp(TheSettingManager->GetSettingI(s, "GIReuse"), 0, 32);
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -86,6 +89,24 @@ namespace RtAmbient {
 		D3DXVECTOR4	gi3;			// x GIInterleave, y AOAlpha
 	};
 	static_assert(sizeof(TraceConstants) <= 512, "RtCore: 512 bytes of constants a pass");
+
+	// (2026-10-30) RtGITrace.spv's uniform block (RtAOTrace.comp built with RT_GI_PASS), std140: the GI fields of TraceConstants plus last
+	// frame's view for the reservoirs' reprojection.
+	struct GIConstants {
+		D3DXMATRIX	viewToWorld;
+		D3DXMATRIX	prevViewToWorld;	// last frame's viewToWorld
+		D3DXVECTOR4	projection;
+		D3DXVECTOR4	origin;
+		D3DXVECTOR4	gi;
+		D3DXVECTOR4	sunDir;
+		D3DXVECTOR4	sunColor;
+		D3DXVECTOR4	ambient;
+		D3DXVECTOR4	lampPos[GILampsMax];
+		D3DXVECTOR4	lampColor[GILampsMax];
+		D3DXVECTOR4	gi2;			// x GIOffscreen, y depth tolerance, z GIClamp, w GIInterleave
+		D3DXVECTOR4	reuse;			// xyz this frame's camera minus last frame's, w the M cap (GIReuse; 0 = no history this frame)
+	};
+	static_assert(sizeof(GIConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
 	// The RT core (RtCore.h) runs: the helper is ready on a GPU with ray tracing. Off = NVR's own passes.
 	inline bool CoreReady() { return RtCore::Running(); }

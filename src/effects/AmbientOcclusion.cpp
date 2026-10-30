@@ -383,6 +383,8 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 // (the callers keep NVR's own passes).
 namespace {
 	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtImageAlbedoStandIn = -1, RtShader = -1;
+	int RtGIShader = -1, RtImageReservoir[2][2] = { { -1, -1 }, { -1, -1 } };	// (2026-10-30) GIReuse: RtGITrace and its two reservoir pairs (A, B)
+	bool RtGIHistory = false;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -402,6 +404,12 @@ namespace {
 		if (RtCore::AlphaAtlasImage() < 0) RtImageAlphaStandIn = RtCore::AddImage("NVR RT ao alpha stand-in", 256, 256, NVR_EXT_SHARED_R16F);
 		// (2026-10-29) the same for the albedo atlas (binding 7, [Main.Main.RayTracing] HitTextures; RtHit.glsl falls back to the averages)
 		if (RtCore::AlbedoAtlasImage() < 0) RtImageAlbedoStandIn = RtCore::AddImage("NVR RT ao albedo stand-in", 256, 256, NVR_EXT_SHARED_RGBA8);
+		// (2026-10-30) GIReuse's reservoirs: two pairs, last frame's and this frame's, swapped every frame (RtAOTrace.comp RT_GI_PASS).
+		for (int set = 0; set < 2; set++) {
+			RtImageReservoir[set][0] = RtCore::AddImage(set ? "NVR RT gi reservoir A1" : "NVR RT gi reservoir A0", w, h, NVR_EXT_SHARED_RGBA16F);
+			RtImageReservoir[set][1] = RtCore::AddImage(set ? "NVR RT gi reservoir B1" : "NVR RT gi reservoir B0", w, h, NVR_EXT_SHARED_RGBA16F);
+		}
+		RtGIHistory = false;
 	}
 
 	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
@@ -436,6 +444,7 @@ namespace {
 
 void AmbientOcclusionEffect::RtRegister() {
 	RtShader = RtCore::AddShader("RtAOTrace");
+	RtGIShader = RtCore::AddShader("RtGITrace");	// (2026-10-30) GIReuse: RtAOTrace.comp built with RT_GI_PASS
 	RtCore::AddUser({ "RT ambient occlusion", RtWants, RtSetup, RtRecordUser });
 }
 
@@ -584,11 +593,44 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (RtImageLight < 0 || albedoAtlas < 0) return;
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
 	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, (float)rt.AOAlpha, 0.0f, 0.0f);
+	// (2026-10-30) GIReuse: the bounce in its own pass with ReSTIR GI's temporal reuse (RtGITrace: the GI fields, last frame's view and the
+	// camera's move since, the reservoirs swapped every frame); the AO pass then traces no GI rays.
+	static D3DXMATRIX prevViewToWorld;
+	static D3DXVECTOR4 prevCamera;
+	static UInt32 giParity = 0;
+	const bool giPass = gi && rt.GIReuse > 0 && RtGIShader >= 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
+	RtAmbient::GIConstants g = {};
+	if (giPass) {
+		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+		g.viewToWorld = c.viewToWorld;
+		g.prevViewToWorld = RtGIHistory ? prevViewToWorld : c.viewToWorld;
+		g.projection = c.projection;
+		g.origin = c.origin;
+		g.gi = c.gi;
+		g.sunDir = c.sunDir;
+		g.sunColor = c.sunColor;
+		g.ambient = c.ambient;
+		memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
+		memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
+		g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
+		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (float)rt.GIReuse)
+							  : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		prevViewToWorld = c.viewToWorld;
+		prevCamera = camera;
+		c.gi.y = 0.0f;	// (no GI rays in the AO pass)
+	}
 	const int images[6] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas };
+	const int cur = giParity & 1, prev = cur ^ 1;
+	const int giImages[8] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[cur][0], RtImageReservoir[cur][1] };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		!RtCore::AddPass(RtShader, images, 6, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
-		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
+		(giPass && !RtCore::AddPass(RtGIShader, giImages, 8, 0xC0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
+		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
+		(gi && !RtCore::CopyOut(giPass ? RtImageReservoir[cur][0] : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
+	if (giPass) giParity++;
+	RtGIHistory = giPass;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
 	if (traced++ == 0)
@@ -597,7 +639,8 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	static bool giLogged = false;
 	if (gi && !giLogged) {
 		giLogged = true;
-		Logger::Log("UNOFFICIAL RT AO: GI traced (1 bounce ray of %.0f units, %d lamps, sun %s).", rt.GIDistance, (int)c.gi.z, c.sunDir.w > 0.5f ? "up" : "down / indoors");
+		Logger::Log("UNOFFICIAL RT AO: GI traced (1 bounce ray of %.0f units, %d lamps, sun %s, %s).", rt.GIDistance, (int)c.gi.z, c.sunDir.w > 0.5f ? "up" : "down / indoors",
+			giPass ? "its own pass with ReSTIR GI temporal reuse (GIReuse)" : "in the AO pass");
 	}
 }
 

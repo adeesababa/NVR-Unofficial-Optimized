@@ -9,6 +9,9 @@
 // (straight up blocked), w DebugView 3's value (0: a ray began inside something; else 0.25 + 0.75 x the mean hit distance / Distance).
 // NVR's passes turn these into AmbientLight's / AmbientOcclusion's estimate and Skylighting's sky factor (their strength settings).
 // Compile: glslangValidator -V --target-env vulkan1.2 -o RtAOTrace.spv RtAOTrace.comp
+// (2026-10-30) The same source with -DRT_GI_PASS is RtGITrace.spv: the GI bounce on its own, with ReSTIR GI's temporal reuse
+// ([Shaders.AmbientOcclusion.RT] GIReuse > 0; its main is at the end):
+// glslangValidator -V --target-env vulkan1.2 -DRT_GI_PASS -o RtGITrace.spv RtAOTrace.comp
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : enable
 
@@ -21,6 +24,23 @@ layout(local_size_x = 8, local_size_y = 8) in;
 #define RT_CULL 0xFFu
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;   // the core's: world minus CameraPosition, z up
+#ifdef RT_GI_PASS
+// (2026-10-30) The GI pass's own constants (core/RtAmbient.h GIConstants; the names the shared functions read are the same).
+layout(set = 0, binding = 1, std140) uniform Constants {
+    mat4 viewToWorld;
+    mat4 prevViewToWorld;   // last frame's viewToWorld (its rotation: the reservoirs' reprojection)
+    vec4 projection;
+    vec4 origin;
+    vec4 gi;
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 ambient;
+    vec4 lampPos[8];
+    vec4 lampColor[8];
+    vec4 gi2;           // x GIOffscreen, y depth tolerance, z GIClamp, w GIInterleave
+    vec4 reuse;         // xyz this frame's camera minus last frame's (a scene point last frame = p + xyz), w the M cap (0: no history)
+} cb;
+#else
 layout(set = 0, binding = 1, std140) uniform Constants {
     mat4 viewToWorld;   // NVR's view space -> scene directions (rows right, up, forward of the view; as stored, cb.M * v)
     vec4 projection;    // x 1 / P00, y 1 / P11, zw the trace grid's size in texels
@@ -38,9 +58,20 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
     vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; y AOAlpha (0 skip, 1 opaque, 2 test); zw unused
 } cb;
+#endif
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
+#ifdef RT_GI_PASS
+// (2026-10-30) The reservoirs, last frame's (3, 4) and this frame's (8, 9) (NVR swaps the two pairs every frame). A: rgb the estimate
+// (the chosen sample's light x W: the bounce light AmbientLight takes, NVR_RTGIRaw), a W (its RIS weight); B: x M (candidates seen,
+// capped), y the view distance, zw the world normal (OctEncode) of the texel's surface (the history check).
+layout(set = 0, binding = 3, rgba16f) uniform readonly image2D prevA;
+layout(set = 0, binding = 4, rgba16f) uniform readonly image2D prevB;
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D curA;
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D curB;
+#else
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
+#endif
 layout(set = 0, binding = 5, r16f) uniform readonly image2D alphaAtlas;   // the core's alpha atlas (RtCore::AlphaAtlasImage), or a stand-in
 layout(set = 0, binding = 6, rgba16f) uniform readonly image2D frameLight; // (GI v2) the game's lit frame at the trace grid's size (as rendered: gamma)
 layout(set = 0, binding = 7, rgba8) uniform readonly image2D albedoAtlas;  // (2026-10-29) the core's albedo atlas (HitTextures), or a stand-in
@@ -205,6 +236,7 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     return vec4(Clamped(albedo * e * cb.gi2.x), t / cb.gi.x);
 }
 
+#ifndef RT_GI_PASS
 void main() {
     // (2026-10-29) Interleave: only every 2nd (checkerboard) or every 4th (one texel of each 2 x 2, in turn) texel is traced a frame;
     // the others keep the result they last had (the shared images persist) and AmbientLight's history blends them. The dispatch is
@@ -304,3 +336,79 @@ void main() {
     if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
     imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
 }
+#else
+// ---- (2026-10-30) RT_GI_PASS: the bounce with ReSTIR GI's temporal reuse (Ouyang et al. 2021, the temporal step) ----
+// Each texel keeps a reservoir: one bounce sample (its light L), the weight sum it was chosen from and M, the candidates behind it.
+// A frame's new candidate (Bounce: cosine-sampled, so its RIS weight is just lum(L)) joins the reservoir of the same surface last
+// frame (reprojected; same depth within 5 %, normal within ~25 degrees, else no history), M capped at GIReuse (how many frames of
+// samples it may lean on: the lag when the light changes). The texel's estimate is the chosen L x W, W = weight sum / (M lum(L)): one
+// candidate alone gives L (GIReuse 0's value); with history the bright samples are kept and weighed down instead of landing on one
+// texel in twenty (the noise the denoiser had to blur). Simplifications (v1): the chosen sample is not re-traced (a light switched off
+// fades over GIReuse frames), no reuse from neighbours (spatial step), the surface is taken as the same (no Jacobian).
+vec2 OctEncode(vec3 n) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 e = n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return e * 0.5 + 0.5;
+}
+float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
+    vec4 input_ = imageLoad(inputImage, texel);
+    float viewZ = input_.x;
+    if (!(viewZ > 0.0)) {
+        imageStore(curA, texel, vec4(0.0));
+        imageStore(curB, texel, vec4(0.0));
+        return;
+    }
+    vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
+    vec3 view = vec3((uv.x * 2.0 - 1.0) * cb.projection.x, (1.0 - uv.y * 2.0) * cb.projection.y, 1.0) * viewZ;
+    vec3 p = (cb.viewToWorld * vec4(view, 0.0)).xyz;
+    vec3 n = OctDecode(Unpack2(input_.y));
+    float bias = 0.75 + viewZ * 0.003;
+    int turn = int(cb.origin.w + 0.5);
+
+    // Last frame's reservoir of this surface.
+    float cap = cb.reuse.w, historyM = 0.0;
+    vec4 history = vec4(0.0);
+    if (cap > 0.5) {
+        vec3 v = transpose(mat3(cb.prevViewToWorld)) * (p + cb.reuse.xyz);
+        if (v.z > 1.0) {
+            vec2 q = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
+            ivec2 qt = ivec2(floor(q * cb.projection.zw));
+            if (all(greaterThanEqual(qt, ivec2(0))) && all(lessThan(qt, ivec2(cb.projection.zw)))) {
+                vec4 b = imageLoad(prevB, qt);
+                if (b.x > 0.5 && abs(b.y - v.z) < 0.05 * v.z + 2.0 && dot(OctDecode(b.zw), n) > 0.9) {
+                    history = imageLoad(prevA, qt);
+                    historyM = min(b.x, cap);
+                    if (!(history.a >= 0.0) || any(isnan(history.rgb)) || any(isinf(history.rgb))) { history = vec4(0.0); historyM = 0.0; }
+                }
+            }
+        }
+    }
+    vec3 chosen = history.a > 0.0 ? history.rgb / history.a : vec3(0.0);
+    float weightSum = Luma(chosen) * history.a * historyM, m = historyM;
+
+    // GIInterleave: a new candidate only in every 2nd / 4th 8 x 8 tile a frame (whole tiles: the waves without do no ray work), and
+    // wherever there is no history (disocclusions, the first frame) so no texel stays dark.
+    int giInterleave = int(cb.gi2.w + 0.5);
+    ivec2 tile = ivec2(gl_WorkGroupID.xy);
+    bool giTile = giInterleave >= 4 ? ((tile.x & 1) + 2 * (tile.y & 1)) == (turn & 3)
+                : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
+                : true;
+    if (giTile || historyM < 0.5) {
+        float frame = cb.origin.w;
+        vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
+        vec3 light = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840)).rgb;
+        float w = Luma(light);
+        weightSum += w;
+        m += 1.0;
+        if (fract(Ign(vec2(texel) + 131.0) + frame * 0.7548777) * weightSum < w) chosen = light;
+    }
+    float target = Luma(chosen);
+    float W = m > 0.0 && target > 0.0 ? weightSum / (m * target) : 0.0;
+    imageStore(curA, texel, vec4(chosen * W, W));
+    imageStore(curB, texel, vec4(m, viewZ, OctEncode(n)));
+}
+#endif
