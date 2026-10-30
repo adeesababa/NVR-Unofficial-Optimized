@@ -97,7 +97,8 @@ namespace RtDenoise {
 		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
 		if (!temporal || !atrous || !depth || !normals || !cameraData) return false;
 
-		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
+		const UINT scale = S.Downscale == 2 ? 2u : 1u;
+		const UINT w = (std::max)(1u, (UINT)TheRenderManager->width / scale), h = (std::max)(1u, (UINT)TheRenderManager->height / scale);
 		if (d->width != w || d->height != h || !d->history[0]) {
 			for (IDirect3DTexture9*& t : d->history) if (t) { t->Release(); t = nullptr; }
 			for (IDirect3DTexture9*& t : d->chain) if (t) { t->Release(); t = nullptr; }

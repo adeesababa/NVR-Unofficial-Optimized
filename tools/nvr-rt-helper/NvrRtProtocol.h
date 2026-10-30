@@ -25,9 +25,9 @@
 #include <stdint.h>
 
 #define NVR_RT_MAGIC            0x54525256u   // 'VRRT'
-#define NVR_RT_PROTOCOL_VERSION 2u            // 2 (2026-10-28): instance records + the geometry data (bindings 10, 11)
+#define NVR_RT_PROTOCOL_VERSION 3u            // 2 (2026-10-28): instance records + the geometry data (bindings 10, 11); 3 (2026-10-29): 32 shared images
 #define NVR_RT_FRAME_RING       4u            // frame records; NVR waits for consumedFrame before reusing one
-#define NVR_RT_MAX_IMAGES       16u           // shared images, registered at setup (index 0 is the geometry arena)
+#define NVR_RT_MAX_IMAGES       32u           // shared images, registered at setup (index 0 is the geometry arena); 16 was too few with all four RT effects (~20)
 #define NVR_RT_MAX_SHADERS      16u           // trace shaders (.spv paths), registered any time
 #define NVR_RT_MAX_OPS          2048u         // geometry operations per frame
 #define NVR_RT_MAX_INSTANCES    32768u        // scene instances per frame

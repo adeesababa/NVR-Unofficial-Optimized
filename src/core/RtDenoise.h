@@ -19,6 +19,7 @@ namespace RtDenoise {
 		float	NormalPower = 64.0f;
 		float	ValueSigma = 4.0f;
 		bool	Reset = false;			// drop the history this frame
+		int		Downscale = 1;			// 1 full screen, 2 half (Noisy and Output must then be w/2 x h/2; ~4x cheaper; the caller upsamples)
 	};
 	struct Denoiser;
 

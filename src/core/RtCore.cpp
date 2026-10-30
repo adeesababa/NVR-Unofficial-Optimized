@@ -150,6 +150,7 @@ namespace {
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
+		UInt32		partitionFate[5] = {};				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
 		std::vector<std::string> imageNames;
 		std::vector<NVR_EXT_SHARED_IMAGE_DESC> imageDescs;	// the sizes made (rounded up: kImageAlign)
@@ -663,24 +664,44 @@ namespace {
 		NiSkinInstance* skin = geo->skinInstance;
 		NiSkinPartition* parts = skin ? skin->SkinPartition : nullptr;
 		if (!rtSkin || !parts || !parts->Partitions || !skin->SkinData || !skin->SkinData->BoneData || !skin->BoneObjects) { skip[kSkinned]++; return; }
+		// Any shader: the bodies' skin shader is not a lighting property (rtsun-16: only the hidden dismemberment caps were in)
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
-		if (!shaderProperty || !shaderProperty->IsLightingProperty()) { skip[kNotLighting]++; return; }
+		if (!shaderProperty) { skip[kNotLighting]++; return; }
+		// Dismemberment: a skin that does not render (the gore caps until a limb comes off) or a disabled partition stays out
+		BSDismemberSkinInstance* dismember = *(void**)skin == Pointers::VirtualTables::BSDismemberSkinInstance ? (BSDismemberSkinInstance*)skin : nullptr;
+		if (dismember && !dismember->IsRenderable) { skip[kSkinned]++; return; }
 		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
 		// Bodies are alpha-tested (the hair and fringe edges): they go in opaque (rtsun-13: with them left out, only heads and hands were
 		// in the scene). Blended-only (glass, fx) stays out.
 		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; return; }
-		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
+		static const Albedo grey = { { 0.5f, 0.5f, 0.5f }, false };
+		const Albedo& albedo = shaderProperty->IsLightingProperty() ? AlbedoOf(geo, shaderProperty) : grey;
 		const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
 		static std::vector<float> palette;
+		static int told = 0;
+		if (told < 16) {	// the first skinned geometries, once: what their partitions look like
+			told++;
+			char line[512];
+			int n = sprintf_s(line, "RT CORE: skinned '%s': %u partitions, own buffer data %p:", geo->m_pcName ? geo->m_pcName : "", parts->PartitionsCount,
+				geo->geomData ? geo->geomData->m_pkBuffData : nullptr);
+			for (UInt32 p = 0; p < parts->PartitionsCount && p < 8 && n > 0 && n < 440; p++) {
+				const NiSkinPartition::Partition& part = parts->Partitions[p];
+				n += sprintf_s(line + n, sizeof(line) - n, " [%u: buf %p, %u bones, %u a vertex, %u verts, %u tris]", p, part.BuffData, part.Bones,
+					part.BonesPerVertex, part.Vertices, part.Triangles);
+			}
+			Logger::Log("%s", line);
+		}
 		for (UInt32 p = 0; p < parts->PartitionsCount; p++) {
 			const NiSkinPartition::Partition& part = parts->Partitions[p];
-			if (!part.BuffData || !part.pBones || !part.Bones || part.Bones > NVR_EXT_RT_SKIN_MAX_BONES || !part.BonesPerVertex) continue;
+			if (!part.BuffData) { partitionFate[0]++; continue; }
+			if (dismember && dismember->partitions && p < dismember->partitionNumber && !dismember->partitions[p].Enabled) { partitionFate[1]++; continue; }
+			if (!part.pBones || !part.Bones || part.Bones > NVR_EXT_RT_SKIN_MAX_BONES || !part.BonesPerVertex) { partitionFate[1]++; continue; }
 			NVR_EXT_RT_GEOMETRY_DESC desc;
 			GeometryKey key;
-			if (!DescribeData(part.BuffData, geo->m_pcName, desc, ranges, key)) { skip[kDescribe]++; continue; }
+			if (!DescribeData(part.BuffData, geo->m_pcName, desc, ranges, key)) { skip[kDescribe]++; partitionFate[2]++; continue; }
 			const PositionElement& e = lastElement;
-			if (e.weightStream != e.stream || e.indexStream != e.stream || e.format == NVR_EXT_RT_POSITION_HALF4) { skip[kDescribe]++; continue; }
+			if (e.weightStream != e.stream || e.indexStream != e.stream || e.format == NVR_EXT_RT_POSITION_HALF4) { skip[kDescribe]++; partitionFate[3]++; continue; }
 			// the palette: partition bone k = the skin's bone part.pBones[k]
 			palette.resize(part.Bones * 12u);
 			bool ok = true;
@@ -699,7 +720,7 @@ namespace {
 					m[r * 4 + 3] = (r == 0 ? a.pos.x : r == 1 ? a.pos.y : a.pos.z) + a.scale * t - (r == 0 ? cx : r == 1 ? cy : cz);
 				}
 			}
-			if (!ok) { skip[kSkinned]++; continue; }
+			if (!ok) { skip[kSkinned]++; partitionFate[4]++; continue; }
 			NVR_EXT_RT_SKIN_DESC s = {};
 			s.WeightsDelta = (INT)e.weightOffset - (INT)e.offset;
 			s.WeightsFormat = (NVR_EXT_RT_SKIN_WEIGHTS)e.weightFormat;
@@ -1117,8 +1138,9 @@ namespace {
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
 			if (n == 60 && c.actorsOn)
-				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s)", c.actorPartitions,
-					c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off");
+				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
+					"streams / half positions %u, palette %u", c.actorPartitions, c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off",
+					c.partitionFate[0], c.partitionFate[1], c.partitionFate[2], c.partitionFate[3], c.partitionFate[4]);
 			if (n == 60) {
 				const UInt32* a = c.alphaFate;
 				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
