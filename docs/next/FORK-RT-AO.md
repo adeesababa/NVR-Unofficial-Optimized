@@ -252,6 +252,10 @@ accumulate (below): both are temporal + edge-aware spatial already.
   camera moved for the later shots, so raw vs denoised GI is not the same view; AO denoised vs raw as in rt-gi-3).
 - Interleave v2 (next build): the dispatch is cut to the traced texels (W/2, or W/2 x H/2 threads, each mapped to its texel): v1 let
   the skipped threads exit inside full 8x8 groups, which then ran as long as their slowest traced texel.
+- **rt-gi-6 (10-29 22:00 lucky22 slot A, DLL 1AE30268, helper extra-p3): Interleave v2 PASS.** RtAOTrace's own GPU time (AO 4 rays +
+  GI, the helper's per-pass timer): Interleave 1 26.3 ms, 2 14.8 ms (-44 %), 4 8.0 ms (-70 %) on the iGPU at 720p. Pictures with
+  Interleave 2 / 4 vs 1: 0.2 / 0.3 % of pixels differ by more than 4 levels (still camera; the denoisers and AmbientLight's history fill
+  the untraced texels). Recommended: Interleave 2 or 4 on slow GPUs (default stays 1).
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
