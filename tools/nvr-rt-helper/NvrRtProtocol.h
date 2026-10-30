@@ -32,7 +32,11 @@
 #define NVR_RT_MAX_OPS          2048u         // geometry operations per frame
 #define NVR_RT_MAX_INSTANCES    32768u        // scene instances per frame
 #define NVR_RT_MAX_PASSES       8u            // trace passes per frame
-#define NVR_RT_PASS_IMAGES      8u            // images bound to one pass (bindings 2..9)
+#define NVR_RT_PASS_IMAGES      8u            // images bound to one pass (bindings 2..9) in NvrRtPass::images
+// UNOFFICIAL 2026-10-30 (rt-ao-sky: GI merged into the AO pass): up to 4 more images (8..11) at bindings 12..15, their indices as
+// bytes in NvrRtPass::extraImages (the old pad word: same layout, protocol 3). A helper older than this skips a pass with more than 8.
+#define NVR_RT_PASS_IMAGES_MAX  12u
+#define NVR_RT_PASS_EXTRA_BINDING 12u          // binding of image 8 (9..11 follow)
 #define NVR_RT_PASS_CONSTANTS   512u          // bytes of a pass's uniform block (binding 1)
 #define NVR_RT_ARENA_IMAGE      0u
 #define NVR_RT_BINDING_RECORDS  10u           // readonly std430 SSBO: NvrRtInstanceRecord per instance, by rayQueryGetIntersectionInstanceIdEXT
@@ -94,6 +98,12 @@ struct NvrRtImageDesc {
 #define NVR_RT_OP_FLAG_TEXCOORDS  0x1u   // 2 x vertexCount more texels: the texcoords after the triangle list (fork 1.8-rt-uv)
 #define NVR_RT_OP_FLAG_ALPHA      0x2u   // built non-opaque (alpha-tested: the rays test the candidates)
 #define NVR_RT_OP_FLAG_DYNAMIC    0x4u   // rebuilt every frame (skinned actors): fast build instead of fast trace
+// UNOFFICIAL 2026-10-30 ([Main.Main.RayTracing] Compact): static geometry built with ALLOW_COMPACTION; the helper reads the compacted
+// size once the build's frame is done and copies it into a structure of that size a frame later (typically half the memory). An older
+// helper ignores the flag (no compaction, nothing else changes).
+#define NVR_RT_OP_FLAG_COMPACT    0x8u
+#define NVR_RT_ARENA_SEQUENCE     0x80000000u   // NvrRtFrame::arenaTexels: a sequence texel follows the geometry (2026-10-30)
+inline uint32_t NvrRtSequenceOf(uint64_t frame) { return (uint32_t)frame ? (uint32_t)frame : 1u; }
 
 struct NvrRtGeometryOp {             // 32 bytes
 	uint32_t	op;                  // NvrRtOp
@@ -136,9 +146,12 @@ struct NvrRtPass {                   // 576 bytes
 	uint32_t	images[NVR_RT_PASS_IMAGES];   // indices into images[] of the shared block
 	uint32_t	writeMask;           // bit i: the pass writes images[i] (a barrier after the pass for those)
 	uint32_t	constantsSize;
-	uint32_t	pad;
+	uint32_t	extraImages;         // images 8..11: byte i - 8 (imageCount > 8 only; was pad)
 	uint8_t		constants[NVR_RT_PASS_CONSTANTS];
 };
+
+inline uint32_t NvrRtPassImage(const NvrRtPass& p, uint32_t i) { return i < NVR_RT_PASS_IMAGES ? p.images[i] : (p.extraImages >> (8u * (i - NVR_RT_PASS_IMAGES))) & 0xFFu; }
+inline uint32_t NvrRtPassBinding(uint32_t i) { return i < NVR_RT_PASS_IMAGES ? 2u + i : NVR_RT_PASS_EXTRA_BINDING + (i - NVR_RT_PASS_IMAGES); }
 
 struct NvrRtFrame {
 	uint64_t	frame;               // N
@@ -146,7 +159,9 @@ struct NvrRtFrame {
 	uint32_t	opCount;
 	uint32_t	instanceCount;
 	uint32_t	passCount;
-	uint32_t	arenaTexels;         // texels of the arena this frame's builds read (0 = none)
+	uint32_t	arenaTexels;         // texels of the arena this frame's builds read (0 = none); bit 31 (NVR_RT_ARENA_SEQUENCE): the texel
+	                                 // right after them holds (uint32_t)frame (or 1 for 0), written by the fork after its conversions
+	                                 // (1.8-rt-seq): another value = the arena holds an earlier flush's data (UNOFFICIAL 2026-10-30)
 	NvrRtGeometryOp	ops[NVR_RT_MAX_OPS];
 	NvrRtInstance	instances[NVR_RT_MAX_INSTANCES];
 	NvrRtInstanceRecord records[NVR_RT_MAX_INSTANCES];	// v2: records[i] belongs to instances[i]

@@ -139,6 +139,9 @@ namespace {
 		NiSourceTexture** glow = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2];
 		return glow && *glow && (*glow)->rendererData && (*glow)->rendererData->dTexture;
 	}
+	IDirect3DBaseTexture9* GlowTextureOf(BSShaderProperty* shaderProperty) {
+		return HasGlowMap(shaderProperty) ? (*((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2])->rendererData->dTexture : nullptr;
+	}
 
 	// Where a vertex declaration keeps the position (cached per declaration).
 	struct PositionElement {
@@ -158,6 +161,7 @@ namespace {
 		ID3D9NvrExtShare*		share = nullptr;
 		ID3D9NvrExtRt*			rt = nullptr;
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
+		ID3D9NvrExtRtSeq*		rtSeq = nullptr;	// fork patch 0034 (the arena's sequence texel, 2026-10-30); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
@@ -213,16 +217,30 @@ namespace {
 		// position's stream, [4] no diffuse texture, [5] alpha unreadable (format / pool) or atlas full, [6] waited (upload budget), [7] taken
 		UInt32		alphaFate[8] = {};
 		int			atlasImage = -1;
-		UInt32		atlasUsed = 0, atlasThisFrame = 0;
-		std::unordered_map<const void*, int> alphaSlots;		// texture -> slot (-1: unreadable)
+		UInt32		atlasUsed = 0, atlasThisFrame = 0, glowSlots = 0;	// glowSlots: slots with a glow map (GlowTextures)
+		std::unordered_map<UInt64, int> alphaSlots;			// diffuse texture | glow texture << 32 -> slot (-1: unreadable)
 		IDirect3DTexture9* alphaUpload = nullptr;			// 64 x 64 R16F, dynamic: one slot's alpha on its way to the atlas
 		IDirect3DTexture9* albedoUpload = nullptr;			// 64 x 64 A8R8G8B8: one slot's colour on its way to the albedo atlas
 		bool		hitTextures = false;				// [Main.Main.RayTracing] HitTextures (read at each helper start)
 		int			albedoAtlasImage = -1;
+		// UNOFFICIAL 2026-10-30 glow textures ([Main.Main.RayTracing] GlowTextures, with HitTextures; rt-ao-sky GlowGI / rt-reflections
+		// GlowBrightness): a slot is a (diffuse, glow map) pair; the glow map goes into the glow atlas (RGBA8) at the same slot and texcoords
+		IDirect3DTexture9* glowUpload = nullptr;
+		int			glowAtlasImage = -1;
 		PositionElement lastElement;						// Describe's: where the texcoords are
-		int			AlphaSlotOf(IDirect3DBaseTexture9* texture);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
+		int			AlphaSlotOf(IDirect3DBaseTexture9* texture, IDirect3DBaseTexture9* glow = nullptr);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
 		float		radius = 8192.0f;
+		// UNOFFICIAL 2026-10-30 scene cost (the main session's soak list, item 2), all [Main.Main.RayTracing], live:
+		//   Compact: static geometry is compacted by the helper after its build (NVR_RT_OP_FLAG_COMPACT; about half the memory).
+		//   BuildTrianglesPerFrame: new geometry farther than BuildNearRadius waits a frame once this many triangles were staged this
+		//     frame (0: no limit, as before): a cell change builds its near geometry at once and the rest over the next frames.
+		//   CullSmallAngle: objects (not land, not actors) whose bound radius / distance is below this (radians) stay out of the scene.
+		bool		compactOn = false;
+		UInt32		buildBudget = 0, trianglesThisFrame = 0, budgetWaits = 0, culledSmall = 0;
+		float		buildNear = 2048.0f, cullAngle = 0.0f;
+		std::vector<UInt32> pendingReleases;	// release ops that did not fit this frame's op list (sent first next frame)
+		void		Release(UInt32 id) { pendingReleases.push_back(id); released++; }
 		std::vector<NiAVObject*> stack;
 
 		void		TurnOff(const char* why);
@@ -247,8 +265,10 @@ namespace {
 	// A texture's slot in the alpha atlas: >= 0, -1 not possible (never again), -2 not this frame (8 a frame at most). On the GPU: the
 	// fork pass RtAlphaToAtlas draws the texture's alpha into a 64 x 64 R16F target (the texture's mips downsample; any pool and format),
 	// then that goes into the atlas slot. Both are recorded before this exchange's signal, so the helper sees them this frame.
-	int Core::AlphaSlotOf(IDirect3DBaseTexture9* texture) {
-		auto found = alphaSlots.find(texture);
+	int Core::AlphaSlotOf(IDirect3DBaseTexture9* texture, IDirect3DBaseTexture9* glow) {
+		if (glowAtlasImage < 0) glow = nullptr;
+		const UInt64 key = (UInt64)(uintptr_t)texture | ((UInt64)(uintptr_t)glow << 32);	// a 32-bit process
+		auto found = alphaSlots.find(key);
 		if (found != alphaSlots.end()) return found->second;
 		const UInt32 capacity = NVR_RT_ALPHA_ATLAS_SLOTS * NVR_RT_ALPHA_ATLAS_SLOTS;
 		if (atlasImage < 0 || atlasUsed >= capacity) return -1;
@@ -288,6 +308,7 @@ namespace {
 		int slot = -1;
 		if (!alphaUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &alphaUpload, nullptr);
 		if (which && !albedoUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &albedoUpload, nullptr);
+		if (glow && !glowUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &glowUpload, nullptr);
 		ID3D9NvrExtSampler* sampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
 		IDirect3DSurface9* target = nullptr;
 		IDirect3DSurface9* target2 = nullptr;
@@ -312,12 +333,22 @@ namespace {
 			if (SUCCEEDED(DxvkCompute::Extension()->Draw(&draw)) && SUCCEEDED(share->CopyToShared(images[atlasImage], x, y, alphaUpload, &all)) &&
 				(!which || SUCCEEDED(share->CopyToShared(images[albedoAtlasImage], x, y, albedoUpload, &all)))) {
 				slot = (int)at;
-				atlasUsed++;
+				if (glow) {	// the same pass on the glow map: its alpha into the alpha upload (already copied, in stream order: a scratch now)
+					IDirect3DSurface9* glowTarget = nullptr;
+					bindings[0].pResource = glow;
+					if (!glowUpload || FAILED(glowUpload->GetSurfaceLevel(0, &glowTarget))) slot = -1;
+					else {
+						draw.Targets[1].pResource = glowTarget;
+						if (FAILED(DxvkCompute::Extension()->Draw(&draw)) || FAILED(share->CopyToShared(images[glowAtlasImage], x, y, glowUpload, &all))) slot = -1;
+						glowTarget->Release();
+					}
+				}
+				if (slot >= 0) { atlasUsed++; if (glow) glowSlots++; }
 			}
 			target->Release();
 		}
 		if (target2) target2->Release();
-		alphaSlots.emplace(texture, slot);
+		alphaSlots.emplace(key, slot);
 		return slot;
 	}
 	UInt32 (*MaskHook)(NiGeometry*, bool) = nullptr;
@@ -378,6 +409,9 @@ namespace {
 			return false;
 		}
 		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSkin), (void**)&rtSkin))) rtSkin = nullptr;
+		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSeq), (void**)&rtSeq))) rtSeq = nullptr;
+		if (!rtSeq) Logger::Log("UNOFFICIAL NVR DXVK: RT: this d3d9.dll has no arena sequence check (fork patch 0034, 1.8-rt-seq); on some GPUs its "
+			"geometry copy can run before the geometry is converted (RTX GPU fault, 2026-10-30): update the NVR DXVK fork.");
 		actorsOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Actors") != 0;
 		if (actorsOn && !rtSkin) Logger::Log("UNOFFICIAL NVR DXVK: RT actors off: this d3d9.dll cannot pose skinned geometry (fork patch 0033, 1.8-rt-skin).");
 		NVR_EXT_SHARE_INFO info = {};
@@ -405,7 +439,9 @@ namespace {
 		hitTextures = TheSettingManager->GetSettingI("Main.Main.RayTracing", "HitTextures") != 0;
 		atlasImage = -1;
 		albedoAtlasImage = -1;
+		glowAtlasImage = -1;
 		atlasUsed = 0;
+		glowSlots = 0;
 		alphaSlots.clear();
 		if (alphaOn || hitTextures) {	// the slots are shared: hit textures keep the alpha atlas too
 			atlasImage = (int)imageDescs.size();
@@ -420,6 +456,12 @@ namespace {
 			const UINT side = NVR_RT_ALPHA_SLOT_SIZE * NVR_RT_ALPHA_ATLAS_SLOTS;
 			imageDescs.push_back({ side, side, NVR_EXT_SHARED_RGBA8, nullptr });
 			imageSizes.push_back({ side, side });
+			if (TheSettingManager->GetSettingI("Main.Main.RayTracing", "GlowTextures") != 0) {
+				glowAtlasImage = (int)imageDescs.size();
+				imageNames.push_back("NVR RT glow atlas");
+				imageDescs.push_back({ side, side, NVR_EXT_SHARED_RGBA8, nullptr });
+				imageSizes.push_back({ side, side });
+			}
 		}
 		inSetup = true;
 		for (const RtCore::User& user : users) if (user.Setup) user.Setup();
@@ -529,6 +571,7 @@ namespace {
 		state = Starting;
 		lastSerial = 0;
 		geometries.clear();
+		pendingReleases.clear();
 		nextId = 1;
 		_snprintf_s(status, sizeof(status), _TRUNCATE, "starting on %s", info.DeviceName);
 		Logger::Log("UNOFFICIAL NVR DXVK: RT helper started (%ls): %u shared images (arena %ux%u), %u shaders, GPU %s.", exe.c_str(),
@@ -566,14 +609,17 @@ namespace {
 		DxvkCompute::Drop(outputReady);
 		DxvkCompute::Drop(rt);
 		DxvkCompute::Drop(rtSkin);
+		DxvkCompute::Drop(rtSeq);
 		DxvkCompute::Drop(share);
 		if (shared) { UnmapViewOfFile(shared); shared = nullptr; }
 		HANDLE* handles[] = { &mapping, &frameEvent, &statusEvent };
 		for (HANDLE* h : handles) if (*h) { CloseHandle(*h); *h = nullptr; }
 		geometries.clear();
+		pendingReleases.clear();
 		alphaSlots.clear();
 		if (alphaUpload) { alphaUpload->Release(); alphaUpload = nullptr; }
 		if (albedoUpload) { albedoUpload->Release(); albedoUpload = nullptr; }
+		if (glowUpload) { glowUpload->Release(); glowUpload = nullptr; }
 	}
 
 	void Core::Poll() {
@@ -799,7 +845,7 @@ namespace {
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
 			bool hasUv = entry.textured;	// what the helper has: decided by what the fork staged (an older 0033 drops skinned texcoords)
 			if (pose) {
-				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; if (!entry.sent) continue; }
 				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 				else {
 					NvrRtGeometryOp& op = record->ops[record->opCount++];
@@ -838,6 +884,14 @@ namespace {
 	void Core::AddGeometry(NiGeometry* geo, bool land, bool lod) {
 		UInt32* skip = skips[lod ? 2 : land ? 1 : 0];
 		skip[kSeen]++;
+		float distance = 0.0f;	// the bound's centre from the camera (objects only: land's bounds are not usable)
+		if (!land && geo->m_kWorldBound) {
+			const NiBound* b = geo->m_kWorldBound;
+			const float dx = b->Center.x - TheRenderManager->CameraPosition.x, dy = b->Center.y - TheRenderManager->CameraPosition.y,
+				dz = b->Center.z - TheRenderManager->CameraPosition.z;
+			distance = sqrtf(dx * dx + dy * dy + dz * dz);
+			if (cullAngle > 0.0f && distance > b->Radius && b->Radius < cullAngle * distance) { culledSmall++; return; }
+		}
 		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData) { skip[kNoShader]++; return; }
 		if (geo->skinInstance) { skip[kSkinned]++; return; }
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
@@ -878,7 +932,7 @@ namespace {
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
 			if (!texture || !texture->rendererData || !texture->rendererData->dTexture) { skip[kAlpha]++; alphaFate[4]++; return; }
-			alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
+			alphaSlot = AlphaSlotOf(texture->rendererData->dTexture, GlowTextureOf(shaderProperty));
 			if (alphaSlot == -2) { waiting++; alphaFate[6]++; return; }	// this frame's uploads are used up: next frame
 			if (alphaSlot < 0) { skip[kAlpha]++; alphaFate[5]++; return; }
 			desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
@@ -890,7 +944,7 @@ namespace {
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
 			if (texture && texture->rendererData && texture->rendererData->dTexture) {
-				alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
+				alphaSlot = AlphaSlotOf(texture->rendererData->dTexture, GlowTextureOf(shaderProperty));
 				if (alphaSlot == -2) { waiting++; return; }
 				if (alphaSlot >= 0) {
 					textured = true;
@@ -911,8 +965,12 @@ namespace {
 				Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters off: this d3d9.dll does not stage texcoords (fork patch 0029, 1.8-rt-uv).");
 				return;
 			}
-			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; return; }	// next frame
+			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; return; }	// next frame (+1: the sequence texel)
+			if (buildBudget && !land && distance > buildNear && trianglesThisFrame && trianglesThisFrame + info.TriangleCount > buildBudget) {
+				waiting++; budgetWaits++; return;	// far: a later frame (BuildTrianglesPerFrame)
+			}
 			if (FAILED(rt->StageGeometry(&desc, images[0], arenaUsed, &info))) { entry.refused = true; return; }
+			trianglesThisFrame += info.TriangleCount;
 			NvrRtGeometryOp& op = record->ops[record->opCount++];
 			op = NvrRtGeometryOp();
 			op.op = NVR_RT_OP_BUILD;
@@ -921,6 +979,7 @@ namespace {
 			op.triangleCount = info.TriangleCount;
 			op.arenaTexel = arenaUsed;
 			op.flags = alphaTested ? (NVR_RT_OP_FLAG_TEXCOORDS | NVR_RT_OP_FLAG_ALPHA) : textured ? NVR_RT_OP_FLAG_TEXCOORDS : 0u;
+			if (compactOn) op.flags |= NVR_RT_OP_FLAG_COMPACT;
 			arenaUsed += info.Texels;
 			entry.sent = true;
 			static int probes = 0;
@@ -1040,17 +1099,25 @@ namespace {
 		if (cell != lastCell) {
 			for (auto it = geometries.begin(); it != geometries.end(); ) {
 				if (!it->second.skinned) { ++it; continue; }
-				if (it->second.sent && record->opCount < NVR_RT_MAX_OPS) {
-					NvrRtGeometryOp& op = record->ops[record->opCount++];
-					op = NvrRtGeometryOp();
-					op.op = NVR_RT_OP_RELEASE;
-					op.id = it->second.id;
-					released++;
-				}
+				if (it->second.sent) Release(it->second.id);	// (2026-10-30: queued; a full op list used to drop it and the helper kept it)
 				it = geometries.erase(it);
 			}
 			lastCell = cell;
 		}
+		// the releases that did not fit an earlier frame's op list go first
+		size_t sent = 0;
+		while (sent < pendingReleases.size() && record->opCount < NVR_RT_MAX_OPS) {
+			NvrRtGeometryOp& op = record->ops[record->opCount++];
+			op = NvrRtGeometryOp();
+			op.op = NVR_RT_OP_RELEASE;
+			op.id = pendingReleases[sent++];
+		}
+		pendingReleases.erase(pendingReleases.begin(), pendingReleases.begin() + sent);
+		compactOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Compact") != 0;
+		buildBudget = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "BuildTrianglesPerFrame"));
+		buildNear = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "BuildNearRadius"));
+		cullAngle = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "CullSmallAngle"));
+		trianglesThisFrame = 0;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
@@ -1074,14 +1141,8 @@ namespace {
 		// Geometries not met for a while (their cell unloaded, the object gone): released in the helper
 		if ((sceneFrame % 30) == 0) {
 			for (auto it = geometries.begin(); it != geometries.end(); ) {
-				if (sceneFrame - it->second.lastSeen > kReleaseAfterFrames && record->opCount < NVR_RT_MAX_OPS) {
-					if (it->second.sent) {
-						NvrRtGeometryOp& op = record->ops[record->opCount++];
-						op = NvrRtGeometryOp();
-						op.op = NVR_RT_OP_RELEASE;
-						op.id = it->second.id;
-						released++;
-					}
+				if (sceneFrame - it->second.lastSeen > kReleaseAfterFrames) {
+					if (it->second.sent) Release(it->second.id);
 					it = geometries.erase(it);
 				}
 				else ++it;
@@ -1128,7 +1189,7 @@ bool RtCore::CopyIn(int Image, IUnknown* Source, const RECT* Rect) {
 
 bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize, UINT GroupsX, UINT GroupsY) {
 	NvrRtFrame* f = TheCore.record;
-	if (!TheCore.recording || !f || f->passCount >= NVR_RT_MAX_PASSES || Shader < 0 || ImageCount > NVR_RT_PASS_IMAGES || ConstantsSize > NVR_RT_PASS_CONSTANTS)
+	if (!TheCore.recording || !f || f->passCount >= NVR_RT_MAX_PASSES || Shader < 0 || ImageCount > NVR_RT_PASS_IMAGES_MAX || ConstantsSize > NVR_RT_PASS_CONSTANTS)
 		return false;
 	NvrRtPass& p = f->passes[f->passCount];
 	memset(&p, 0, offsetof(NvrRtPass, constants));
@@ -1138,7 +1199,8 @@ bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteM
 	p.groupsZ = 1;
 	for (UINT i = 0; i < ImageCount; i++) {
 		if (Images[i] <= 0 || Images[i] >= (int)TheCore.images.size()) return false;
-		p.images[i] = (uint32_t)Images[i];
+		if (i < NVR_RT_PASS_IMAGES) p.images[i] = (uint32_t)Images[i];
+		else p.extraImages |= (uint32_t)Images[i] << (8u * (i - NVR_RT_PASS_IMAGES));	// images 8..11: bindings 12..15 (2026-10-30)
 	}
 	p.imageCount = ImageCount;
 	p.writeMask = WriteMask;
@@ -1203,7 +1265,12 @@ namespace {
 		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
 		if (c.gatheredFrame != now) {
 			c.Gather();
-			c.rt->FlushStagedGeometry(c.images[0]);
+			// 2026-10-30: with fork 0034 the texel after this frame's geometry gets the frame's sequence number, written after the
+			// conversions; the helper checks it before building (a reordered copy = an earlier flush's data: built empty, logged once)
+			if (c.rtSeq && f.arenaTexels && f.arenaTexels < c.arenaCapacity &&
+				SUCCEEDED(c.rtSeq->FlushStagedGeometrySeq(c.images[0], NvrRtSequenceOf(n), f.arenaTexels)))
+				f.arenaTexels |= NVR_RT_ARENA_SEQUENCE;
+			else c.rt->FlushStagedGeometry(c.images[0]);
 			c.frameInstances.assign(f.instances, f.instances + f.instanceCount);
 			c.frameRecords.assign(f.records, f.records + f.instanceCount);
 			c.gatheredFrame = now;
@@ -1246,6 +1313,10 @@ namespace {
 				(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
+			if (c.buildBudget || c.cullAngle > 0.0f || c.compactOn || !c.pendingReleases.empty())
+				Logger::Log("RT CORE: scene cost: compact %s, %u far builds deferred by BuildTrianglesPerFrame %u, %u small objects culled (CullSmallAngle %.4f), "
+					"%u releases queued", c.compactOn ? "on" : "off", c.budgetWaits, c.buildBudget, c.culledSmall, c.cullAngle, (unsigned)c.pendingReleases.size());
+			c.budgetWaits = c.culledSmall = 0;
 			if (n == 60 && c.actorsOn)
 				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
 					"streams / half positions %u, palette %u; hit textures: not PPLighting %u, no diffuse %u, texcoords in another stream %u, "
@@ -1256,7 +1327,7 @@ namespace {
 				const UInt32* a = c.alphaFate;
 				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
 					"not described %u, texcoords not in the position's stream %u, no diffuse texture %u, alpha unreadable or atlas full %u; "
-					"waited for an upload %u", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+					"waited for an upload %u; glow maps in the atlas %u (%s)", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6], c.glowSlots, c.glowAtlasImage >= 0 ? "GlowTextures on" : "GlowTextures off");
 			}
 			if (n == 60)
 				for (int k = 0; k < 3; k++) {
@@ -1304,4 +1375,5 @@ UInt32 RtCore::Released() { return TheCore.released; }
 bool RtCore::AlphaTested() { return TheCore.state == Core::Running && TheCore.alphaOn && TheCore.atlasImage >= 0; }
 int RtCore::AlphaAtlasImage() { return TheCore.alphaOn || TheCore.hitTextures ? TheCore.atlasImage : -1; }	// shared slots
 int RtCore::AlbedoAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.albedoAtlasImage : -1; }
+int RtCore::GlowAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.glowAtlasImage : -1; }
 bool RtCore::Actors() { return TheCore.state == Core::Running && TheCore.actorsOn && TheCore.rtSkin; }

@@ -55,3 +55,22 @@ vec3 rtHitAlbedo(uint instance, uint primitive, vec2 bary) {
 #endif
 	return records[instance].albedo.rgb;
 }
+
+// UNOFFICIAL 2026-10-30 the hit's glow (emissive) colour, linear, before any brightness: 0 for meshes without a glow map (record flag
+// 0x04). With [Main.Main.RayTracing] GlowTextures (+ HitTextures) and #define RT_GLOW_ATLAS <the glow atlas: layout(rgba8) readonly
+// image2D> (RtCore::GlowAtlasImage() among the pass's images): the glow map's colour at the hit (same slot and texcoords as the albedo
+// atlas): coloured neon tubes, lit window panes, only the lit parts. Else the whole mesh glows in rtHitAlbedo's colour (the old way).
+#define RT_HIT_GLOW_FLAG 0x04u
+vec3 rtHitGlow(uint instance, uint primitive, vec2 bary) {
+	if ((records[instance].flags & RT_HIT_GLOW_FLAG) == 0u) return vec3(0.0);
+#ifdef RT_GLOW_ATLAS
+	if (rtHitHasTexcoords(instance)) {
+		const uint slot = records[instance].flags >> 16;
+		const ivec2 origin = ivec2(int(slot % 32u), int(slot / 32u)) * 64;
+		const ivec2 texel = origin + clamp(ivec2(fract(rtHitTexcoord(instance, primitive, bary)) * 64.0), ivec2(0), ivec2(63));
+		const vec3 c = imageLoad(RT_GLOW_ATLAS, texel).rgb;   // as the glow map stores it (sRGB-encoded)
+		return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThanEqual(c, vec3(0.04045)));
+	}
+#endif
+	return rtHitAlbedo(instance, primitive, bary);
+}

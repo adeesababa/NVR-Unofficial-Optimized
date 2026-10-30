@@ -2,6 +2,8 @@
 // UNOFFICIAL 2026-10-29 RT hit textures check ([Shaders.ShadowsExteriors.RT] DebugView 7 with [Main.Main.RayTracing] HitTextures;
 // core\RtSunShadows.cpp): a camera ray through each pixel, the luminance of the hit's colour (RtHit.glsl: the albedo atlas at the hit's
 // texcoords) as grey; white = nothing hit. The texture detail must show on surfaces. Runs in the helper.
+// DebugView 8 (2026-10-30, with GlowTextures; range.w = 4): the hit's glow (rtHitGlow, the glow atlas) as grey instead: black = no glow,
+// only the lit parts of neon / signs / windows light up.
 // Compile: glslangValidator -V --target-env vulkan1.2 -o RtHitDebug.spv RtHitDebug.comp
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : enable
@@ -15,8 +17,10 @@ layout(set = 0, binding = 1, std140) uniform Pass {   // RtSunShadow.comp's bloc
 layout(set = 0, binding = 2, r16f) uniform writeonly image2D outImage;
 layout(set = 0, binding = 3, r16f) uniform readonly image2D alphaAtlas;
 layout(set = 0, binding = 4, rgba8) uniform readonly image2D albedoAtlas;
+layout(set = 0, binding = 5, rgba8) uniform readonly image2D glowAtlas;
 #define RT_ALPHA_ATLAS alphaAtlas
 #define RT_ALBEDO_ATLAS albedoAtlas
+#define RT_GLOW_ATLAS glowAtlas
 #include "RtAlpha.glsl"
 #include "RtHit.glsl"
 
@@ -34,8 +38,9 @@ void main() {
 			rayQueryConfirmIntersectionEXT(q);
 	float result = 1.0;
 	if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-		const vec3 albedo = rtHitAlbedo(rayQueryGetIntersectionInstanceIdEXT(q, true), rayQueryGetIntersectionPrimitiveIndexEXT(q, true),
-			rayQueryGetIntersectionBarycentricsEXT(q, true));
+		const uint instance = rayQueryGetIntersectionInstanceIdEXT(q, true), primitive = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+		const vec2 bary = rayQueryGetIntersectionBarycentricsEXT(q, true);
+		const vec3 albedo = p.range.w == 4.0 ? rtHitGlow(instance, primitive, bary) : rtHitAlbedo(instance, primitive, bary);
 		result = clamp(dot(albedo, vec3(0.2126, 0.7152, 0.0722)) * 1.5, 0.0, 0.99);
 	}
 	imageStore(outImage, pixel, vec4(result, 0.0, 0.0, 0.0));
