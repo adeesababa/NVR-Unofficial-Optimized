@@ -95,6 +95,10 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   0013B3FD or the Strip-world flag 0013B6BC, then setpos: desert rocks, 1 lamp traced). Open: a Strip spot needs a save inside
   TheStripWorldNew (the full slots' strip20 save; the slim slots have none); Novac needs its walkway lamps to rank first at the
   pixels they light (LampsPerPixel 3, or ranking by the draws' own lamps).
+- rtlamp-32 (5b5911ce, DLL 2F959124, RankBy; 20261030-073352-slotA, PASS): ranking by the game's own falloff (RankBy 1) does not help:
+  Freeside coverage 36 % -> 8 % (yellow 20 -> 50 %), Novac 0 % green either way; RankBy stays 0. Novac's coverage is mostly GREY (the
+  draw's lamps have no traced slot), not yellow, with 24 lamps traced: the lamps lighting those walls are outside the published set.
+  rtlamp-33 tries LightPoints 63 there.
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
