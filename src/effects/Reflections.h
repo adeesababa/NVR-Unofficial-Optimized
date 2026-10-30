@@ -57,6 +57,7 @@ public:
 		float	RtContactSharpness;	// 2026-10-29: the blur radius share at contact (1 = off: the blur as before)
 		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
 		float	RtGlowBrightness;	// 2026-10-29: glowing hits (the core's emissive flag) add their colour x this as light
+		bool	RtHitTextures;		// 2026-10-29: with the core's [Main.Main.RayTracing] HitTextures, hits take the texture's colour (else the draw's average)
 	};
 	SettingsStruct	Settings;
 

@@ -68,6 +68,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtContactSharpness = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSharpness"), 0.05f, 1.0f);
 	Settings.RtContactSpread = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSpread"), 0.01f, 4.0f);
 	Settings.RtGlowBrightness = std::clamp(TheSettingManager->GetSettingF(rt, "GlowBrightness"), 0.0f, 16.0f);
+	Settings.RtHitTextures = TheSettingManager->GetSettingI(rt, "HitTextures") != 0;	// UNOFFICIAL 2026-10-29
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -77,6 +78,7 @@ namespace {
 	ReflectionsEffect* RtEffect = nullptr;
 	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
 	int RtShaderAlpha = -1;	// UNOFFICIAL 2026-10-29: Compute\Rt\ReflectionsRTAlpha.spv (with the core's alpha-tested casters)
+	int RtShaderTex = -1, RtShaderAlphaTex = -1;	// UNOFFICIAL 2026-10-29: the same with hit textures (ReflectionsRTTex / ReflectionsRTAlphaTex)
 	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout, lamps[24]; };	// Rt/ReflectionsRT.comp's Pass block (std140, 496 bytes)
 	static_assert(sizeof(RtPassConstants) <= 512, "the RT core's pass constants limit");
 
@@ -134,8 +136,16 @@ namespace {
 		// With the core's alpha-tested casters in the scene, the pass that tests them (their alpha atlas as a fifth image).
 		const int atlas = RtCore::AlphaTested() ? RtCore::AlphaAtlasImage() : -1;
 		const bool alpha = atlas > 0 && RtShaderAlpha >= 0;
-		const int images[5] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas };
-		if (!RtCore::AddPass(alpha ? RtShaderAlpha : RtShader, images, alpha ? 5 : 4, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
+		// With the core's hit textures ([Main.Main.RayTracing] HitTextures) and [Shaders.Reflections.RT] HitTextures: the pass that
+		// shades hits with the texture's colour (the albedo atlas as the next image).
+		const int albedo = RtEffect->Settings.RtHitTextures ? RtCore::AlbedoAtlasImage() : -1;
+		const bool tex = albedo >= 0 && (alpha ? RtShaderAlphaTex : RtShaderTex) >= 0;
+		int images[6] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas, albedo };
+		int count = 4;
+		if (alpha) images[count++] = atlas;
+		if (tex) images[count++] = albedo;
+		const int shader = alpha ? (tex ? RtShaderAlphaTex : RtShaderAlpha) : (tex ? RtShaderTex : RtShader);
+		if (!RtCore::AddPass(shader, images, count, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
 		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface) && RtCore::CopyOut(RtImageShade, rt.ShadeSurface);
 	}
 	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
@@ -146,6 +156,8 @@ void ReflectionsEffect::RtRegister() {
 	RtEffect = this;
 	RtShader = RtCore::AddShader("ReflectionsRT");
 	RtShaderAlpha = RtCore::AddShader("ReflectionsRTAlpha");	// UNOFFICIAL 2026-10-29
+	RtShaderTex = RtCore::AddShader("ReflectionsRTTex");	// UNOFFICIAL 2026-10-29 hit textures
+	RtShaderAlphaTex = RtCore::AddShader("ReflectionsRTAlphaTex");
 	RtCore::AddUser(RtUser);
 }
 
