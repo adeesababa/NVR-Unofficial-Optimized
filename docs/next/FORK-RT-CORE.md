@@ -118,6 +118,13 @@ void main() {
   as right / up / forward components) and the camera-to-scene origin offset.
 - `rayQueryGetIntersectionInstanceCustomIndexEXT`: 1 land, 0 objects. Cull mask: see the table below.
 
+### Hit shading (2026-10-29, claude/rt-sun-2 824c7ecc)
+- `Compute/Rt/RtHit.glsl`: `rtHitTriangle`, `rtHitObjectPosition`, `rtHitObjectNormal` (object space: turn it with
+  rayQueryGetIntersectionObjectToWorldEXT), `rtHitHasTexcoords`, `rtHitTexcoord`, `rtHitAlbedo` (linear colour). With
+  `[Main.Main.RayTracing] HitTextures` on, `#define RT_ALBEDO_ATLAS <rgba8 image>` and add `RtCore::AlbedoAtlasImage()` to the pass's
+  images to get the texture's colour; else the record's average. Works with RtAlpha.glsl included too (either order).
+- Records: flag 0x40 = textured (texcoords at floatBitsToUint(albedo.w), atlas slot = flags >> 16, shared with the alpha atlas).
+
 ### Instance mask bits (the one source; agreed 2026-10-29 by the main session and the RT strands)
 | Bit | Who sets it | Meaning |
 |---|---|---|
