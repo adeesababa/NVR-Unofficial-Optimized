@@ -380,3 +380,10 @@ helper's own timing).
   brightest luminance, their count or the sun change by > 10 %, the history counts as 1 frame and grows back by one a frame (the
   kept samples are not re-traced: a light switched off lingered up to GIReuse frames). Lucky 38 in motion: 3 cuts in 600 frames (no
   churn from the lamp list's distance order); RtGITrace 8.9-11.7 ms at GIInterleave 4 (rtgi16: 8.5-10.8), the same look.
+
+### rt-ao-6 (20261030-034658-slotB, Lucky 38, 564c3e09): AO ray budget -> RayCount 2 default
+- The camera stayed put for all 5 shots this time. RtAOTrace helper time: RayCount 4 11.8 ms, 2 7.3 ms, 1 5.3 ms; 4 + Interleave 2
+  7.5 ms (2 + Interleave 2: the trailing shot, no print). Denoised occlusion (AL DebugView 1) vs RayCount 4, green channel every 2nd
+  pixel: mean |diff| 0.83 (2 rays), 0.90 (1 ray), 0.88 (Interleave 2), 0.91 (2 + I2) of 255; pixels off by > 8: 59 / 147 / 182 / 210
+  of 230400. The shared denoiser (Kernel 3) makes 2 rays look like 4 here. **Default RayCount 2** (DLL EA6439D2): -4.5 ms. In motion
+  fewer rays show more grain while the history rebuilds; 1 ray / Interleave 2 left as user options.

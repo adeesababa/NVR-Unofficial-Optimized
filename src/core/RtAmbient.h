@@ -20,7 +20,7 @@
 namespace RtAmbient {
 	struct Settings {
 		bool	Enabled = false;	// Enabled
-		int		RayCount = 4;		// [1-16] AO rays per half-resolution pixel and frame
+		int		RayCount = 2;		// [1-16] AO rays per half-resolution pixel and frame (2026-10-30: 2, rt-ao-6: denoised the same as 4)
 		float	Distance = 120.0f;	// [8-1000] AO ray length, world units (about 70 = 1 m)
 		bool	Sky = true;			// also the sky visibility (needs Skylighting on, as the ortho version)
 		int		SkyRays = 16;		// 8 or 16 (one or two rings round the normal + straight up)
