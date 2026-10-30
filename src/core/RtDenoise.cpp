@@ -44,7 +44,7 @@ namespace RtDenoise {
 			std::vector<char> spirv;
 			ID3D9NvrExt* ext = DxvkCompute::Extension();
 			if (!ext || !DxvkCompute::LoadSpirv(name, spirv)) return nullptr;
-			NVR_EXT_BINDING_DESC bindings[4] = {};
+			NVR_EXT_BINDING_DESC bindings[8] = {};	// images + the sampler
 			for (UINT i = 0; i < images; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
 			bindings[images] = { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, pushSize - 16 };	// samplerIndex: the last 16 bytes
 			NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
@@ -68,7 +68,7 @@ namespace RtDenoise {
 
 		bool Draw(ID3D9NvrExtPipeline* pipeline, IDirect3DSurface9* target, IUnknown* const* images, UINT count, const void* push, UINT pushSize,
 			IDirect3DSurface9* target2 = nullptr) {
-			NVR_EXT_RESOURCE_BINDING bindings[4] = {};
+			NVR_EXT_RESOURCE_BINDING bindings[8] = {};	// images + the sampler
 			for (UINT i = 0; i < count; i++) { bindings[i].Slot = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].pResource = images[i]; }
 			bindings[count].Slot = 0; bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].pResource = DxvkCompute::PointClamp();
 			NVR_EXT_DRAW_DESC draw = {};

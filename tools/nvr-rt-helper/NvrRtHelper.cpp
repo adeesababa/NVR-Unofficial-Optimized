@@ -134,7 +134,7 @@ namespace {
 	VkDeviceSize AlignUp(VkDeviceSize v, VkDeviceSize a) { return (v + a - 1) / a * a; }
 
 	const uint32_t kCmdRing = 4;
-	const uint32_t kQueriesPerSlot = 4;	// start, after the builds, after the scene, end
+	const uint32_t kQueriesPerSlot = 4 + NVR_RT_MAX_PASSES;	// start, after the builds, after the scene, end; then one after each pass
 	const VkDeviceSize kPoolBlock = 64ull << 20;
 	const uint32_t kDataWords = 32u << 20;	// the geometry data (binding 11): 128 MB of positions and indices
 
@@ -559,6 +559,8 @@ namespace {
 		Buffer			records;			// host-visible NvrRtInstanceRecord[NVR_RT_MAX_INSTANCES] (binding 10)
 		VkDescriptorSet	sets[NVR_RT_MAX_PASSES] = {};
 		bool			measured[3] = {};	// which sections had work (build, scene, trace) in that frame
+		uint32_t		passShaders[NVR_RT_MAX_PASSES] = {};	// the shader of each timed pass (timestamp 4 + i after it)
+		uint32_t		passesStamped = 0;
 	};
 
 	struct PendingFree { uint64_t frame; Geometry geometry; };
@@ -590,6 +592,8 @@ namespace {
 		uint64_t		gpuUs[64] = {}, buildUs[64] = {}, sceneUs[64] = {}, traceUs[64] = {}, responseUs[64] = {};
 		uint32_t		gpuCount = 0, buildCount = 0, sceneCount = 0, traceCount = 0, responseCount = 0;
 		bool			loggedFirst = false;
+		uint64_t		passUs[NVR_RT_MAX_SHADERS] = {};		// per shader: GPU time of its passes, summed until the next report
+		uint32_t		passRuns[NVR_RT_MAX_SHADERS] = {};
 		uint64_t		refits = 0, fullBuilds = 0;	// dynamic (actor) geometry: in-place updates / full builds
 		// Probe: the first build frame's first geometries read back from the staging (what the bottom levels were built from), logged once
 		Buffer			probe;
@@ -776,6 +780,12 @@ namespace {
 				if (s.measured[0]) { h.buildUs[h.buildCount++ % 64] = us(0, 1); g_shared->buildUsAvg = Average(h.buildUs, h.buildCount); }
 				if (s.measured[1]) { h.sceneUs[h.sceneCount++ % 64] = us(1, 2); g_shared->sceneUsAvg = Average(h.sceneUs, h.sceneCount); }
 				if (s.measured[2]) { h.traceUs[h.traceCount++ % 64] = us(2, 3); g_shared->traceUsAvg = Average(h.traceUs, h.traceCount); }
+				for (uint32_t p = 0; p < s.passesStamped && p < NVR_RT_MAX_PASSES; p++) {
+					const uint32_t shader = s.passShaders[p];
+					if (shader >= NVR_RT_MAX_SHADERS) continue;
+					h.passUs[shader] += us(p == 0 ? 2 : 4 + p - 1, 4 + p);
+					h.passRuns[shader]++;
+				}
 			}
 		}
 		if (h.probeSlot == (int)(&s - h.slots) && h.probe.mapped) {
@@ -808,6 +818,7 @@ namespace {
 		const uint32_t slot = (uint32_t)(&s - h.slots);
 		VkCommandBuffer cmd = s.cmd;
 		s.measured[0] = s.measured[1] = s.measured[2] = false;
+		s.passesStamped = 0;
 		FullBarrier(cmd);	// the previous frame's builds / passes and the game's writes (the semaphore makes them visible)
 
 		// 1. new geometry: the arena's rows into the staging buffer, then every build in one call
@@ -1041,6 +1052,10 @@ namespace {
 			vkCmdDispatch(cmd, std::max(1u, pass.groupsX), std::max(1u, pass.groupsY), std::max(1u, pass.groupsZ));
 			FullBarrier(cmd);	// the next pass may read this one's output; the game reads them after the signal
 			s.measured[2] = true;
+			if (h.queries && s.passesStamped < NVR_RT_MAX_PASSES) {	// per-pass GPU time (reported by shader every 120 frames)
+				vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 4 + s.passesStamped);
+				s.passShaders[s.passesStamped++] = pass.shader;
+			}
 		}
 		return true;
 	}
@@ -1090,11 +1105,18 @@ namespace {
 				vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 1);
 				vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 2);
 			}
+			s.passesStamped = 0;
 		} else if (!intact && h.queries) {
 			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 1);
 			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 2);
 		}
-		if (h.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * kQueriesPerSlot + 3);
+		if (h.queries) {
+			if (!intact) s.passesStamped = 0;
+			// every timestamp of the slot is written each frame (an unwritten one would make the whole read-back fail)
+			for (uint32_t p = s.passesStamped; p < NVR_RT_MAX_PASSES; p++)
+				vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, h.queries, slot * kQueriesPerSlot + 4 + p);
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * kQueriesPerSlot + 3);
+		}
 		VK_CHECK(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
 		const uint64_t waitValue = frameNumber, signalValue = frameNumber;
@@ -1139,6 +1161,21 @@ namespace {
 				(unsigned long long)frameNumber, g_shared->geometries, (unsigned long long)g_shared->triangles, (unsigned long long)(g_shared->geometryBytes >> 20),
 				g_shared->lastInstances, g_shared->gpuTimeUsAvg / 1000.0, g_shared->buildUsAvg / 1000.0, g_shared->sceneUsAvg / 1000.0, g_shared->traceUsAvg / 1000.0,
 				g_shared->responseUsAvg / 1000.0, g_shared->responseUsMax / 1000.0);
+		if (frameNumber % 120 == 0) {	// per-shader pass times (the RT sessions' request): to NVR's log via the status line
+			char line[480];
+			int n = sprintf_s(line, "pass GPU times (avg of the last 120 frames, ms a run):");
+			bool any = false;
+			for (uint32_t i = 0; i < NVR_RT_MAX_SHADERS && n > 0 && n < 420; i++) {
+				if (!h.passRuns[i]) continue;
+				const char* path = (const char*)g_shared->shaderPaths[i];
+				const char* name = strrchr(path, '\\');
+				name = name ? name + 1 : path;
+				n += sprintf_s(line + n, sizeof(line) - n, " %.40s %.3f (%u runs)", name, h.passUs[i] / 1000.0 / h.passRuns[i], h.passRuns[i]);
+				h.passUs[i] = 0; h.passRuns[i] = 0;
+				any = true;
+			}
+			if (any) Status("%s", line);
+		}
 		if (frameNumber % 600 == 0 && (h.refits || h.fullBuilds))
 			Log("frame %llu: dynamic (actor) geometry: %llu refits in place, %llu full builds so far", (unsigned long long)frameNumber,
 				(unsigned long long)h.refits, (unsigned long long)h.fullBuilds);
