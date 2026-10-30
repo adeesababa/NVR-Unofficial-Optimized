@@ -300,3 +300,19 @@ helper's own timing).
 - The GI bounce's off-screen albedo now comes from `rtHitAlbedo` (RtHit.glsl: the hit texture's colour through the albedo atlas
   when `[Main.Main.RayTracing] HitTextures` is on, else the record's average; a 256 x 256 RGBA8 stand-in at binding 7 when the core
   has no atlas). Run toml rtao/run-toml-igpu-hit.toml (AlphaTested + HitTextures), fork-0033 + extra-p3, list rt-gi-8.
+- **Goodsprings (20261029-234633-slotC, og-goodsprings, AlphaTested + HitTextures, 52759 alpha meshes taken, 1595 instances):**
+  RtAOTrace's own helper time (iGPU 720p): AO alone 16.9 ms; AO + GI 42.2 / 37.7 ms (two shots); GIInterleave 4 + Interleave 2
+  17.7 ms (Lucky 38 was 13.3 ms with that setting). Denoisers as indoors: AO 6.5 ms, GI (half, rgb) 8.6 ms; input 0.6 ms. Outdoors
+  with foliage the full-rate GI is ~2.5x the AO; only the interleaved setting is playable-class on the iGPU. Pictures: no black,
+  no fireflies, no tile seams in the GI light view (DebugView 6): open ground gets little bounce (its rays mostly see sky, which the
+  bounce does not count), walls/rocks/the truck facing lit ground do. The camera moves between Goodsprings shots, so no A/B by
+  picture there. The NVR log has no line that confirms the albedo atlas was live (the core logs alpha slots only).
+- **Lucky 38 (20261030-001722-slotA, lucky22, same toml: AlphaTested + HitTextures; 22519 alpha meshes, 129 atlas slots, 3082
+  instances):** RtAOTrace helper time: AO alone 28.2 ms (rt-gi-7 without AlphaTested: 9.5 ms), AO + GI 50.2 / 67.1 ms (was
+  26-28), GIInterleave 4 + Interleave 2 16.0 ms (was 13.3). Denoisers AO 7.9 ms, GI 10.1 ms. No crash, no black, GI light view
+  plausible (warm bounce off the casino walls; the camera drifts in later shots as before, so the gi4-i2 light view is smeared by
+  motion, not judged).
+- **Verdict:** hit textures work (no crash, stand-in path when off) -> READY as a switch-off commit. Cost: **alpha testing, not
+  the textures, is the bill** — AO's 4 short rays went 9.5 -> 28 ms indoors because every leaf/fence/sign candidate runs
+  rtAlphaPass. Next: AO rays treat alpha-tested meshes as opaque by default (AOAlpha 0 skip / 1 opaque / 2 test), GI keeps the test.
+  rt-sun-core's RtDenoise Kernel = 3 (1f5d987e: half res 3x3 ~3.9 ms) to merge for both denoisers.
