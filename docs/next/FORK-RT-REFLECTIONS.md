@@ -139,8 +139,8 @@ FNV draws see-through glass (windows, bottles, shop cases) in the world scene's 
 the depth buffer and the normals rebuilt from it already hold the glass surface; only "this pixel is glass" was missing, and the
 floor guess only takes surfaces facing up. `core/GlassMask.h` adds it: inside that stage each see-through draw (SandstormGlass's
 rules; characters never count) is drawn once more into a screen-sized mask with a one-instruction "return 1" pixel shader (z test
-LESSEQUAL, no blend, no depth write; MSAA like the scene, resolved after the stage). Once the mask holds glass, an opaque
-depth-writing draw later in the same stage is drawn the same way writing 0, so it unmarks glass it covers. Reflections reads the
+LESSEQUAL, no blend, no depth write; MSAA like the scene, resolved after the stage). The redraw keeps the game's own z test (NVR
+may run inverted depth). Reflections reads the
 mask: masked pixels reflect as smooth glass (roughness 0.03) at strength GlassReflect x Reflectivity, any orientation, through
 SSR, the cube and (with `[Shaders.Reflections.RT]`) the ray trace; the composite's Fresnel does the rest. Not during a sandstorm
 that hides glass depth. Off: nothing hooked, no target, no draw.
@@ -181,11 +181,14 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
-### 2026-10-29 21:00-22:00 glass reflections (rtrefl-7; 1414c513, DLL ca236309; fix 06f60e05, DLL 110F653E)
+### 2026-10-29 21:00-23:20 glass reflections (rtrefl-7; 1414c513, DLL ca236309; fixed in c85cdb10, DLL 57543F00)
 - iGPU saloon16: window panes and the mirror reflect. Reflection alone (DebugView 1), glass vs off: 16.2 % of pixels > 2, against
   0.67 % noise; full picture 7.9 % vs a 6.5 % noise floor (saloon's noise is high). 7500 redraws / 600 stages = ~12.5 a frame.
-  Flaw: a vertical band over the NPC's face in the mask (glass behind her marked, she was drawn later in the stage). Fixed in
-  06f60e05 (occluders unmark, characters never glass); rerun below.
+  Flaw: a band over the NPC's face in the mask: glass BEHIND her was marked. Cause: the redraw forced ZFUNC LESSEQUAL, and NVR
+  may run inverted depth (larger = nearer), so glass behind nearer surfaces passed. 06f60e05 tried "later opaque draws unmark"
+  (0 such draws: wrong guess); c85cdb10 keeps the game's own z test instead (characters stay never-glass).
+- iGPU saloon16 again with c85cdb10: face clean; the reflection-alone diff is the window panes (cut by the NPC in front), the
+  mirror and the jukebox glass only: 11.3 % > 2 vs 0.27 % noise; full picture 1.08 % vs 0.68 % noise; glass + RT 1.93 %.
 - iGPU luxe: 2.11 % of pixels > 2 against 0.16 % noise, 40 glass redraws a frame, no artefacts seen.
 - GTX 1070 saloon16, cost (CPU PROFILE per shot, 2 samples of 120 frames each): "Rnd world draws (2nd)" 0.32 ms with glass vs
   0.17-0.23 ms without (alone shots 0.25/0.29 vs 0.24): about +0.05-0.1 ms CPU for ~12.5 redraws. GPU "World scene (game)" 2.03
