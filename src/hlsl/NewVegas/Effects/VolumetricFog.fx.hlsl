@@ -80,7 +80,8 @@ float4 TESR_VolumetricFogGlobal;     // x: Amount, y: NightDisableSkyMask, z: Mo
 // don't crowd Main as more of them get added.
 float4 TESR_VolumetricFogNight;        // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 float4 TESR_VolumetricFogNightScatter; // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
-float4 TESR_VolumetricFogSun;          // UNOFFICIAL 2026-10-15 x: SunGlow (1 = the glow round the sun as inherited from NVR); 2026-10-30 y: WeatherFogColor
+float4 TESR_VolumetricFogSun;          // UNOFFICIAL 2026-10-15 x: SunGlow (1 = the glow round the sun as inherited from NVR); 2026-10-30 y: WeatherFogColor;
+                                      // 2026-10-30 z: GameFogFloor this frame (0 = off / indoors), w: the weather's raw fog near
 float4 TESR_VolumetricFogNightTint;    // xyz: multiplicative night fog color tint, w: NightAmbientStrength
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -706,7 +707,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 // colour and sky ambient (the game's own sky, not the physical sky) and its glow round the sun (SunGlow 1). Everything else is
 // master's maths as it was; the speed work stays (half-resolution coefficients with the full-resolution apply, the shadow and
 // AO applies folded in, the closed-form height fog).
-void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false, bool classic = false)
+void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false, bool classic = false, bool gameFloor = true)
 {
 	VSOUT IN = (VSOUT)0;
 	IN.UVCoord = uv;
@@ -976,16 +977,36 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	fogMul = lerp(1.0, fogMul, nightAmount);
 	fogAdd *= nightAmount;
 	nightAmountOut = nightAmount;
+
+	// UNOFFICIAL 2026-10-30 GameFogFloor ([Shaders.VolumetricFog.Main], TESR_VolumetricFogSun.z, 0 = off and indoors; user: the fog is
+	// nearly invisible in clear weather at noon): at least the game's own fog for the weather covers the picture, the game's curve
+	// pow(saturate((d - near) / (far - near)), power) with the weather's raw near (w) times z; where NVR's fog already covers as much,
+	// nothing changes. The top-up blends toward NVR's own fog colour without the sun's glow (blending a share of the picture toward the
+	// glow, up to ~25x the sun's colour, would blow it out). Not on the sky dome: the game's fog leaves the sky alone. A weather without
+	// fog distances (far <= near) has none, as in the game. (ClassicLook: off, as master.) gameFloor false: the per-pixel fallback of
+	// the composite pass with the physical sky (DedicatedFogComposite), which sits at ps_3_0's 224 constant registers: any reference
+	// to the floor's constant pushed it over, so those rare pixels (thin edges, foliage gaps) keep NVR's own fog there (the Vulkan
+	// passes, on by default, have no such limit and floor every pixel).
+	[branch] if (gameFloor && !classic && TESR_VolumetricFogSun.z > 0.0) {
+		float gameNear = TESR_VolumetricFogSun.w;
+		float gameFog = farFog > gameNear + 1.0 ? pows(saturate((length(eyeVector) - gameNear) / (farFog - gameNear)), FogPower) : 0.0;
+		float want = saturate(TESR_VolumetricFogSun.z * gameFog) * (1.0 - isSkyDome);
+		float kept = luma(fogMul);	// the share of the picture NVR's fog leaves (its luma weights: no new constant in this full pass)
+		float topUp = saturate((want - (1.0 - kept)) / max(kept, 0.0001));
+		float3 haze = fogColor(ambientSkyColor, pureFogColor, strength, FogSkyColorCoeff, black, FogSaturation).rgb * lerp(float3(1, 1, 1), NightTint, nightFactor);
+		fogMul *= 1.0 - topUp;
+		fogAdd = lerp(fogAdd, haze, topUp);
+	}
 }
 
 // Legacy fog (custom build) or the current fog: legacy is a compile-time constant, one per technique. So is classic
 // (UNOFFICIAL 2026-10-18 ClassicLook, the *Classic techniques; see ModernFogTerms).
-void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy, bool interior = false, bool classic = false)
+void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy, bool interior = false, bool classic = false, bool gameFloor = true)
 {
 	if (legacy)
 		LegacyFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior);
 	else
-		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior, classic);
+		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior, classic, gameFloor);
 }
 
 float4 VolumetricFog(VSOUT IN, uniform bool legacy, uniform bool classic = false) : COLOR0
@@ -1117,7 +1138,7 @@ VSOUT HalfVS(VSIN IN)
 }
 
 // Depth-aware upsample of the half-resolution fog coefficients, applied to a gamma-space colour.
-float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false, bool classic = false)
+float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false, bool classic = false, bool gameFloor = true)
 {
 	float2 texel = NVR_FogLayout.zw;
 	float2 position = uv / texel - 0.5;
@@ -1152,7 +1173,7 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false
 	float bestDifference = min(min(difference.x, difference.y), min(difference.z, difference.w));
 	[branch] if (bestDifference > 3.0) {
 		float nightAmount;
-		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, interior, classic);
+		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, interior, classic, gameFloor);
 	}
 
 	float3 color = linearize(gammaColor);
@@ -1258,7 +1279,8 @@ float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy, uniform bool classic
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	color = FogApply(color, IN.UVCoord, legacy, false, classic);
+	// (UNOFFICIAL 2026-10-30 GameFogFloor: not in this pass's per-pixel fallback with the physical sky: ModernFogTerms says why)
+	color = FogApply(color, IN.UVCoord, legacy, false, classic, !PHYSICAL_SKY_ON);
 	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
 	return float4(color, 1);
 }
