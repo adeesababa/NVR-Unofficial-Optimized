@@ -209,6 +209,21 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   textured yet (the skin shader's texture is not read: flat grey). The debug pass itself is 23.6 ms (a check, not a feature cost).
 - ReSTIR-style reservoir reuse for the GI bounce is offered to rt-ao-sky (its side).
 
+### rtsun-23..26 (2026-10-30): denoiser cost, textured actors, glow flag, cell-change hardening
+- **Denoiser cost** ("RT denoise: RT sun shadows", its own GPU profile line now), SunAngle 2, 720p iGPU: 24.7 ms full res 5x5,
+  14.6 ms full res 3x3 (`DenoiseKernel 3` / Settings.Kernel 3), **3.9 ms half res 3x3** (rtsun-23). Recommended on slow GPUs:
+  HalfResolution + DenoiseKernel 3. (rt-lamp-shadows measured two full-res runs at +55..90 ms and kept its own filter.)
+- **Textured actors** (HitTextures): fork patch 0033 amended (fork-0033b: StageSkinnedGeometry keeps texcoords), the body's
+  diffuse goes into the atlas (the skin shader's property is still PPLighting by class). rtsun-24/25: still the grey fallback, 742
+  partitions textured: the helper's refit kept the first build's data, made before the texture had an atlas slot (no texcoords)
+  -> c3d66403: refit only when the texcoord state matches. rtsun-26 (20261030-013208-slotC): the body shows its skin texture in
+  DebugView 7 (60 distinct values over the body, was one flat value).
+- **Glow flag** (35f88f09): NVR_RT_RECORD_GLOW on draws with a glow map (PPLighting slot 2), for rt-reflections' GlowBrightness
+  (their run is its check).
+- **Cell-change hardening** (3ec9d99f): all actor partitions released at once when the player's cell changes. rtlamp-19's Freeside
+  crash showed no NVR frame (main thread, the game's own code, "Blackjack Dealer"); rtlamp-20 (Actors off + no tai) passed; the
+  Actors-on / no-tai split is rt-lamp-shadows' next run.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
