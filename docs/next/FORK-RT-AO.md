@@ -256,6 +256,12 @@ accumulate (below): both are temporal + edge-aware spatial already.
   GI, the helper's per-pass timer): Interleave 1 26.3 ms, 2 14.8 ms (-44 %), 4 8.0 ms (-70 %) on the iGPU at 720p. Pictures with
   Interleave 2 / 4 vs 1: 0.2 / 0.3 % of pixels differ by more than 4 levels (still camera; the denoisers and AmbientLight's history fill
   the untraced texels). Recommended: Interleave 2 or 4 on slow GPUs (default stays 1).
+- **rt-gi-7 (10-29 22:50 lucky22 slot B, DLL 5F01A46A): GIInterleave PASS.** RtAOTrace (AO 4 + GI) per the helper: GIInterleave 1
+  27.7 ms, 2 18.6 ms (-33 %), 4 14.7-17.2 ms (-40 %; AO alone is ~9.5 so GI drops from ~18 to ~5), GIInterleave 4 + Interleave 2
+  13.3 ms. Final pictures with GIInterleave 2 / 4 vs 1: 0.2 / 0.4 % of pixels > 4 levels apart. The raw GI light view (DebugView 6)
+  shows a faint 16-pixel tile pattern at GIInterleave 4 (FFT peak 0.8-0.9 vs 0.05-0.5 at 1) that the final picture does not (the
+  denoiser and AmbientLight's GI accumulate smooth it). The queue lost the first ticket to a QUEUE.mutex PermissionError (note in
+  side-session-notes BENCHQ-MUTEX-PERMISSION-2026-10-29.md); the wrapper now re-submits on it.
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
