@@ -473,3 +473,14 @@ game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial out
   recommended preset GIInterleave 4 ~20-25); a world-space cache (hash grid) adds an update pass and lookups (~5-10 ms) for a
   second bounce that is mostly a few percent of light indoors. The cheap form (at a bounce hit seen on screen, add last frame's GI
   there x the hit's albedo) needs a 13th image in the merged pass. Worth doing on a discrete RT GPU, not on this iGPU budget.
+
+### GlowGI with the core's glow atlas (ca01bfa7, DLL FD2F7286; rt-sun-core d40b6645 GlowTextures)
+- Bounce hits take rtHitGlow (the glow map's own colour at the hit, only the lit parts) when the atlas is bound (sunColor.w 1), in
+  the merged pass (atlas as image 11 in place of GlowDirect's list: GlowDirect on forces the separate pass), the separate GI pass
+  (11 images) and the plain AO pass (12 images, 6-10 unused fillers).
+- **rt-gi-19 (fork-0033c, extra-p3d, AlphaTested + HitTextures + GlowTextures): works.** No crash, no helper errors.
+  Lucky 38 (20261030-100154-slotA): bounce mean 18.65 -> 22.30 (GlowGI 1, +20 %) -> 24.56 (2, +32 %) with the glow maps'
+  yellow-green (slot machines, ceiling slots) instead of the whole-mesh orange; plain AO pass +12 %. Ultra-Luxe (20261030-102900-slotA):
+  GlowGI 1 +31 % (whole-mesh GlowGI: +3 %); its later shots are other views. Still a broad fill, not pools: dozens of small emitters,
+  mostly off screen, each texel's one bounce ray finds them all over the room. Cost unchanged (merged pass Lucky 38 37.9-41.7 ms with
+  GlowGI vs 45.9 without; Ultra-Luxe 31-34; separate pass with the atlas 8-15 ms).
