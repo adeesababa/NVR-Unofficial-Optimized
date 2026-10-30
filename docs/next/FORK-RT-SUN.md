@@ -199,6 +199,16 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   hard 4.48 -> 2.10 ms, SunAngle 2 4.63 -> 2.25 ms at 720p on the iGPU. With SunAngle 2 the half-size picture is nearly the same as
   the full-size one (slightly blockier edges); recommended pairing on slow GPUs: SunAngle 0.53-2 + HalfResolution.
 
+### rtsun-20 (20261029-223438-slotC): hit textures (step 5's core part)
+- rt-ao-sky already has a one-bounce RT GI (sun + lamps), so instead of a second one the core got what that bounce and the
+  reflections lack: `[Main.Main.RayTracing] HitTextures` (off): textured meshes keep their texcoords and get an atlas slot; one
+  two-target pass (RtTextureToAtlas) fills the alpha atlas and a new RGBA8 albedo atlas (64 x 64 a texture); record flag 0x40;
+  `Compute/Rt/RtHit.glsl` (hit triangle, object normal, texcoords, `rtHitAlbedo`: the texture's colour, else the record's average);
+  `RtCore::AlbedoAtlasImage()`. DebugView 7 (RtHitDebug.comp: camera rays, the hit colour's luminance): the road, rocks, Joshua
+  trees' foliage, the windmill and the poles show their texture detail; 131 atlas slots at og-goodsprings. Skinned actors are not
+  textured yet (the skin shader's texture is not read: flat grey). The debug pass itself is 23.6 ms (a check, not a feature cost).
+- ReSTIR-style reservoir reuse for the GI bounce is offered to rt-ao-sky (its side).
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
