@@ -422,3 +422,16 @@ with screen-light lookup, hit textures, RIS lamps, ReSTIR GI temporal reuse (+ v
 (step 3); AO RayCount 2, AOAlpha. All off by default, own switches, auto-off without RT; READY lines in RT-TRAIN.md.
 Open, smaller: GIInterleave 1 pays ~6 ms for the GI pass being separate (merge it back into the AO pass when not interleaved);
 game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial outdoors at night; an NPC-facing A/B for actor bounce colour.
+
+## Emissive surfaces as GI light: GlowGI (main session's new direction, 2026-10-30)
+- **a41beb9f (DLL 3DFEEAE7):** `GlowGI` (0-4, default 0 = off). A bounce hit on a draw with a glow map (record flag 0x04, rt-sun-core
+  35f88f09: neon, lit windows, lamp globes, screens) adds its own light = the hit texture's colour x GlowGI, weighted by
+  smoothstep(0.35, 0.8, its strongest channel) because the flag covers the whole mesh while the glow map marks parts of it. Only
+  off-screen hits: on-screen ones already take the lit frame (glow included). Both passes (AO pass GI and RtGITrace), constant
+  ambient.w.
+- **rt-gi-16 (Lucky 38 20261030-071542-slotA, Ultra-Luxe 20261030-072733-slotA):** cost unchanged (RtGITrace Lucky 38 25.8 / 26.4 /
+  26.5 ms at GlowGI 0 / 1 / 2; Ultra-Luxe 21.4-22.9). Lucky 38 bounce light (still camera) mean 18.78 -> 21.96 (GlowGI 1, +17 %) ->
+  23.68 (GlowGI 2, +26 %); at 2 the floor gets a broad warm fill from the glowing machines and signs off screen, no fireflies, no
+  facade glowing whole. Ultra-Luxe: GlowGI 1 +3 % (fewer glow meshes); its GlowGI 2 shot is a different view (the camera moved), not
+  compared. Verdict: works, opt-in; it reads as a warm fill more than as distinct coloured pools (the bounce is one ray at half res,
+  denoised). ReSTIR sampling of emissive instances (aiming rays at them) would make pools; not done.
