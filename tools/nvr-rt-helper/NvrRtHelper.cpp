@@ -670,14 +670,15 @@ namespace {
 	}
 
 	bool CreatePipelineLayout(Helper& h) {
-		const uint32_t bindingCount = 2 + NVR_RT_PASS_IMAGES + 2;
-		VkDescriptorSetLayoutBinding bindings[2 + NVR_RT_PASS_IMAGES + 2] = {};
-		VkDescriptorBindingFlags flags[2 + NVR_RT_PASS_IMAGES + 2] = {};
+		const uint32_t bindingCount = 2 + NVR_RT_PASS_IMAGES_MAX + 2;
+		VkDescriptorSetLayoutBinding bindings[2 + NVR_RT_PASS_IMAGES_MAX + 2] = {};
+		VkDescriptorBindingFlags flags[2 + NVR_RT_PASS_IMAGES_MAX + 2] = {};
 		bindings[0] = { 0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		bindings[1] = { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
-		for (uint32_t i = 0; i < NVR_RT_PASS_IMAGES; i++) {
-			bindings[2 + i] = { 2 + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
-			flags[2 + i] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+		for (uint32_t i = 0; i < NVR_RT_PASS_IMAGES_MAX; i++) {	// images 0..7 at 2..9, 8..11 at 12..15 (records / geometry stay 10 / 11)
+			const uint32_t at = i < NVR_RT_PASS_IMAGES ? 2 + i : 4 + i;
+			bindings[at] = { NvrRtPassBinding(i), VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+			flags[at] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 		}
 		bindings[2 + NVR_RT_PASS_IMAGES] = { NVR_RT_BINDING_RECORDS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 		bindings[3 + NVR_RT_PASS_IMAGES] = { NVR_RT_BINDING_GEOMETRY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
@@ -696,7 +697,7 @@ namespace {
 		VkDescriptorPoolSize sizes[4] = {
 			{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, sets },
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * NVR_RT_PASS_IMAGES },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets * NVR_RT_PASS_IMAGES_MAX },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2 } };
 		VkDescriptorPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		poolInfo.maxSets = sets;
@@ -1165,9 +1166,9 @@ namespace {
 		for (uint32_t p = 0; p < std::min<uint32_t>(f.passCount, NVR_RT_MAX_PASSES); p++) {
 			const NvrRtPass& pass = f.passes[p];
 			VkPipeline pipeline = Pipeline(h, pass.shader);
-			if (!pipeline || pass.imageCount > NVR_RT_PASS_IMAGES) continue;
+			if (!pipeline || pass.imageCount > NVR_RT_PASS_IMAGES_MAX) continue;
 			bool imagesOk = true;
-			for (uint32_t i = 0; i < pass.imageCount; i++) imagesOk = imagesOk && pass.images[i] < h.imageCount && h.images[pass.images[i]].view;
+			for (uint32_t i = 0; i < pass.imageCount; i++) imagesOk = imagesOk && NvrRtPassImage(pass, i) < h.imageCount && h.images[NvrRtPassImage(pass, i)].view;
 			if (!imagesOk) { Log("pass %u: an image index is not a shared image", p); continue; }
 			memcpy((uint8_t*)s.constants.mapped + (size_t)p * NVR_RT_PASS_CONSTANTS, pass.constants, std::min<uint32_t>(pass.constantsSize, NVR_RT_PASS_CONSTANTS));
 
@@ -1175,15 +1176,15 @@ namespace {
 			asWrite.accelerationStructureCount = 1;
 			asWrite.pAccelerationStructures = &h.tlas;
 			VkDescriptorBufferInfo ubo = { s.constants.buffer, (VkDeviceSize)p * NVR_RT_PASS_CONSTANTS, NVR_RT_PASS_CONSTANTS };
-			VkDescriptorImageInfo imageInfos[NVR_RT_PASS_IMAGES] = {};
-			VkWriteDescriptorSet writes[2 + NVR_RT_PASS_IMAGES + 2] = {};
+			VkDescriptorImageInfo imageInfos[NVR_RT_PASS_IMAGES_MAX] = {};
+			VkWriteDescriptorSet writes[2 + NVR_RT_PASS_IMAGES_MAX + 2] = {};
 			VkDescriptorBufferInfo recordInfo = { s.records.buffer, 0, VK_WHOLE_SIZE };
 			VkDescriptorBufferInfo dataInfo = { h.geometryData.buffer, 0, VK_WHOLE_SIZE };
 			writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &asWrite, s.sets[p], 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR };
 			writes[1] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo };
 			for (uint32_t i = 0; i < pass.imageCount; i++) {
-				imageInfos[i] = { VK_NULL_HANDLE, h.images[pass.images[i]].view, VK_IMAGE_LAYOUT_GENERAL };
-				writes[2 + i] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], 2 + i, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imageInfos[i] };
+				imageInfos[i] = { VK_NULL_HANDLE, h.images[NvrRtPassImage(pass, i)].view, VK_IMAGE_LAYOUT_GENERAL };
+				writes[2 + i] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], NvrRtPassBinding(i), 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imageInfos[i] };
 			}
 			writes[2 + pass.imageCount] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], NVR_RT_BINDING_RECORDS, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &recordInfo };
 			writes[3 + pass.imageCount] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.sets[p], NVR_RT_BINDING_GEOMETRY, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dataInfo };

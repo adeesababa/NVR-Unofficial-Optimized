@@ -1160,7 +1160,7 @@ bool RtCore::CopyIn(int Image, IUnknown* Source, const RECT* Rect) {
 
 bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize, UINT GroupsX, UINT GroupsY) {
 	NvrRtFrame* f = TheCore.record;
-	if (!TheCore.recording || !f || f->passCount >= NVR_RT_MAX_PASSES || Shader < 0 || ImageCount > NVR_RT_PASS_IMAGES || ConstantsSize > NVR_RT_PASS_CONSTANTS)
+	if (!TheCore.recording || !f || f->passCount >= NVR_RT_MAX_PASSES || Shader < 0 || ImageCount > NVR_RT_PASS_IMAGES_MAX || ConstantsSize > NVR_RT_PASS_CONSTANTS)
 		return false;
 	NvrRtPass& p = f->passes[f->passCount];
 	memset(&p, 0, offsetof(NvrRtPass, constants));
@@ -1170,7 +1170,8 @@ bool RtCore::AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteM
 	p.groupsZ = 1;
 	for (UINT i = 0; i < ImageCount; i++) {
 		if (Images[i] <= 0 || Images[i] >= (int)TheCore.images.size()) return false;
-		p.images[i] = (uint32_t)Images[i];
+		if (i < NVR_RT_PASS_IMAGES) p.images[i] = (uint32_t)Images[i];
+		else p.extraImages |= (uint32_t)Images[i] << (8u * (i - NVR_RT_PASS_IMAGES));	// images 8..11: bindings 12..15 (2026-10-30)
 	}
 	p.imageCount = ImageCount;
 	p.writeMask = WriteMask;
