@@ -7,6 +7,7 @@
 #include "PointShadowForward.h"
 #include "ManyLamps.h"	// UNOFFICIAL 2026-10-27 ManyLampsOnePass
 #include "ShaderPrecompile.h"
+#include "TestTools.h"	// NVR_TEST_TOOLS (FailShaders)
 #include <unordered_set>
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17
@@ -403,6 +404,21 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 		!TheSettingManager->GetSettingI("Shaders.Grass.Main", "PointLights"))
 		return ShaderProg;
 
+#if NVR_TEST_TOOLS
+	// UNOFFICIAL 2026-10-30, test only (terrain flicker deep dive, docs/next/TERRAIN-FLICKER.md): [Main.Develop.Main] FailShaders, a list of
+	// shader names ("SLS2132.pso,SLS2134.pso"), loads none of them, as a failed compile does (an older build's X4505 on the 6-layer
+	// land): the game's own shader draws instead. Read at load (a restart). Missing key: nothing.
+	{
+		char fail[512];
+		TheSettingManager->GetSettingS("Main.Develop.Main", "FailShaders", fail);
+		const size_t length = strlen(Name);
+		for (const char* f = strstr(fail, Name); f; f = strstr(f + 1, Name))
+			if ((f == fail || f[-1] == ',' || f[-1] == ' ') && (f[length] == 0 || f[length] == ',' || f[length] == ' ')) {
+				Logger::Log("UNOFFICIAL TEST FailShaders: %s not loaded (as a failed compile)", Name);
+				return ShaderProg;
+			}
+	}
+#endif
 	strcpy(ShaderPreprocessedPath, CacheDirectory);
 	strcat(ShaderPreprocessedPath, Name);
 	strcat(ShaderPreprocessedPath, ".hlsl");
