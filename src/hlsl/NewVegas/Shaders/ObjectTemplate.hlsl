@@ -1742,7 +1742,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     #define MANY_LAMPS_C 5
     float4 NVR_ManyLampsB[2 * MANY_LAMPS_B] : register(c76);
     float4 NVR_ManyLampsC[2 * MANY_LAMPS_C] : register(c98);
-    #if MANY_LAMPS_ON == 2
+    #if MANY_LAMPS_ON >= 2
+        #if MANY_LAMPS_ON == 3
+            #define LIGHT_COMMON_ROWS 31.0f	// UNOFFICIAL 2026-10-30 ClusteredLamps: ManyLamps::TableRows
+        #endif
         #include "includes/LightCommon.hlsl"	// UNOFFICIAL 2026-10-29 LightCommonLamps: the lamps from the frame's table (s3)
     #endif
 #endif
@@ -1833,7 +1836,11 @@ float4 PSLightPosition[8] : register(c19);
     #define glossPow PSLightColor[1].w
 #endif
 
+#if defined(MANY_LAMPS) && MANY_LAMPS_ON == 3
+PS_OUTPUT main(PS_INPUT IN, float2 mlVPos : VPOS) {	// UNOFFICIAL 2026-10-30 ClusteredLamps: the pixel's froxel
+#else
 PS_OUTPUT main(PS_INPUT IN) {
+#endif
     PS_OUTPUT OUT;
 
 #ifdef LINEAR_LIGHTING

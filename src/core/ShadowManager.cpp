@@ -168,6 +168,7 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	// the hash (a redraw); with LampModelShadows off so does a new listing of the cell's lamp models (LampFixtures::Generation).
 	const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forwardSettings = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
 	hash = forwardSettings.LampGlassShadows ? 1469598103934665603ULL : 0x6C62272E07BB0142ULL;
+	hash = (hash ^ (UInt64)(SInt64)(forwardSettings.OwnGlassDistance * 16.0f) << 8) * 1099511628211ULL;	// UNOFFICIAL 2026-10-30 OwnGlassDistance
 	if (!forwardSettings.LampModelShadows)
 		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
@@ -1462,6 +1463,10 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			// UNOFFICIAL LampGlassShadows false (2026-10-20): a lamp's glowing glass, bulb or glow sprite is a light source, not a
 			// blocker; drawn solid it threw the whole shade outline of a sconce or chandelier onto the wall (LampFixtures::LampPart).
 			if (!Settings->Forward.LampGlassShadows && LampFixtures::LampPart(geo))
+				continue;
+			// UNOFFICIAL OwnGlassDistance (2026-10-30): the light's own glass (a lamp part it sits in or next to) casts nothing into its map
+			// (Vault 21's floor lamps lost their floor pools to it once they had a shadow slot); other lamps' maps keep it.
+			if (!TheShaderManager->GameState.isExterior && LampFixtures::OwnGlass(geo, LightPos, Settings->Forward.OwnGlassDistance))
 				continue;
 
 			// UNOFFICIAL InvisibleShadowFromLamp (2026-10-20): drawn from a lamp, that lamp (its model, and every glowing lamp part) is

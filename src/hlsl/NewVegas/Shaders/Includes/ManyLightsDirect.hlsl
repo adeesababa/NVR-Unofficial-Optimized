@@ -19,7 +19,7 @@
 #else
     lighting = 0.0f;
 #endif
-#if MANY_LAMPS_ON == 2
+#if MANY_LAMPS_ON >= 2
 // UNOFFICIAL 2026-10-29 LightCommonLamps (Includes/LightCommon.hlsl, core/ManyLamps.h): the same lamps from the frame's lamp table. c37 x the
 // count, y the reach scale; c38 the lighting offset; c39-c41 world -> object rows; c42-c44 the table indices (LightCommonIndex). The first six
 // keep their compile-time cube-map shadow slot (SHADOWED needs it), so they are written out; every lamp after them is ONE real loop.
@@ -95,6 +95,39 @@
         ML_TABLE_LAMP(4, SHADOWED(mlTC, 5, att))
         ML_TABLE_LAMP(5, mlTC)
     #endif
+    #endif
+    #if MANY_LAMPS_ON == 3
+    // UNOFFICIAL 2026-10-30 ClusteredLamps (core/ManyLamps.h BinFroxels): past the draw's six shadowed lamps, every lamp of this pixel's
+    // froxel (screen tile x depth slice) instead of the draw's list. c45 the view depth from the object's space, c46 x 1 / tile size,
+    // y tiles across, z tiles a slice, w 1 = on (0: first person, lists not made, setting off live), c47 x the last slice.
+    [branch] if (NVR_ManyLamps[9].w > 0.5f) {
+        const float mlZ = dot(float4(mlWorldPos, 1.0f), NVR_ManyLamps[8]);
+        const float2 mlTile = floor(mlVPos * NVR_ManyLamps[9].x);
+        const float mlSlice = mlZ < 64.0f ? 0.0f : min(NVR_ManyLamps[10].x, floor(log2(mlZ)) - 5.0f);
+        const float mlBase = (mlSlice * NVR_ManyLamps[9].z + mlTile.y * NVR_ManyLamps[9].y + mlTile.x) * 8.0f;
+        const float mlN = LightCommonListTexel(mlBase).x;
+        // the draw's six (already lit, with their shadows) are left out of the froxel's list
+        const float mlS0 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 0.0f);
+        const float mlS1 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 1.0f);
+        const float mlS2 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 2.0f);
+        const float mlS3 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 3.0f);
+        const float mlS4 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 4.0f);
+        const float mlS5 = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], 5.0f);
+        [loop] for (int mlK = 0; mlK < 31; mlK++) {
+            [branch] if ((float)mlK >= mlN) break;
+            const float mlE = (float)mlK + 1.0f;
+            const float mlT = floor((mlE + 0.5f) / 4.0f);
+            const float mlC = mlE - mlT * 4.0f;
+            const float4 mlV = LightCommonListTexel(mlBase + mlT);
+            const float mlI = dot(mlV, float4(mlC < 0.5f, abs(mlC - 1.0f) < 0.5f, abs(mlC - 2.0f) < 0.5f, mlC > 2.5f));
+            [branch] if (mlI != mlS0 && mlI != mlS1 && mlI != mlS2 && mlI != mlS3 && mlI != mlS4 && mlI != mlS5) {
+                float4 mlTP; float3 mlTC;
+                LightCommonLamp(mlI, NVR_ManyLamps[1], NVR_ManyLamps[2], NVR_ManyLamps[3], NVR_ManyLamps[4], NVR_ManyLamps[0].y, mlTP, mlTC);
+                ML_LAMP_AT(true, mlTP, mlTC)
+            }
+        }
+    }
+    else
     #endif
     [loop] for (int mlIndex = 6; mlIndex < 24; mlIndex++) {
         [branch] if (mlIndex >= mlCount) break;
@@ -196,7 +229,7 @@
     #endif
     #undef ML_TS
 }
-#endif // MANY_LAMPS_ON == 2
+#endif // MANY_LAMPS_ON >= 2
 #else
 #ifndef OPT
     lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);

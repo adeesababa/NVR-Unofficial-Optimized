@@ -11,6 +11,9 @@
 
 #define LIGHT_COMMON_TEXELS 2048.0f		// table width (2 texels a lamp, 1024 lamps: Vault 21 has 447 lights)
 #define LIGHT_COMMON_NONE 4095.0f		// "no lamp here" (a slot kept for its shadow-slot order)
+#ifndef LIGHT_COMMON_ROWS
+#define LIGHT_COMMON_ROWS 1.0f			// UNOFFICIAL 2026-10-30 ClusteredLamps: 31 (row 0 the lamps, rows 1-30 the froxel lists: ManyLamps::TableRows)
+#endif
 
 sampler2D NVR_LampTable : register(s3);	// no sampler_state: the DLL binds it point / clamp (free in these object shaders)
 
@@ -31,11 +34,19 @@ float LightCommonIndex(float4 packedA, float4 packedB, float4 packedC, float k) 
 // offset: the draw's lighting offset (first person); r0-r2: the world -> object transform's rows (x = dot(float4(world, 1), r0)).
 void LightCommonLamp(float i, float4 offset, float4 r0, float4 r1, float4 r2, float reachScale, out float4 positionReach, out float3 color) {
     const float x = (i * 2.0f + 0.5f) / LIGHT_COMMON_TEXELS;
-    const float4 p = tex2Dlod(NVR_LampTable, float4(x, 0.5f, 0.0f, 0.0f));
-    const float4 c = tex2Dlod(NVR_LampTable, float4(x + 1.0f / LIGHT_COMMON_TEXELS, 0.5f, 0.0f, 0.0f));
+    const float4 p = tex2Dlod(NVR_LampTable, float4(x, 0.5f / LIGHT_COMMON_ROWS, 0.0f, 0.0f));
+    const float4 c = tex2Dlod(NVR_LampTable, float4(x + 1.0f / LIGHT_COMMON_TEXELS, 0.5f / LIGHT_COMMON_ROWS, 0.0f, 0.0f));
     const float4 w = float4(p.xyz + offset.xyz, 1.0f);
     positionReach = float4(dot(w, r0), dot(w, r1), dot(w, r2), p.w * reachScale);
     color = c.rgb;
+}
+
+// UNOFFICIAL 2026-10-30 ClusteredLamps (core/ManyLamps.h BinFroxels): texel t of the froxel lists (row 1 on, LIGHT_COMMON_TEXELS a row).
+// A froxel's list is 8 texels from froxel x 8: texel 0 = (count, lamp 0, 1, 2), then four lamp indices a texel (31 at most).
+float4 LightCommonListTexel(float t) {
+    const float row = floor(t / LIGHT_COMMON_TEXELS);	// (a power of two: exact)
+    const float col = t - row * LIGHT_COMMON_TEXELS;
+    return tex2Dlod(NVR_LampTable, float4((col + 0.5f) / LIGHT_COMMON_TEXELS, (row + 1.5f) / LIGHT_COMMON_ROWS, 0.0f, 0.0f));
 }
 
 #endif

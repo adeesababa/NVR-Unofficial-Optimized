@@ -650,6 +650,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.LampSize = std::clamp(TheSettingManager->GetSettingF(section, "LampSize"), 0.0f, 64.0f);
 		forward.MaxSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MaxSoftness"), 1.0f, 32.0f);
 		forward.LampGlassShadows = TheSettingManager->GetSettingI(section, "LampGlassShadows") != 0;
+		forward.OwnGlassDistance = std::clamp(TheSettingManager->GetSettingF(section, "OwnGlassDistance"), -1.0f, 128.0f);
 		forward.LampModelShadows = TheSettingManager->GetSettingI(section, "LampModelShadows") != 0;
 		forward.LampModelDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelDistance"), 0.0f, 512.0f);
 		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);

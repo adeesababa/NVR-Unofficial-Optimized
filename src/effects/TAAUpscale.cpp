@@ -36,6 +36,7 @@
 #include "../core/Upscaler.h"
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion
+#include "../core/ReactiveMask.h"	// UNOFFICIAL 2026-10-30 ReactiveMask
 
 D3DXVECTOR4 TAAEffect::RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 
@@ -56,12 +57,13 @@ namespace {
 	struct UpPrepConstants {
 		D3DXMATRIX	projection, view, prevView;
 		D3DXVECTOR4	cameraData, prevProjection, cameraDelta, size;
+		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5
 	};
 #define IMG(b)      { 1, b, NVR_EXT_BIND_SAMPLED_IMAGE, b, NVR_EXT_VIEW_2D, FALSE, 0 }
 #define UAV(b)      { 1, b, NVR_EXT_BIND_STORAGE_IMAGE, b, NVR_EXT_VIEW_2D, TRUE, 0 }
 #define CB(s, b)    { s, b, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
 #define POINTS      { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
-	const NVR_EXT_BINDING_DESC UpPrepBindings[] = { IMG(0), IMG(1), UAV(2), UAV(3), CB(2, 0), POINTS, IMG(4) };	// IMG(1): v2's viewmodel depth
+	const NVR_EXT_BINDING_DESC UpPrepBindings[] = { IMG(0), IMG(1), UAV(2), UAV(3), CB(2, 0), POINTS, IMG(4), IMG(5) };	// IMG(1): v2's viewmodel depth; IMG(5): UNOFFICIAL 2026-10-30 ReactiveMask
 #undef IMG
 #undef UAV
 #undef CB
@@ -489,13 +491,16 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
 	prep.cameraDelta = D3DXVECTOR4(delta.x, delta.y, delta.z, objectMotion ? 1.0f : 0.0f);
 	// w: v2 (the weapon is drawn by now) = its reactive value and FSRPrep.comp's weapon rule; v1 = -1, no weapon test.
 	prep.size = D3DXVECTOR4((float)renderWidth, (float)renderHeight, reset ? 1.0f : 0.0f, resolveDepth ? -1.0f : FSRSettings.WeaponReactive);
+	const bool reactive = ReactiveMask::Ready();	// UNOFFICIAL 2026-10-30
+	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 	ID3D9NvrExtBuffer* prepBuffer = ExtUniforms(Up.PrepUniforms, &prep, sizeof(prep));
 	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
 	if (!prepBuffer || !point) { fail("its constant buffer or sampler could not be made"); return false; }
 	{
 		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, TheTextureManager->DepthTexture), Image(1, TheTextureManager->DepthTextureViewModel),
 			Image(2, Up.Motion.Texture, true), Image(3, Up.Depth.Texture, true), {}, {},
-			Image(4, objectMotion ? (IUnknown*)ObjectMotion::Texture : (IUnknown*)TheTextureManager->DepthTexture) };
+			Image(4, objectMotion ? (IUnknown*)ObjectMotion::Texture : (IUnknown*)TheTextureManager->DepthTexture),
+			Image(5, reactive ? (IUnknown*)ReactiveMask::Texture : (IUnknown*)TheTextureManager->DepthTexture) };
 		b[4].Slot = 0; b[4].Type = NVR_EXT_BIND_UNIFORM_BUFFER; b[4].pResource = prepBuffer;
 		b[5].Slot = 0; b[5].Type = NVR_EXT_BIND_SAMPLER; b[5].pResource = point;
 		NVR_EXT_DISPATCH_DESC dispatch = {};

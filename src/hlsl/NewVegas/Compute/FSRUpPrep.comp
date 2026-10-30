@@ -21,6 +21,7 @@ layout(set = 1, binding = 0) uniform texture2D t_worldDepth;  // TESR_DepthBuffe
 layout(set = 1, binding = 1) uniform texture2D t_viewmodel;   // TESR_DepthBufferViewModel (> 0 on the weapon; v2 only)
 layout(set = 1, binding = 2, rg16f) writeonly uniform image2D o_motion;
 layout(set = 1, binding = 3, rg32f) writeonly uniform image2D o_depth;
+layout(set = 1, binding = 5) uniform texture2D t_reactive;    // UNOFFICIAL 2026-10-30 ReactiveMask (core/ReactiveMask.h; a placeholder while extra.x is 0)
 layout(set = 1, binding = 4) uniform texture2D t_objmotion;   // UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer (world move since last frame; a placeholder while cameraDelta.w is 0)
 
 layout(set = 2, binding = 0, std140) uniform Constants {
@@ -31,6 +32,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 prevProjection;        // x, y: last upscaled frame's projMatrix._11, _22
     vec4 cameraDelta;           // xyz: camera position this frame minus last upscaled frame's
     vec4 size;                  // xy render size, z: 1 = no history (motion 0), w: weapon reactive value (< 0: no weapon test)
+    vec4 extra;                 // UNOFFICIAL 2026-10-30 x: 1 = t_reactive holds this frame's reactive mask (the alpha draws), 0 = weapon only
 } cb;
 
 layout(push_constant) uniform Push {
@@ -82,5 +84,7 @@ void main() {
     float device = clamp(farZ / (farZ - nearZ) * (1.0 - nearZ / z), 0.0, 1.0);
 
     imageStore(o_motion, pixel, vec4(motion, 0.0, 0.0));
-    imageStore(o_depth, pixel, vec4(weapon ? 0.0 : device, weapon ? cb.size.w : 0.0, 0.0, 0.0));
+    // UNOFFICIAL 2026-10-30 ReactiveMask: smoke, fire, glass and other alpha draws over the world are reactive too
+    float reactive = cb.extra.x > 0.5 ? texelFetch(sampler2D(t_reactive, POINT_S), pixel, 0).x : 0.0;
+    imageStore(o_depth, pixel, vec4(weapon ? 0.0 : device, weapon ? max(cb.size.w, reactive) : reactive, 0.0, 0.0));
 }
