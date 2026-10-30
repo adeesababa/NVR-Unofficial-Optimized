@@ -50,6 +50,7 @@ public:
 	static bool			AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize,
 							UINT GroupsX, UINT GroupsY);
 	static bool			CopyOut(int Image, IUnknown* Target);
+	static bool			CopyOut(int Image, IUnknown* Target, UINT Width, UINT Height);	// only the top-left Width x Height (a pass that wrote less)
 
 	static void			Frame(IDirect3DDevice9* Device);	// the RT point of the frame
 	// UNOFFICIAL 2026-10-28 (RT reflections) a second exchange of the frame, for one Point-1 user, where that user calls it (Reflections:
@@ -75,6 +76,9 @@ public:
 	// mask). A pass that tests them adds AlphaAtlasImage() to its images and includes Compute\Rt\RtAlpha.glsl (FORK-RT-CORE.md).
 	static bool			AlphaTested();
 	static int			AlphaAtlasImage();					// the alpha atlas' image index (-1: none)
+	// UNOFFICIAL 2026-10-29 hit textures ([Main.Main.RayTracing] HitTextures): the albedo atlas' image index (RGBA8; -1: none). A pass
+	// that shades its hits adds it to its images and uses Compute\Rt\RtHit.glsl (rtHitAlbedo: the texture's colour, else the average).
+	static int			AlbedoAtlasImage();
 	// UNOFFICIAL 2026-10-29 (rt-lamp-shadows): true while the scene holds the posed skinned actors ([Main.Main.RayTracing] Actors +
 	// fork patch 0033; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
 	static bool			Actors();

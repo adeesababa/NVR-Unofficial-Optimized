@@ -152,6 +152,63 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   720p on the iGPU (2.5 ms without alpha; candidate hits run the alpha test). Heavy for the iGPU; on a real RT GPU it is the
   any-hit cost every modern game pays for foliage. Off by default.
 
+### rtsun-13 / 14 / 15 (fork-0033, AlphaTested + Actors; og-goodsprings 16:00): actors, soft shadows, the shared denoiser
+- **Actors** (`[Main.Main.RayTracing] Actors`, off; fork patch 0033 1.8-rt-skin, ID3D9NvrExtRtSkin): every skinned partition of
+  the actors near the camera is posed every frame by the fork (palette = bone world x SkinToBone, scene-relative) and rebuilt fast
+  in the helper (op flag DYNAMIC), instance mask 0x20. rtsun-13: only the player's head and hands were in the scene: bodies are
+  alpha-tested (hair / fringe edges) and were left out -> 9a4898fb takes alpha-tested skinned meshes as opaque. rtsun-14: hips,
+  head, hands in place, torso and legs posed wrong: the game's skin shaders read the indices as `blendIndices.zyxw * 765.01`
+  (EnvTemplate.hlsl), i.e. bone k = byte k in memory; NVR had un-swizzled the D3DCOLOR again -> c9e185d8 (plain bytes). rtsun-14
+  also posed 135 partitions a frame (the town's NPCs within 8192): RT 15.5 ms p50 at 720p on the iGPU -> `ActorRadius` 3000
+  (live). rtsun-15 (20261029-200755-slotC): ActorRadius works (20 partitions a frame, RT 9.0 ms), head / forearms / hips right, but
+  torso, upper arms, lower legs missing. rtsun-16 (logging): the player's only skinned meshes in the scene were meathead01,
+  meatneck01, MeatCapLimbs, MeatCapBody: the hidden dismemberment gore caps; the real body was dropped because its skin shader is
+  not a lighting property -> 4743a567: any shader for skinned meshes, skins that do not render (BSDismemberSkinInstance
+  IsRenderable) and disabled dismember partitions stay out. **rtsun-17 (20261029-203927-slotC): the whole body (Arms01,
+  FaceGenFace, hands, torso, legs) is in the scene and matches the screen silhouette exactly in DebugView 6; its traced shadow
+  and self-shadowing show in DebugView 4.** The helper refit (1e0612a6) is in since rtsun-16: RT p50 9.0 -> 6.7 ms for the same
+  actors (helper builds 6.8 -> 4.6 ms); rtsun-17 with the whole body: 7.7 ms p50 (alpha casters + actors + sun, 720p, iGPU).
+- **Soft sun shadows** (`SunAngle` degrees, 0 = hard by default; `Denoise` on): each pixel traces toward a different point of the
+  sun's disc each frame (interleaved gradient noise + a golden-ratio step), then the shared denoiser. rtsun-13: SunAngle 2 gives
+  soft, plausible penumbrae on the ground shadows and smooth foliage shadows from one ray a pixel; with Denoise 0 the same edges
+  are dithered noise. 0.53 (the real sun) is nearly as sharp as the hard ray at this distance.
+- **The shared denoiser** (`src/core/RtDenoise.h`; Compute/RtDenoiseTemporal + RtDenoiseAtrous): SVGF / ReBLUR-style on the game's
+  GPU: temporal blend with history reprojected through depth + last frame's camera-relative view-projection (a camera jump > 512
+  units resets), first and second moments; 3 edge-stopping a-trous passes (steps 1, 2, 4; depth slope, view normal, variance-guided
+  value). API: `RtDenoise::Create(name)`, `RtDenoise::Run(d, device, noisy .r, output, settings)` -> false = use the noisy signal.
+  One channel; camera-only reprojection (ObjectMotion from claude/rootplan-combo is the next input); no hit-distance mode yet
+  (rt-reflections keeps its own filter until there is one; rt-lamp-shadows filters its 3 lamps a pixel itself).
+- Cost (720p, iGPU, everything on): "Ray tracing" p50 8.9 ms in rtsun-13 (player only), 15.5 ms in rtsun-14 (135 partitions a
+  frame); helper builds 7-13 ms avg with actors (every partition rebuilt every frame). Next for actors: refit (ALLOW_UPDATE +
+  update builds) instead of a full rebuild, and skip partitions off screen / too small to cast.
+
+### rtsun-18 (20261029-213432-slotC; protocol 3 + extra-p3 helper with per-pass timing)
+- The first try crashed the game (0xC0000409) when the denoiser first ran: 82976a88's RGB pass binds 4 images + the sampler into
+  4-entry binding arrays (stack overrun) -> 02222b6d (arrays of 8). Rerun PASS: SunAngle 2 + Denoise: the player's body casts a
+  soft-edged traced shadow on the ground, self-shadows, and the Joshua trees' foliage shadows are soft.
+- **Per-pass GPU time** (the helper's new "RT helper: pass GPU times" line, the pass alone, no game waits), 720p iGPU, alpha
+  casters + actors on: RtSunShadow **8.0-8.3 ms** with one hard ray a pixel, **14.75 ms** with SunAngle 0.53 (jittered rays traverse
+  less coherently). The game-side "Ray tracing (copies + helper + waits)" p50 11.2 ms. The trace is the cost: next for the sun:
+  trace at half resolution (RtDenoise Downscale 2 upsamples), and skip pixels whose N.L is near 0 or that the cascades already
+  mark fully lit far from any caster.
+- RtDenoise RGB mode (Channels 3) is rt-ao-sky's to test (its GI bounce); the 1-channel path is verified here.
+
+### rtsun-19 (20261029-220551-slotC): HalfResolution
+- `[Shaders.ShadowsExteriors.RT] HalfResolution` (off): a quarter of the rays (depth / normals read at the matching full-size pixel),
+  denoised at half size (RtDenoise Downscale 2), upsampled bilinearly. The sun trace pass (the helper's per-pass time, this view):
+  hard 4.48 -> 2.10 ms, SunAngle 2 4.63 -> 2.25 ms at 720p on the iGPU. With SunAngle 2 the half-size picture is nearly the same as
+  the full-size one (slightly blockier edges); recommended pairing on slow GPUs: SunAngle 0.53-2 + HalfResolution.
+
+### rtsun-20 (20261029-223438-slotC): hit textures (step 5's core part)
+- rt-ao-sky already has a one-bounce RT GI (sun + lamps), so instead of a second one the core got what that bounce and the
+  reflections lack: `[Main.Main.RayTracing] HitTextures` (off): textured meshes keep their texcoords and get an atlas slot; one
+  two-target pass (RtTextureToAtlas) fills the alpha atlas and a new RGBA8 albedo atlas (64 x 64 a texture); record flag 0x40;
+  `Compute/Rt/RtHit.glsl` (hit triangle, object normal, texcoords, `rtHitAlbedo`: the texture's colour, else the record's average);
+  `RtCore::AlbedoAtlasImage()`. DebugView 7 (RtHitDebug.comp: camera rays, the hit colour's luminance): the road, rocks, Joshua
+  trees' foliage, the windmill and the poles show their texture detail; 131 atlas slots at og-goodsprings. Skinned actors are not
+  textured yet (the skin shader's texture is not read: flat grey). The debug pass itself is 23.6 ms (a check, not a feature cost).
+- ReSTIR-style reservoir reuse for the GI bounce is offered to rt-ao-sky (its side).
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
