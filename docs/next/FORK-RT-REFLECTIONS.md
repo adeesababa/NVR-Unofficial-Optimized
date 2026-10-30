@@ -188,8 +188,10 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 ### 2026-10-30 02:10 people in the RT scene (rtrefl-8 with [Main.Main.RayTracing] Actors on; 33f84313 = rt-sun-2 0b138786, DLL F9E43B13)
 - lucky22 20261030-015913-slotA (fork-0033b, extra-p3; AlphaTested + HitTextures + Actors): no regression: textures vs average
   8.29 % px alone (8.49 % without actors), repeats 0.01 %; 1810 skinned partitions posed in the first 60 exchanges.
-- People in reflections are NOT shown by this spot (no NPC where a reflected ray lands); a spot with a person behind the camera
-  over a shiny floor is still to find.
+- People in reflections are NOT shown by this spot (no NPC where a reflected ray lands). rtrefl-10 (20261030-021403-slotA) turned
+  the player to z 0/90/180/270 with the reflection alone RT on vs off: RT adds 8.9 / 6.3 / 2.0 / 5.9 % px over SSR + cube, but the
+  Lucky 38 lobby has no NPC near; only a faint dark upright shape in the floor under the camera at z 90 (maybe the player's own
+  3rd-person body, which the core poses too): not proof. Still open: a crowded shiny floor (e.g. the Tops / Gomorrah casino floor).
 - Cost (across launches, so rough): "Reflections RT" 14.3-16.1 ms vs 10.6-10.8 without actors (the exchange waits for the
   helper); helper passes 10.35 vs 9.47 ms, builds 0.89 ms (ActorUpdateInterval 2).
 
