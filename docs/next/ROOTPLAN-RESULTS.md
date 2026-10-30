@@ -149,3 +149,25 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   rounds) on top of the lean hook; the same decisions (970 draws in linear light, 299 in the stored curve, on and off; ~1070 of ~1270
   draws read the shared state); pictures equal (<=0.03% >16 levels). Default on (toml only).
 - **13.** Asked the RT merge session to take claude/rootplan-round3 (lean hook default on: its A/B was clean).
+- **12. Interior lamp-shadow look (Conor's regression), with the pool on.** Runs (all Lucky 38 floor / Vault 21 lobby / Prospector
+  saloon / bar, cpucheck intshadow-lookback views, toml rootplan\look-pool = the user's toml + PoolLamps 32 + quiet pictures; solid % /
+  holes % from each variant's shadows-off pair as cpucheck intshadow_holes.py): look-1 20261029-214201-slotA, look-2 -220446-slotA,
+  look-3 -221441-slotB, look-4 (exposure ON, brightness only) -222253-slotB. Lists rootplan-look-1..4, stats scratch look_stats.py.
+  - **The user's toml is not the defaults' case:** it has `[Shaders.PBR.LampFalloff] Interior = true` (the physical lamp shape replaces
+    the falloff FalloffMatch decodes) and AmbientLight off. So FalloffMatch, AmbientLight's InteriorBounceShare / GridLamps and
+    ForwardReachMask 0/1 change nothing there (look-1: every variant within 0.2 of today).
+  - **The P80 look comes only with brighter lamps along their reach** (Interior off + FalloffMatch 0 + ForwardReachMask 0), and it is
+    the P80 numbers: holes V21 3.09 -> 1.07 %, saloon 6.28 -> 1.61 %, bar 2.81 -> 1.92 %; solid +6..+94 %. Price: rooms +30..+67 %
+    brighter with exposure off and **still +23..+51 % after the exposure effect settles** (look-4) -- the brightness FalloffMatch fixed.
+  - Turning the ambient down does not buy it back: `[Shaders.PBR.Interiors] AmbientScale` 0.5 -> 0.2 moves the room by ~1 % (indoors
+    nearly all the light is lamps). Lowering the lamps again (LightingScale 0.8) brings the holes back (V21 2.18, bar 3.36): the holes are
+    light the forward shadows cannot take away (lamps without a shadow, the game's own passes); they shrink only as NVR's shadowed lamps
+    carry more of the pixel.
+  - The pool helps on its own: PoolLamps 32 vs 0, V21 solid 4.73 -> 6.07 % (more lamps shadowed), others +2..+4 %, no brightness cost.
+  - **Proposal.** (a) Keep the defaults; ship the pool on (PoolLamps 32) once its own default is decided. (b) Closest settings-only step
+    for this toml: `[Shaders.PBR.LampFalloff] Brightness = 1.5` -- saloon holes 6.3 -> 3.0 %, V21 3.1 -> 2.2 %, solid +5..+36 %, rooms
+    +9..+14 % after exposure (the user's choice, not a default). (c) The real "ShadowContrast" needs code: the lamp passes already know
+    how much of their light each pixel lost to its shadow; write that share into MaterialBuffer's free alpha (the lamp passes, additive),
+    and let a full-screen step after the main list darken the rest of that pixel's light (the unshadowed lamps and the game's passes) by
+    ShadowContrast x that share. P80's solid shadows at today's room brightness; not built (needs MaterialBuffer on and the lamp-pass
+    MRT write: a session of its own).
