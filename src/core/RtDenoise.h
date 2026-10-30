@@ -21,7 +21,8 @@ namespace RtDenoise {
 		bool	Reset = false;			// drop the history this frame
 		int		Channels = 1;			// 1: Noisy .r -> Output .r; 3: Noisy .rgb -> Output .rgb (RGBA16F output; GI / sky colour)
 		int		Downscale = 1;
-		IDirect3DBaseTexture9* Ids = nullptr;	// optional: .r = a source id per pixel (e.g. which lamp); the spatial passes only mix equal ids			// 1 full screen, 2 half (Noisy and Output must then be w/2 x h/2; ~4x cheaper; the caller upsamples)
+		IDirect3DBaseTexture9* Ids = nullptr;
+		int		Kernel = 5;				// 5: a 5 x 5 a-trous kernel (25 taps a pass), 3: 3 x 3 (9 taps; ~2.5x cheaper, a bit less smooth)	// optional: .r = a source id per pixel (e.g. which lamp); the spatial passes only mix equal ids			// 1 full screen, 2 half (Noisy and Output must then be w/2 x h/2; ~4x cheaper; the caller upsamples)
 	};
 	struct Denoiser;
 

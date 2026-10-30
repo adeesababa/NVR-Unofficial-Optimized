@@ -12,7 +12,7 @@ layout(set = 1, binding = 2) uniform texture2D t_b;
 
 layout(push_constant) uniform Push {
     vec4 params;   // x step, y depth sigma, z normal power, w value sigma
-    vec4 size;     // x 1 / width, y 1 / height
+    vec4 size;     // x 1 / width, y 1 / height, w 1: the 3 x 3 kernel
     uint samplerIndex;
     uint pad[3];
 } pc;
@@ -22,6 +22,7 @@ layout(location = 0) out vec4 o_a;
 layout(location = 1) out vec4 o_b;
 
 const float kernel[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+const float kernel3[2] = float[2](1.0 / 2.0, 1.0 / 4.0);   // the 3 x 3 kernel (Settings.Kernel 3): 9 taps instead of 25
 
 void main() {
     const vec4 ca = textureLod(sampler2D(t_a, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0);
@@ -36,14 +37,15 @@ void main() {
 
     vec3 sum = vec3(0.0);
     float moment = 0.0, weights = 0.0;
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
+    const int reach = pc.size.w > 0.5 ? 1 : 2;
+    for (int y = -reach; y <= reach; y++) {
+        for (int x = -reach; x <= reach; x++) {
             const vec2 tapUv = uv + vec2(x, y) * pc.params.x * pc.size.xy;
             const vec4 ta = textureLod(sampler2D(t_a, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0);
             const vec4 tb = textureLod(sampler2D(t_b, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0);
             if (tb.g <= 0.0) continue;
             const vec3 tn = normalize(textureLod(sampler2D(t_normals, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0).xyz * 2.0 - 1.0);
-            float w = kernel[abs(x)] * kernel[abs(y)];
+            float w = reach == 1 ? kernel3[abs(x)] * kernel3[abs(y)] : kernel[abs(x)] * kernel[abs(y)];
             w *= exp(-abs(tb.g - z) / (pc.params.y * zSlope * length(vec2(x, y)) + 1.0e-3));
             w *= pow(max(dot(n, tn), 0.0), pc.params.z);
             w *= exp(-abs(luma(ta.rgb) - l) / valueSigma);
