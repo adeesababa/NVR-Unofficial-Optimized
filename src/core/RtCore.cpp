@@ -241,6 +241,20 @@ namespace {
 		UInt32		buildBudget = 0, trianglesThisFrame = 0, budgetWaits = 0, culledSmall = 0;
 		float		buildNear = 2048.0f, cullAngle = 0.0f;
 		std::vector<UInt32> pendingReleases;	// release ops that did not fit this frame's op list (sent first next frame)
+		// UNOFFICIAL 2026-10-30 grass (RtCore::NoteGrass): this frame's grass draws and their tufts within GrassRadius (x y z, size step)
+		struct GrassDraw { NiGeometry* geometry; IDirect3DBaseTexture9* texture; UInt32 vertsPerTuft, alphaRef, first, count; float scale[3]; float firstTuft[3]; };
+		bool		grassOn = false;					// [Main.Main.RayTracing] Grass (read at each helper start; needs AlphaTested)
+		float		grassRadius = 1500.0f;				// GrassRadius (live)
+		UInt32		grassMax = 8192;					// GrassMaxTufts (live)
+		UInt32		grassFrame = 0;						// TheFrameRateManager->FrameNumber + 1 of grassDraws (0: none)
+		std::vector<GrassDraw> grassDraws;
+		std::vector<float> grassTufts;
+		// grass by fate (exchanges 1-60): [0] draws noted, [1] duplicate draws, [2] tufts met, [3] tufts in reach, [4] over GrassMaxTufts,
+		// [5] draws not at the origin, [6] not described, [7] tuft layout not understood, [8] no alpha slot, [9] waited, [10] tufts taken,
+		// [11] draws from another frame
+		UInt32		grassFate[12] = {};
+		double		grassNoteMs = 0.0, grassGatherMs = 0.0;	// CPU time (exchanges 1-60)
+		void		AddGrass();
 		void		Release(UInt32 id) { pendingReleases.push_back(id); released++; }
 		std::vector<NiAVObject*> stack;
 
@@ -438,6 +452,12 @@ namespace {
 		imageSizes.push_back({ imageDescs.back().Width, imageDescs.back().Height });
 		alphaOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "AlphaTested") != 0;
 		hitTextures = TheSettingManager->GetSettingI("Main.Main.RayTracing", "HitTextures") != 0;
+		grassOn = alphaOn && TheSettingManager->GetSettingI("Main.Main.RayTracing", "Grass") != 0;	// 2026-10-30
+		if (!alphaOn && TheSettingManager->GetSettingI("Main.Main.RayTracing", "Grass") != 0)
+			Logger::Log("UNOFFICIAL NVR DXVK: RT grass off: it needs [Main.Main.RayTracing] AlphaTested (the tufts are alpha-tested cards).");
+		grassDraws.clear();
+		grassTufts.clear();
+		grassFrame = 0;
 		atlasImage = -1;
 		albedoAtlasImage = -1;
 		glowAtlasImage = -1;
@@ -1031,6 +1051,132 @@ namespace {
 		instance.flags = 0x1u;	// both faces (the game's two-sided and one-sided meshes alike: shadows need the back faces too)
 	}
 
+	// UNOFFICIAL 2026-10-30 grass (RtCore::NoteGrass): each grass model's first tuft built once (alpha-tested: its card texture's alpha in
+	// the atlas, the render state's alpha reference), every noted tuft an instance of it: scale = 1 + size step x 0.01 x ScaleMask (the
+	// grass VS's), placed at the tuft's world position (camera relative). Mask NVR_RT_MASK_ALPHA: only rays that test alpha see grass.
+	void Core::AddGrass() {
+		LARGE_INTEGER t0, t1, freq;
+		QueryPerformanceCounter(&t0);
+		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
+		if (grassFrame != now) {
+			if (grassFrame && !grassDraws.empty() && sceneFrame <= 60) grassFate[11] += (UInt32)grassDraws.size();
+			grassDraws.clear(); grassTufts.clear(); grassFrame = 0;
+			return;
+		}
+		const float camera[3] = { TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z };
+		UInt32 fate[12] = {};
+		for (const GrassDraw& d : grassDraws) {
+			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) break;
+			NiGeometryData* gd = d.geometry->geomData;
+			NiGeometryBufferData* bd = gd ? gd->m_pkBuffData : nullptr;
+			NVR_EXT_RT_GEOMETRY_DESC desc;
+			static std::vector<NVR_EXT_RT_RANGE> ranges;
+			GeometryKey key;
+			if (!bd || !DescribeData(bd, "NVR RT grass tuft", desc, ranges, key) || lastElement.uvStream != lastElement.stream) { fate[6]++; continue; }
+			// One tuft: the buffer holds the model once per instance slot, its vertices and indices in that order. With the CPU copy of the
+			// indices (IndexArray): the leading indices that address the first tuft's vertices only; else an even split by the slots.
+			const UInt32 slots = d.vertsPerTuft ? bd->VertCount / d.vertsPerTuft : 0;
+			const bool list = ranges[0].Topology == NVR_EXT_RT_TRIANGLE_LIST;
+			UInt32 lead = 0;
+			if (bd->IndexArray && bd->IndexCount && d.vertsPerTuft) while (lead < bd->IndexCount && bd->IndexArray[lead] < d.vertsPerTuft) lead++;
+			bool understood = false;
+			if (lead >= 3 && lead < bd->IndexCount) {
+				if (list) { ranges.resize(1); ranges[0].PrimitiveCount = lead / 3; understood = true; }
+				else if (bd->NumArrays <= 1 || !bd->ArrayLengths) { ranges.resize(1); ranges[0].StartIndex = 0; ranges[0].PrimitiveCount = lead - 2; understood = true; }
+				else {	// several strips: the whole ones within the lead
+					std::vector<NVR_EXT_RT_RANGE> first;
+					for (const NVR_EXT_RT_RANGE& r : ranges) if (r.StartIndex + r.PrimitiveCount + 2 <= lead) first.push_back(r);
+					if (!first.empty()) { ranges = first; understood = true; }
+				}
+			}
+			else if (slots > 1 && slots * d.vertsPerTuft == bd->VertCount) {
+				if (list && ranges.size() == 1 && bd->TriCount % slots == 0) { ranges[0].PrimitiveCount = bd->TriCount / slots; understood = true; }
+				else if (!list && ranges.size() >= slots && ranges.size() % slots == 0) { ranges.resize(ranges.size() / slots); understood = true; }
+			}
+			if (!understood) {
+				fate[7]++;
+				static int told = 0;
+				if (told < 4) {
+					told++;
+					Logger::Log("RT CORE grass: tuft layout not understood: %u vertices (max %u, model %u, %u a tuft), %s, %u triangles, %u arrays, %u indices "
+						"(CPU copy %s, %u leading ones on the first tuft)", bd->VertCount, bd->MaxVertCount, (unsigned)gd->m_usVertices, d.vertsPerTuft,
+						list ? "list" : "strips", bd->TriCount, bd->NumArrays, bd->IndexCount, bd->IndexArray ? "yes" : "no", lead);
+				}
+				continue;
+			}
+			desc.RangeCount = (UINT)ranges.size();
+			desc.pRanges = ranges.data();
+			UInt32 tris = 0;
+			for (const NVR_EXT_RT_RANGE& r : ranges) tris += r.PrimitiveCount;
+			key.vertCount = d.vertsPerTuft;
+			key.triCount = tris | 0x80000000u;	// never the key of a whole-buffer object
+			const int slot = AlphaSlotOf(d.texture);
+			if (slot == -2) { fate[9]++; waiting++; continue; }
+			if (slot < 0) { fate[8]++; continue; }
+			desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
+			GeometryEntry& entry = geometries[key];
+			if (entry.refused) { fate[6]++; continue; }
+			entry.lastSeen = sceneFrame;
+			if (!entry.sent) {
+				if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
+				NVR_EXT_RT_GEOMETRY_INFO info = {};
+				if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; fate[6]++; continue; }
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { fate[9]++; waiting++; continue; }
+				if (FAILED(rt->StageGeometry(&desc, images[0], arenaUsed, &info))) { entry.refused = true; fate[6]++; continue; }
+				trianglesThisFrame += info.TriangleCount;
+				NvrRtGeometryOp& op = record->ops[record->opCount++];
+				op = NvrRtGeometryOp();
+				op.op = NVR_RT_OP_BUILD;
+				op.id = entry.id;
+				op.vertexCount = info.VertexCount;
+				op.triangleCount = info.TriangleCount;
+				op.arenaTexel = arenaUsed;
+				op.flags = NVR_RT_OP_FLAG_TEXCOORDS | NVR_RT_OP_FLAG_ALPHA | (compactOn ? NVR_RT_OP_FLAG_COMPACT : 0u);
+				arenaUsed += info.Texels;
+				entry.sent = true;
+				static int told = 0;
+				if (told < 3) {
+					told++;
+					Logger::Log("RT CORE grass: model %u: %u vertices a tuft (%u slots), %u triangles a tuft (%u ranges), alpha ref %u, scale mask %.2f %.2f %.2f, "
+						"first tuft at %.0f %.0f %.0f (camera %.0f %.0f %.0f)", entry.id, d.vertsPerTuft, slots, tris, (unsigned)ranges.size(), d.alphaRef,
+						d.scale[0], d.scale[1], d.scale[2], d.firstTuft[0], d.firstTuft[1], d.firstTuft[2], camera[0], camera[1], camera[2]);
+				}
+			}
+			auto found = albedoCache.find(d.texture);
+			if (found == albedoCache.end()) found = albedoCache.emplace(d.texture, ReadAlbedo(d.texture)).first;
+			const Albedo& albedo = found->second;
+			for (UInt32 i = 0; i < d.count && record->instanceCount < NVR_RT_MAX_INSTANCES; i++) {
+				const float* t = &grassTufts[4 * (d.first + i)];
+				NvrRtInstanceRecord& extra = record->records[record->instanceCount];
+				extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
+				extra.flags = (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | NVR_RT_RECORD_ALPHA_TESTED | ((d.alphaRef & 0xFFu) << 8) | ((UInt32)slot << 16);
+				extra.geometryId = entry.id;
+				extra.vertexOffset = extra.indexOffset = 0;
+				NvrRtInstance& instance = record->instances[record->instanceCount++];
+				const float step = 0.01f * t[3];
+				memset(instance.transform, 0, sizeof(instance.transform));
+				for (int r = 0; r < 3; r++) {
+					instance.transform[r][r] = 1.0f + step * d.scale[r];
+					instance.transform[r][3] = t[r] - camera[r];
+				}
+				instance.geometryId = entry.id;
+				instance.customIndex = 0;
+				instance.mask = NVR_RT_MASK_ALPHA;
+				instance.flags = 0x1u;	// both faces
+				fate[10]++;
+			}
+		}
+		grassDraws.clear();
+		grassTufts.clear();
+		grassFrame = 0;
+		QueryPerformanceCounter(&t1);
+		QueryPerformanceFrequency(&freq);
+		if (sceneFrame <= 60) {
+			for (int i = 6; i < 11; i++) grassFate[i] += fate[i];
+			grassGatherMs += 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
+		}
+	}
+
 	void Core::Walk(NiAVObject* root, bool land, bool lod) {
 		if (!root) return;
 		const NiPoint3 camera = { TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z };
@@ -1125,6 +1271,8 @@ namespace {
 		cullAngle = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "CullSmallAngle"));
 		trianglesThisFrame = 0;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
+		grassRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "GrassRadius"));
+		grassMax = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "GrassMaxTufts"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
 		arenaUsed = 0;
@@ -1142,6 +1290,7 @@ namespace {
 			if (skips[1][kTaken] == landBefore) Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
 		}
 		else if (Player) WalkCell(Player->parentCell);
+		if (grassOn) AddGrass();	// UNOFFICIAL 2026-10-30: the grass drawn this frame (RtCore::NoteGrass)
 		instances = record->instanceCount;
 
 		// Geometries not met for a while (their cell unloaded, the object gone): released in the helper
@@ -1337,6 +1486,13 @@ namespace {
 					"not described %u, texcoords not in the position's stream %u, no diffuse texture %u, alpha unreadable or atlas full %u; "
 					"waited for an upload %u; glow maps in the atlas %u (%s)", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6], c.glowSlots, c.glowAtlasImage >= 0 ? "GlowTextures on" : "GlowTextures off");
 			}
+			if (n == 60 && c.grassOn) {
+				const UInt32* g = c.grassFate;
+				Logger::Log("RT CORE: grass (exchanges 1-60, GrassRadius %.0f, GrassMaxTufts %u): %u draws noted (%u duplicates, %u not at the origin, %u from "
+					"another frame), %u tufts met, %u in reach, %u over GrassMaxTufts, %u taken as instances; draws left out: not described %u, tuft layout %u, "
+					"no alpha slot %u, waited %u; CPU %.3f ms a frame noting + %.3f ms gathering", c.grassRadius, c.grassMax, g[0], g[1], g[5], g[11], g[2], g[3],
+					g[4], g[10], g[6], g[7], g[8], g[9], c.grassNoteMs / 60.0, c.grassGatherMs / 60.0);
+			}
 			if (n == 60)
 				for (int k = 0; k < 3; k++) {
 					const UInt32* m = c.skips[k];
@@ -1385,4 +1541,43 @@ bool RtCore::AlphaTested() { return TheCore.state == Core::Running && TheCore.al
 int RtCore::AlphaAtlasImage() { return TheCore.alphaOn || TheCore.hitTextures ? TheCore.atlasImage : -1; }	// shared slots
 int RtCore::AlbedoAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.albedoAtlasImage : -1; }
 int RtCore::GlowAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.glowAtlasImage : -1; }
+bool RtCore::GrassWanted() { return TheCore.state == Core::Running && TheCore.grassOn; }
+
+void RtCore::NoteGrass(NiGeometry* Geometry, IDirect3DBaseTexture9* Texture, const float* Instances, UINT Count, UINT VertsPerTuft, const float* ScaleMask, UInt32 AlphaRef) {
+	Core& c = TheCore;
+	if (c.state != Core::Running || !c.grassOn || !Geometry || !Texture || !Instances || !Count || !VertsPerTuft) return;
+	LARGE_INTEGER t0, t1, freq;
+	QueryPerformanceCounter(&t0);
+	const bool count60 = c.sceneFrame < 60;
+	const UInt32 now = TheFrameRateManager->FrameNumber + 1;
+	if (c.grassFrame != now) { c.grassDraws.clear(); c.grassTufts.clear(); c.grassFrame = now; }
+	if (count60) c.grassFate[0]++;
+	// the same pass again this frame (its fading tufts after the land, or the grass shadow redraw): already noted
+	for (const Core::GrassDraw& d : c.grassDraws)
+		if (d.geometry == Geometry && d.firstTuft[0] == Instances[0] && d.firstTuft[1] == Instances[1] && d.firstTuft[2] == Instances[2]) { if (count60) c.grassFate[1]++; return; }
+	const NiTransform& w = Geometry->m_worldTransform;	// the tufts are world positions with the model at the origin (GpuGrass's AtOrigin)
+	if (fabsf(w.pos.x) + fabsf(w.pos.y) + fabsf(w.pos.z) > 0.5f || fabsf(w.scale - 1.0f) > 1e-3f) { if (count60) c.grassFate[5]++; return; }
+	Core::GrassDraw d = { Geometry, Texture, VertsPerTuft, AlphaRef ? AlphaRef : 128u, (UInt32)(c.grassTufts.size() / 4), 0,
+		{ ScaleMask[0], ScaleMask[1], ScaleMask[2] }, { Instances[0], Instances[1], Instances[2] } };
+	const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
+	const float r2 = c.grassRadius * c.grassRadius;
+	UInt32 inReach = 0, over = 0;
+	for (UINT i = 0; i < Count; i++) {
+		const float* t = Instances + 4 * i;
+		const float dx = t[0] - cx, dy = t[1] - cy, dz = t[2] - cz;
+		if (dx * dx + dy * dy + dz * dz > r2) continue;
+		inReach++;
+		if (c.grassTufts.size() / 4 >= c.grassMax) { over++; continue; }
+		c.grassTufts.insert(c.grassTufts.end(), t, t + 4);
+		d.count++;
+	}
+	if (d.count) c.grassDraws.push_back(d);
+	QueryPerformanceCounter(&t1);
+	QueryPerformanceFrequency(&freq);
+	if (count60) {
+		c.grassFate[2] += Count; c.grassFate[3] += inReach; c.grassFate[4] += over;
+		c.grassNoteMs += 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
+	}
+}
+
 bool RtCore::Actors() { return TheCore.state == Core::Running && TheCore.actorsOn && TheCore.rtSkin; }

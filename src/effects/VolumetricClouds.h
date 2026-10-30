@@ -120,6 +120,10 @@ public:
 	UINT	skyProbeBands = 0;	// bands drawn since start (the probe is whole after 8; one 8-row band a frame)
 	float	ShadowStrengthForSunFar();
 	bool	shadowsViaSunFar = false;
+	// UNOFFICIAL 2026-10-30 (RT sun CloudShadows): where the shadow map last drawn lies: its centre on the cloud base (metres), its light
+	// (normalized, z at least 0.25), width (metres), cloud base (metres), as ShadowCentre / ShadowLight worked them out
+	bool	rtMapValid = false;
+	float	rtMapCentre[2] = {}, rtMapLight[3] = {}, rtMapRange = 0.0f, rtMapBase = 0.0f;
 	// UNOFFICIAL 2026-10-21, test tool (SettingShots 'cloudcoverage'): puts the eased coverage away from the weather's, as right after a
 	// load or a weather change, so a test can see what a later step does to the easing (it eases back from there).
 	void	TestSetCoverage(float value) { coverage = std::clamp(value, 0.0f, 1.0f); }

@@ -255,6 +255,25 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   check" line, the helper's guard was on and never met an out-of-range index in the whole run (cell changes included): on the AMD
   iGPU the wrong order never fed indices past a geometry's vertex count (timing), which is why only the RTX card faulted.
 
+### rtsun-32 (2026-10-30, claude/rt-sun-grass, on the installed aee0046c): grass and cloud shadows
+- Grass (`[Main.Main.RayTracing] Grass`, needs AlphaTested; GrassRadius 1500, GrassMaxTufts 8192): the game places its grass tufts per draw
+  from TallGrassShader's instance table (not in the cells' scene graph), so each grass pass, right after it is drawn (Render.cpp
+  GrassFirst::NoteRtGrass), hands its tufts to RtCore::NoteGrass. Each grass model's first tuft is built once (its leading indices in the
+  CPU index copy: lists and strips), alpha-tested through its card texture's atlas slot (the render state's alpha reference); every tuft
+  within GrassRadius is an instance (world position, size step x ScaleMask; no sway). 20261030-150024-slotC (og-goodsprings): ~150 tufts a
+  frame in reach, 3 models, CPU 0.013 ms a frame; RtSunShadow.spv 7.4-7.6 ms with grass vs 7.48 without (no measurable cost at this
+  density); DebugView 4: black grass shadows round the clumps at the player's feet with grass, none with GrassRadius 0. The first build
+  understood no tuft layout (20261030-140548-slotC: "tuft layout 177"): fixed by the CPU index copy.
+- Cloud shadows (`[Shaders.ShadowsExteriors.RT] CloudShadows`, live): the volumetric clouds' shadow map (copied in as last drawn, with
+  the centre / light it was drawn with: VolumetricClouds rtMap*) read where each pixel's sun ray meets the cloud base, bilinear, times the
+  clouds' own strength (ShadowStrengthForSunFar) and the composite's facing fade, multiplied into the traced visibility on every lit pixel
+  (inside and beyond the RT range). In a frame where Apply put that into the sun shadow buffer (RtSunShadows::CloudsApplied), SunFar
+  leaves its volumetric part out and the clouds' composite its shadow: never twice. Without CloudShadows (or with the game's flat cloud
+  layers, [Shaders.CloudShadows.Main]) nothing changes: those stay in SunFar, applied once on top of the RT visibility, as before.
+  Checks: DebugView 9 (transmittance) matches the clouds' own ShadowDebug (the spot under a cloud: both black), DebugView 10 shows the
+  copied map (patchy, as drawn). Look: under a full cloud the ground came out ~17% darker than through SunFar (25.2 -> 20.9 mean grey; shot
+  noise ~10%): the sun buffer darkens the whole pixel as a tree's shadow does, SunFar only the sun's share.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),

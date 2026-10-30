@@ -1,5 +1,6 @@
 #include "SunFar.h"
 #include "../core/LandLight.h"	// UNOFFICIAL 2026-10-25
+#include "../core/RtSunShadows.h"	// UNOFFICIAL 2026-10-30 RT sun CloudShadows
 
 #include <algorithm>
 #include <cctype>
@@ -252,6 +253,11 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Sce
 		SetPassTexture(9 + i, blendTextures[i]);
 	}
 	// UNOFFICIAL 2026-10-21: the volumetric clouds' shadow map on stage 13 (NVR_VolumeCloudShadow), drawn for this frame first.
+	// UNOFFICIAL 2026-10-30: the RT sun shadows took the volumetric clouds' shadow into the sun visibility this frame ([Shaders.ShadowsExteriors.RT]
+	// CloudShadows): not here as well (the strength put back after the pass)
+	const float volumeStrength = Constants.Volume.x;
+	if (RtSunShadows::CloudsApplied()) Constants.Volume.x = 0.0f;
+	struct PutBack { float& v; float s; ~PutBack() { v = s; } } putBack{ Constants.Volume.x, volumeStrength };
 	const bool volume = volumetric && Constants.Volume.x > 0.0f;
 	if (volume) {
 		volumetric->RenderShadowMap(Device);

@@ -23,15 +23,23 @@ namespace {
 		bool	denoise = true;
 		bool	halfResolution = false;
 		int		denoiseKernel = 5;			// the shared denoiser's a-trous kernel: 5 (5 x 5) or 3 (3 x 3, cheaper)		// trace a quarter of the pixels (2 x 2 blocks), denoise and upsample
+		bool	cloudShadows = false;	// 2026-10-30: the volumetric clouds' shadow map in the traced visibility
 		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
 	// The trace pass's uniform block (RtSunShadow.comp, std140)
 	struct PassConstants {
 		float size[4], forward[4], right[4], up[4], origin[4], sun[4], bias[4], range[4], alpha[4], full[4];
+		float cloud[4], cloudCentre[4], cloudLight[4], camera[4];	// 2026-10-30 CloudShadows (cloud.x 0: none); camera: its world position
 	};
 
 	int			imageDepth = -1, imageNormals = -1, imageVisibility = -1, shader = -1, hitDebugShader = -1;
+	// 2026-10-30 CloudShadows: the clouds' shadow map in the helper (registered at the helper's start, while CloudShadows is on), and
+	// whether this frame's trace carried it / its result went into the sun shadow buffer (CloudsApplied)
+	int			imageCloud = -1;
+	UINT		imageCloudSize = 0;
+	bool		cloudsInTrace = false;
+	UInt32		cloudsAppliedFrame = 0;
 	IDirect3DTexture9*	visibilityTexture = nullptr;
 	IDirect3DTexture9*	denoisedTexture = nullptr;		// SunAngle > 0: the denoised visibility (R16F)
 	IDirect3DSurface9*	denoisedSurface = nullptr;
@@ -60,6 +68,7 @@ namespace {
 		S.denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
 		S.halfResolution = TheSettingManager->GetSettingI(kSection, "HalfResolution") != 0;
 		S.denoiseKernel = TheSettingManager->GetSettingI(kSection, "DenoiseKernel") == 3 ? 3 : 5;
+		S.cloudShadows = TheSettingManager->GetSettingI(kSection, "CloudShadows") != 0;
 	}
 
 	const D3DXVECTOR4* Constant(const char* name) {
@@ -85,6 +94,17 @@ namespace {
 		imageDepth = RtCore::AddImage("NVR RT sun depth", w, h, NVR_EXT_SHARED_R32F);
 		imageNormals = RtCore::AddImage("NVR RT sun normals", w, h, NVR_EXT_SHARED_RGBA16F);
 		imageVisibility = RtCore::AddImage("NVR RT sun visibility", w, h, NVR_EXT_SHARED_R16F);
+		// 2026-10-30 CloudShadows: the clouds' shadow map (A16B16G16R16F, ShadowResolution x ShadowResolution), if it exists by now
+		imageCloud = -1;
+		imageCloudSize = 0;
+		VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds;
+		D3DSURFACE_DESC desc = {};
+		if (S.cloudShadows && clouds && clouds->Textures.ShadowTexture && SUCCEEDED(clouds->Textures.ShadowTexture->GetLevelDesc(0, &desc)) &&
+			desc.Format == D3DFMT_A16B16G16R16F && desc.Width == desc.Height) {
+			imageCloud = RtCore::AddImage("NVR RT sun cloud shadow", desc.Width, desc.Height, NVR_EXT_SHARED_RGBA16F);
+			imageCloudSize = desc.Width;
+		}
+		else if (S.cloudShadows) Logger::Log("UNOFFICIAL NVR DXVK: RT sun CloudShadows: no volumetric cloud shadow map at the helper's start (Volumetric Clouds and their Shadows on?); off until the next start.");
 	}
 
 	void Record(IDirect3DDevice9* Device) {
@@ -125,9 +145,35 @@ namespace {
 		c.alpha[0] = RtCore::AlphaTested() ? 1.0f : 0.0f;
 		c.alpha[1] = (float)(frames & 1023);								// the jitter's frame
 		c.alpha[2] = tanf(0.5f * S.sunAngle * 0.0174532925f);				// the sun cone's half-angle tangent (0: hard)
-		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f : 0.0f;
+		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f :
+			S.debugView == 9 ? 5.0f : S.debugView == 10 ? 6.0f : 0.0f;	// 9, 10 (2026-10-30): CloudShadows checks
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
+		// 2026-10-30 CloudShadows: the clouds' shadow map as last drawn (it is drawn later in the frame: last frame's, with its own centre)
+		cloudsInTrace = false;
+		VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds;
+		static int cloudLogs = 0;
+		if (S.cloudShadows && cloudLogs < 3 && (frames % 300) == 30) {
+			cloudLogs++;
+			Logger::Log("UNOFFICIAL NVR DXVK: RT sun CloudShadows: image %d (%u texels), map valid %d size %u range %.0f m base %.0f m centre %.0f %.0f m light %.3f %.3f %.3f, "
+				"strength %.3f, camera %.0f %.0f %.0f m", imageCloud, imageCloudSize, clouds && clouds->rtMapValid ? 1 : 0, clouds ? clouds->shadowMapSize : 0u,
+				clouds ? clouds->rtMapRange : 0.0f, clouds ? clouds->rtMapBase : 0.0f, clouds ? clouds->rtMapCentre[0] : 0.0f, clouds ? clouds->rtMapCentre[1] : 0.0f,
+				clouds ? clouds->rtMapLight[0] : 0.0f, clouds ? clouds->rtMapLight[1] : 0.0f, clouds ? clouds->rtMapLight[2] : 0.0f,
+				clouds ? clouds->ShadowStrengthForSunFar() : 0.0f, TheRenderManager->CameraPosition.x / 70.0f, TheRenderManager->CameraPosition.y / 70.0f,
+				TheRenderManager->CameraPosition.z / 70.0f);
+		}
+		if (S.cloudShadows && imageCloud >= 0 && clouds && clouds->rtMapValid && clouds->Textures.ShadowTexture && TheShaderManager->GameState.isExterior &&
+			clouds->shadowMapSize == imageCloudSize && S.debugView != 7 && S.debugView != 8) {
+			const float strength = clouds->ShadowStrengthForSunFar();
+			if (strength > 0.0f && RtCore::CopyIn(imageCloud, clouds->Textures.ShadowTexture)) {
+				c.cloud[0] = strength; c.cloud[1] = clouds->rtMapRange; c.cloud[2] = (float)clouds->shadowMapSize; c.cloud[3] = clouds->rtMapBase;
+				c.cloudCentre[0] = clouds->rtMapCentre[0]; c.cloudCentre[1] = clouds->rtMapCentre[1]; c.cloudCentre[2] = 1.0f / 70.0f;
+				c.cloudLight[0] = clouds->rtMapLight[0]; c.cloudLight[1] = clouds->rtMapLight[1]; c.cloudLight[2] = clouds->rtMapLight[2];
+				cloudsInTrace = true;
+			}
+		}
+		// the camera's world position (the scene is camera relative): the clouds' map is in world metres
+		c.camera[0] = TheRenderManager->CameraPosition.x; c.camera[1] = TheRenderManager->CameraPosition.y; c.camera[2] = TheRenderManager->CameraPosition.z;
 		const int atlas = RtCore::AlphaAtlasImage();
 		const int albedoAtlas = RtCore::AlbedoAtlasImage();
 		const int glowAtlas = RtCore::GlowAtlasImage();
@@ -137,8 +183,9 @@ namespace {
 			if (!RtCore::AddPass(hitDebugShader, images, 4, 0x1, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 		}
 		else {
-			const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
-			if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+			const int images[5] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility,	// [3]: binding 5
+				cloudsInTrace ? imageCloud : imageNormals };	// [4]: binding 6, the clouds' shadow map (a stand-in with cloud.x 0)
+			if (!RtCore::AddPass(shader, images, 5, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) { cloudsInTrace = false; return; }
 		}
 		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface, w, h);
 		if (tracedThisFrame && frames++ == 0)
@@ -239,7 +286,8 @@ namespace RtSunShadows {
 		draw.pBindings = bindings;
 		draw.pPushData = &push;
 		draw.PushDataSize = sizeof(push);
-		DxvkCompute::Extension()->Draw(&draw);
+		const bool drawn = SUCCEEDED(DxvkCompute::Extension()->Draw(&draw));
+		if (drawn && cloudsInTrace && S.debugView == 0) cloudsAppliedFrame = TheFrameRateManager->FrameNumber + 1;	// 2026-10-30 CloudShadows
 
 		if (park) Device->SetRenderTarget(0, current);
 		if (current) current->Release();
@@ -274,6 +322,8 @@ namespace RtSunShadows {
 		Device->SetRenderTarget(0, current);
 		if (current) current->Release();
 	}
+
+	bool CloudsApplied() { return cloudsAppliedFrame == TheFrameRateManager->FrameNumber + 1; }
 
 	bool Replacing() { return S.enabled && S.mode == 1 && S.debugView != 2 && S.debugView < 4 && RtCore::Running() && TheShaderManager->GameState.isExterior; }
 

@@ -41,6 +41,7 @@
 #include "../../core/FoldFog.h"	// UNOFFICIAL 2026-10-27 FoldFog: env-mapped objects fog in their lit pass, no fog pass
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/GrassShadows.h"	// UNOFFICIAL 2026-10-27 grass sun shadows: the early grass drawn again into the near sun shadow map (GrassFirst)
+#include "../../core/RtCore.h"	// UNOFFICIAL 2026-10-30 RT grass: each grass pass's tufts into the ray tracing scene (GrassFirst::NoteRtGrass)
 #include "../../effects/GpuGrass.h"	// UNOFFICIAL 2026-10-27 GPU grass (NVR DXVK 1.7-grass): strands placed and culled on the GPU from the early grass draws
 #include "../../core/HdrOutput.h"	// UNOFFICIAL 2026-10-26 HDR output (needs NVR DXVK 1.5-hdr)
 void HdrOutputNoteDesktop() { HdrOutput::NoteDesktop(); }	// UNOFFICIAL 2026-10-29: from NVSEPlugin_Load (see HdrOutput.h)
@@ -2157,6 +2158,21 @@ namespace GrassFirst {
 
 	static inline bool IsGrass(UInt32 id) { return id >= kGrassFirstId && id <= kGrassLastId; }
 
+	// UNOFFICIAL 2026-10-30 RT grass ([Main.Main.RayTracing] Grass; RtCore::NoteGrass): a world grass pass just drawn: TallGrassShader's
+	// instance table still holds its tufts, ScaleMask (c2), the card texture (stage 0) and the alpha reference are its own. Nothing is
+	// read unless the RT core runs with Grass on. The game's grass shadow passes (GRASS_SHADOW) are left out.
+	static void NoteRtGrass(void* pass, UInt32 passId) {
+		if (passId > kSplitLastId || ShaderSplit::CurrentContext != ShaderSplit::World || !RtCore::GrassWanted()) return;
+		NiGeometry* geometry = pass ? *(NiGeometry**)pass : nullptr;
+		TallGrassShader* shader = TallGrassShader::GetShader();
+		if (!geometry || !geometry->geomData || !shader || !shader->pInstanceData || !shader->ucInstanceCount) return;
+		float scale[4] = {};
+		if (FAILED(TheRenderManager->device->GetVertexShaderConstantF(2, scale, 1))) return;
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		RtCore::NoteGrass(geometry, state->GetTexture(0), (const float*)shader->pInstanceData, (std::min)((UINT)shader->ucInstanceCount, (UINT)NewGrass::kTufts),
+			NewGrass::GetModel(geometry).VertsPerModel, scale, state->GetRenderState(D3DRS_ALPHAREF));
+	}
+
 	// Each renderer's pass-ID list, or false if anything is not as expected (then nothing is touched).
 	static bool Lists(void* accumulator, PassIdNode** lists, unsigned& count) {
 		const UInt8* a = (const UInt8*)accumulator;
@@ -2583,6 +2599,7 @@ namespace GrassFirst {
 				// 0x00B994F0 itself calls BSRenderState::SetAlphaToCoverageEnable(pass wants it, 0) for every pass when the game's
 				// TMS flag (0x011F9421) is set (Ghidra dump of the exe, psycho-master graphics_fnv_atmosphere_alpha_coverage_state_followup).
 				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+				NoteRtGrass(r.pass, r.passId);	// UNOFFICIAL 2026-10-30 RT grass (a pass drawn early is noted once: RtCore skips the repeat)
 				if (r.drawnEarly) StatLate++; else StatWhole++;
 				// UNOFFICIAL 2026-10-28 (tester: grass shadows gone after a fast travel; log: from then on every grass draw "whole after
 				// it", none early): right after the load a grass pass was drawn with the game's vertex shader, which was learned for the
@@ -2630,7 +2647,11 @@ namespace GrassFirst {
 		if (LinearScene::InSpan) LinearScene::EnsureHooked(TheRenderManager->device);
 		if (CapturedNormals::InSpan) CapturedNormals::EnsureHooked(TheRenderManager->device);
 		if (OnePassDepth::Recording && OnePassDepth::IsOpt(passId)) { DepthFirstPass(pass, passId, a3, a4, a5); return; }	// UNOFFICIAL LampsDepthFirst
-		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
+		if (!Recording || !IsGrass(passId)) {
+			RenderPassImmediately(pass, passId, a3, a4, a5);
+			if (IsGrass(passId)) NoteRtGrass(pass, passId);	// UNOFFICIAL 2026-10-30 RT grass (GrassFirst off: the game's own grass call)
+			return;
+		}
 		NiDX9RenderState* state = TheRenderManager->renderState;
 		Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
 		if (ShadowOnly) { Records.push_back(r); return; }	// UNOFFICIAL 2026-10-28 terrain blending on: not drawn now (ShadowOnlyEarly)
@@ -2647,6 +2668,7 @@ namespace GrassFirst {
 			NewGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));
 			GpuGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));	// UNOFFICIAL 2026-10-27 GPU grass (does nothing unless it took this call)
 			RenderPassImmediately(pass, passId, a3, a4, a5);
+			NoteRtGrass(pass, passId);	// UNOFFICIAL 2026-10-30 RT grass
 			NewGrass::Disarm();
 			GpuGrass::Disarm();
 			if (kind == kAllNear) {

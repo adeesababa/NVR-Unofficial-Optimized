@@ -3,6 +3,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
+#include "../core/RtSunShadows.h"	// UNOFFICIAL 2026-10-30 RT sun CloudShadows
 
 void VolumetricCloudsEffect::UpdateSettings() {
 	const SettingsStruct before = Settings;
@@ -630,7 +631,7 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 		// for its own apply). Its own apply darkened the whole pixel, ambient and sky light too, on top of the sun's shadows,
 		// weighted by the depth-rebuilt normals (flat per triangle, striped by the depth's precision): a P82 tester's triangles.
 		const float strength = Constants.Extra.x;
-		if (shadowsViaSunFar) Constants.Extra.x = 0.0f;
+		if (shadowsViaSunFar || RtSunShadows::CloudsApplied()) Constants.Extra.x = 0.0f;	// 2026-10-30: or in the RT sun's visibility
 		// UNOFFICIAL 2026-10-28 (user: the cloud flicker "is from a combination of jitter and fsr low res"): with FSR / DLSS LowResEffects
 		// the composite draws into the small JITTERED frame before the upscale, but reads the clouds (drawn whole, unjittered) at the plain
 		// screen position, so the upscaler, which shifts each frame back by its jitter, moved the clouds by the jitter every frame. The
@@ -671,6 +672,18 @@ void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
 	GpuProfileScope gpu(shadowTimer, Device);
 	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, PrefilterOn(this) ? 11 : TowersOn(this) ? 10 : 4);	// 11: ShadowPrefilter (2026-10-27)
 	shadowMapFrame = frame;
+	// UNOFFICIAL 2026-10-30 (RT sun CloudShadows): what this map was drawn with (VolumetricClouds.fx.hlsl ShadowCentre / ShadowLight)
+	rtMapRange = (std::max)(Constants.Extra.y, 1000.0f);
+	rtMapBase = Constants.Shape.x;
+	const float texel = rtMapRange / (float)shadowMapSize;
+	rtMapCentre[0] = floorf(TheRenderManager->CameraPosition.x / 70.0f / texel) * texel;
+	rtMapCentre[1] = floorf(TheRenderManager->CameraPosition.y / 70.0f / texel) * texel;
+	D3DXVECTOR3 light(TheShaderManager->ShaderConst.SunDir.x, TheShaderManager->ShaderConst.SunDir.y, TheShaderManager->ShaderConst.SunDir.z);
+	D3DXVec3Normalize(&light, &light);
+	light.z = (std::max)(light.z, 0.25f);
+	D3DXVec3Normalize(&light, &light);
+	rtMapLight[0] = light.x; rtMapLight[1] = light.y; rtMapLight[2] = light.z;
+	rtMapValid = true;
 }
 
 // UNOFFICIAL 2026-10-21: the shadows' strength on the land as the composite works it out (fainter at night, gone with a low sun);
