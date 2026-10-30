@@ -23,7 +23,8 @@
 #include <unordered_set>
 #include "DxvkCompute.h"
 #include "DrawState.h"	// UNOFFICIAL 2026-10-29 SharedDrawState: the tracked state lives there
-#include "PassSums.h"	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
+#include "PassSums.h"
+#include "GpuProfiler.h"	// UNOFFICIAL ShadowContrast step timer	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
 
 namespace CapturedNormals {
 
@@ -488,6 +489,8 @@ namespace CapturedNormals {
 			if (code) code->Release();
 			if (ContrastFailed) return;
 		}
+		static GpuTimer contrastTimer("ShadowContrast step");	// UNOFFICIAL: the copy + the full-screen step, in the F10 GPU profile
+		GpuProfileScope gpu(contrastTimer, d);
 		if (FAILED(d->StretchRect(target, NULL, ContrastCopy, NULL, D3DTEXF_NONE))) { ContrastFailed = true; Logger::Log("[ERROR] ShadowContrast: frame copy failed"); return; }
 
 		D3DVIEWPORT9 vp = {}; d->GetViewport(&vp);
