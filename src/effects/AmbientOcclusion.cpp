@@ -425,11 +425,23 @@ namespace {
 			return false;
 		struct Pick { const RtCore::GlowLight* light; float weight; };
 		std::vector<Pick> picks;
+		// (v2, rt-gi-18) only small bright emitters: meshes over 256 units left out (rooms, facades with a few lit details), the emitting
+		// radius at most 32, the colour gated by its brightness (strongest channel 0.35 -> 0.8, as GlowGI) so grey averages give nothing.
+		auto emit = [](const RtCore::GlowLight& g, float* rgb, float& radius) {
+			const float peak = (std::max)(g.rgb[0], (std::max)(g.rgb[1], g.rgb[2]));
+			float t = (std::min)((std::max)((peak - 0.35f) / 0.45f, 0.0f), 1.0f);
+			t = t * t * (3.0f - 2.0f * t);
+			for (int k = 0; k < 3; k++) rgb[k] = g.rgb[k] * t;
+			radius = (std::min)(g.radius, 32.0f);
+			return g.radius <= 256.0f && t > 0.0f;
+		};
 		if (Strength > 0.0f) {
 			for (const RtCore::GlowLight& g : RtCore::GlowLights()) {
-				const float d2 = (std::max)(g.center[0] * g.center[0] + g.center[1] * g.center[1] + g.center[2] * g.center[2], g.radius * g.radius);
-				const float w = (0.2126f * g.rgb[0] + 0.7152f * g.rgb[1] + 0.0722f * g.rgb[2]) * g.radius * g.radius / (std::max)(d2, 1.0f);
-				if (w > 0.0f && g.radius > 0.0f) picks.push_back({ &g, w });
+				float rgb[3], radius;
+				if (!emit(g, rgb, radius)) continue;
+				const float d2 = (std::max)(g.center[0] * g.center[0] + g.center[1] * g.center[1] + g.center[2] * g.center[2], radius * radius);
+				const float w = (0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2]) * radius * radius / (std::max)(d2, 1.0f);
+				if (w > 0.0f && radius > 0.0f) picks.push_back({ &g, w });
 			}
 			const size_t keep = (std::min)(picks.size(), (size_t)GlowLightsMax);
 			std::partial_sort(picks.begin(), picks.begin() + keep, picks.end(), [](const Pick& a, const Pick& b) { return a.weight > b.weight; });
@@ -440,9 +452,11 @@ namespace {
 		float row[3][GlowLightsMax * 4] = {};
 		for (size_t i = 0; i < picks.size(); i++) {
 			const RtCore::GlowLight& g = *picks[i].light;
+			float rgb[3], radius;
+			emit(g, rgb, radius);
 			memcpy(&row[0][i * 4], g.center, sizeof(g.center));
-			row[0][i * 4 + 3] = g.radius;
-			memcpy(&row[1][i * 4], g.rgb, sizeof(g.rgb));
+			row[0][i * 4 + 3] = radius;
+			memcpy(&row[1][i * 4], rgb, sizeof(rgb));
 		}
 		row[2][0] = (float)picks.size();
 		row[2][1] = Strength;

@@ -448,3 +448,16 @@ game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial out
   17.38 (no reuse) / 19.58 (reuse), sd 9.71 / 8.90; denoised 18.84 (rt-gi-10: 17.38 / 19.57, 9.70 / 8.90, 18.84). Cost at full rate:
   no reuse 30.6 ms (RT p50 33.5); **merged reuse 34.8-34.9 ms (RT p50 37.1-37.3)**; the separate passes were 9.3-10.2 + 32.2-33.6 ms
   (RT p50 43.0-46.3, rtgi24): **-6 to -9 ms**. GIInterleave 4 still runs RtGITrace (AO 10.1 + GI 12.4 ms, RT p50 24.0).
+
+## GlowDirect: glow-mapped instances as sphere lights (main session's next direction, 2026-10-30)
+- **2ee5d105 (DLL BCAAAC9A):** RtCore::GlowLights() (this frame's glow-flagged instances: bound centre in scene space, radius, average
+  colour); NVR picks the 32 strongest from the eye into a 32 x 3 RGBA16F shared image; the GI pass and the merged AO pass pick one per
+  texel by RIS over the list (unshadowed sphere-light irradiance) + one shadow ray to a point on it, added to a new bounce-light-out
+  image (the reservoir stays clean). `GlowDirect` 0-8, default 0. The GI pass now binds 10 images, the merged pass 12.
+- **rt-gi-18 v1 (Lucky 38 20261030-085251-slotA, Ultra-Luxe 20261030-085719-slotA): FAIL, too bright everywhere.** 143-147
+  glow-flagged instances a frame, 32 used. Bounce-light mean Lucky 38 21.8 -> 95 (GlowDirect 1 and 2 alike: the GIClamp cap
+  saturated), Ultra-Luxe 36.5 -> 137 / 111; the whole view flat grey. Cause: big glow-flagged meshes (rooms, facades with small lit
+  details) whose bounds hold most of the room, greyish average colours, and every texel inside a bound took its full colour with no
+  shadow ray. Cost +6..10 ms (32-light loops + a shadow ray). No crash; the merged 12-image pass ran.
+- **v2 (C64D9369):** only small bright emitters: meshes over 256 units left out, emitting radius at most 32, colour gated by its
+  brightness like GlowGI (strongest channel 0.35 -> 0.8). Re-bench rt-gi-18.

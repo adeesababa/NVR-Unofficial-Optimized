@@ -276,7 +276,11 @@ float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // (glowList, filled by NVR from RtCore::GlowLights(): row 0 the centre in scene space + the bound's radius, row 1 the colour; texel
 // (0, 2) x the count, y the strength). One light picked per texel in proportion to what it would give unshadowed (its colour x
 // strength x radius^2 / distance^2 x the cosine: resampled importance sampling over the whole list, ReSTIR DI's first step), one
-// shadow ray to a point on it; light / its chance. Inside a light's bound (or closer than its radius) no shadow ray. GIClamp caps it.
+// shadow ray to a point on it; light / its chance. Closer than its (emitting) radius: no shadow ray. GIClamp caps it.
+// (v2, rt-gi-18: v1 lit Lucky 38 grey all over, mean 22 -> 95: big glow-flagged meshes (rooms, facades with a few lit details) have
+// bounds round half the room, greyish average colours, and every texel inside them took their full colour unshadowed.) Now NVR sends
+// the emitting radius (the bound's, at most 32 units; meshes over 256 left out) and the colour already gated by its brightness (as
+// GlowGI: its strongest channel from 0.35 to 0.8), so only small bright emitters count.
 vec3 GlowDirect(ivec2 texel, vec3 p, vec3 n, float bias) {
     vec4 head = imageLoad(glowList, ivec2(0, 2));
     int count = min(int(head.x + 0.5), 32);
