@@ -133,6 +133,18 @@ shader (SPIR-V replacement territory). The other is a second layer over water pi
 Neither is done in this pass. The water scene stays in the bench list to check that nothing changes on water and to measure the
 shore and docks next to it.
 
+## Glass (`[Shaders.Reflections.Main] GlassReflect`, 0 = off, the default)
+
+FNV draws see-through glass (windows, bottles, shop cases) in the world scene's blended stage, alpha blended WITH depth writes, so
+the depth buffer and the normals rebuilt from it already hold the glass surface; only "this pixel is glass" was missing, and the
+floor guess only takes surfaces facing up. `core/GlassMask.h` adds it: inside that stage each see-through draw (SandstormGlass's
+rules; characters never count) is drawn once more into a screen-sized mask with a one-instruction "return 1" pixel shader (z test
+LESSEQUAL, no blend, no depth write; MSAA like the scene, resolved after the stage). Once the mask holds glass, an opaque
+depth-writing draw later in the same stage is drawn the same way writing 0, so it unmarks glass it covers. Reflections reads the
+mask: masked pixels reflect as smooth glass (roughness 0.03) at strength GlassReflect x Reflectivity, any orientation, through
+SSR, the cube and (with `[Shaders.Reflections.RT]`) the ray trace; the composite's Fresnel does the rest. Not during a sandstorm
+that hides glass depth. Off: nothing hooked, no target, no draw.
+
 ## Requests to rt-sun-core
 
 Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open points are:
@@ -168,6 +180,16 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
   run toml `bench/deep-roadmap/evidence/rtrefl/rtrefl.toml`.
 
 ## Results
+
+### 2026-10-29 21:00-22:00 glass reflections (rtrefl-7; 1414c513, DLL ca236309; fix 06f60e05, DLL 110F653E)
+- iGPU saloon16: window panes and the mirror reflect. Reflection alone (DebugView 1), glass vs off: 16.2 % of pixels > 2, against
+  0.67 % noise; full picture 7.9 % vs a 6.5 % noise floor (saloon's noise is high). 7500 redraws / 600 stages = ~12.5 a frame.
+  Flaw: a vertical band over the NPC's face in the mask (glass behind her marked, she was drawn later in the stage). Fixed in
+  06f60e05 (occluders unmark, characters never glass); rerun below.
+- iGPU luxe: 2.11 % of pixels > 2 against 0.16 % noise, 40 glass redraws a frame, no artefacts seen.
+- GTX 1070 saloon16, cost (CPU PROFILE per shot, 2 samples of 120 frames each): "Rnd world draws (2nd)" 0.32 ms with glass vs
+  0.17-0.23 ms without (alone shots 0.25/0.29 vs 0.24): about +0.05-0.1 ms CPU for ~12.5 redraws. GPU "World scene (game)" 2.03
+  with glass vs 1.83-1.96 without, inside its own spread (warm 2.02 with no glass): no measurable GPU cost.
 
 ### 2026-10-29 19:26 hit-distance-aware blur (rtrefl-6; DLL adbea5a0, f79a0a7b): ContactSharpness 0.3 vs 1 (the old even blur)
 
