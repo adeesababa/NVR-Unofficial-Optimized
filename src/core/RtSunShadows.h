@@ -13,4 +13,7 @@ namespace RtSunShadows {
 	float	ReplaceRange();					// the RT range while Replacing, else 0 (TESR_RtSunReplace.x, SunShadows' flags.w)
 	D3DXVECTOR4* ReplaceConstant();			// TESR_RtSunReplace
 	void	RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget);	// DebugView 4: the traced visibility as grey, last
+	// UNOFFICIAL 2026-10-30 [Shaders.ShadowsExteriors.RT] CloudShadows: true when this frame's Apply put a visibility with the volumetric
+	// clouds' shadow in it into the sun shadow buffer: SunFar and the clouds' composite leave the clouds' shadow out this frame
+	bool	CloudsApplied();
 }

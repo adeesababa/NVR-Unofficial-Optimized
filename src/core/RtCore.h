@@ -91,4 +91,12 @@ public:
 	// world bound's centre in scene space (camera relative, as the instances), its radius and the draw's average colour (the record's).
 	struct GlowLight { float center[3]; float radius; float rgb[3]; };
 	static const std::vector<GlowLight>& GlowLights();
+	// UNOFFICIAL 2026-10-30 grass ([Main.Main.RayTracing] Grass, needs AlphaTested; GrassRadius, GrassMaxTufts live): the grass is not in
+	// the cells' scene graph (the game places its tufts per draw from TallGrassShader's instance table), so each grass pass, right after
+	// it is drawn (Render.cpp GrassFirst), hands its tufts here: the model's first tuft is built once (alpha-tested, its card texture in
+	// the alpha atlas) and every tuft within GrassRadius of the camera this frame is an instance of it (the tuft's world position and
+	// size step; no sway). GrassWanted: worth reading the pass's tufts (the helper runs, Grass and AlphaTested on).
+	static bool			GrassWanted();
+	static void			NoteGrass(NiGeometry* Geometry, IDirect3DBaseTexture9* Texture, const float* Instances, UINT Count, UINT VertsPerTuft,
+							const float* ScaleMask, UInt32 AlphaRef);
 };
