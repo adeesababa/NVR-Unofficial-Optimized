@@ -153,3 +153,18 @@ nothing here is pushed, released or installed unless the user says so.
   (intended) + bush/NPC motion. iGPU Goodsprings (074428-slotC, rtm-igpu-ext5): every RT effect changes the picture as in round 7,
   helper by LUID, no stale-arena warnings, no crash.
 - DLL CRC32 A0BDCFF8, NvrRtHelper FC94590F (unchanged), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-e777f57f\`.
+
+## Round 9 (2026-10-30 10:30, a93b6f18)
+- Merged: rt-sun-2 d40b6645 (glow atlas: [Main.Main.RayTracing] GlowTextures false; RT passes take up to 12 images, helper
+  extra-p3d source; RT sun DebugView 7/8 indoors), rt-refl-2 26c842ba (HitAmbientGrid true inside RT off, DebugView 6, CloudSky
+  false = not passed, keep off), rt-ao-gi d631389b (full-rate GI inside the AO pass, -6..-9 ms on the iGPU; GlowGI 0, GlowDirect 0),
+  rt-lamps-2 e2111852 (RankBy 0; outdoor lamp-shadow records on the land, only with ExteriorForward, off), rootplan-round3
+  56600f32 (round 8/9 results docs only; KeepDarkening-off is a proposal, not merged as a default change).
+- No default changes: every new switch is off.
+- Conflicts: ReflectionsTemporal.spv (recompiled from the merged .frag; the compiler reproduces both sides byte for byte),
+  PointShadowForward.h include list (both kept; first commit left markers, fixed in 3605495b before the build).
+  ROOTPLAN-RESULTS.md came back LF: CRLF restored (a93b6f18).
+- Bench PASS: 1070 RT off (20261030-100630-slotC) vs round 8b: Goodsprings at noise level; Vault 21 two shots slightly above
+  noise = the NPCs moved (diff image). iGPU Lucky 38 + Vault 21 (102334-slotA, rtm-igpu-int3) vs round 8: every shot within
+  0.2-1.3 %, helper by LUID (24 shared images), merged GI pass active, no errors, no crash.
+- DLL CRC32 B97D6E83, NvrRtHelper 45ADE162, fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-a93b6f18\`.
