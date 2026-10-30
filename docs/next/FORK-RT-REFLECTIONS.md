@@ -200,6 +200,31 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 09:45 main's three items: clouds at misses, ambient at hits, cost
+**(1) Clouds where a reflection finds nothing: CloudSky ([Shaders.Reflections.Main], off): NOT PASSED, parked off.**
+- Finding (rtrefl-12, noon + rain + volumetric clouds, 20261030-080453-slotA, RT DebugView 6 = the fallbacks split): the clouds are
+  drawn before Reflections and the surroundings cube is captured from that frame, so a miss already shows the clouds wherever the
+  cube saw the sky; only directions the camera never looked at fall to the plain sky gradient (no clouds). Turned round (z 180), a
+  sky-facing patch took the gradient.
+- Built: a cloud sky probe (VolumetricClouds technique 12, `VolumetricCloudsSkyProbe.frag`, Vulkan only; MarchRay moved unchanged into
+  `VolumetricCloudsMarchRay.glsl`, VolumetricCloudsMarch.spv byte-identical): the clouds marched over the whole upper sky into a
+  hemi-octahedral map, laid on the gradient the way the clouds' composite lays them on the screen.
+- Cost: first 128 x 128, every texel each frame, full steps: **12.07 ms** on the iGPU (rtrefl-13, 20261030-082555-slotA). Now 64 x 64,
+  one 8-row band a frame, half steps (8dad15d1): **0.86-1.01 ms** (20261030-092712-slotA). Still too much for what it shows.
+- Picture: no visible change at any place tried (z 0, z 180, looking 55 degrees down into a puddle): sky vs no sky stays inside
+  the noise of the same shot repeated (foliage and rain move 15-57 % of pixels here). The sky overhead had few clouds and the cube
+  already covers most sky a floor reflects. The noon + rain + clouds setup runs at ~150 ms a frame on the iGPU, so the 17-shot run
+  hit the self-test's time limit after 14 shots (not a crash).
+- Left: verify under a heavy overcast, or drop it. Not handed in.
+
+**(2) Ambient at hits: HitAmbientGrid ([Shaders.Reflections.RT], true inside RT off): PASS, small.** A reflected hit's ambient
+from the light grid at the hit (AmbientLight's world grid, SH toward the hit's normal) instead of the cube's blurriest mip near the
+camera; the cube stays outside the grid. rtrefl-14: lucky22 20261030-083535-slotA reflection alone 0.30 % px (noise 0.01 %, 444
+brighter / 226 darker), int23 20261030-090159-slotA 0.07 % (noise 0.02 %); full pictures in noise. Small because only the estimate
+tier (hits neither on screen nor in the cube) uses it. rt-ao-sky asked whether its GI leaves anything world-space to read at a hit.
+
+**(3) Cost:** already built and measured: see "Cost: resolution and the ray budget" above.
+
 ### 2026-10-30 04:00 MaterialBufferRoughness (4b3c5ca7, DLL FE2ADFD6): wiring for the material buffer, effect waits for the merge round
 `[Shaders.Reflections.Main] MaterialBufferRoughness` (off, Vulkan passes): where the game's shader wrote the roughness it lit a surface
 with into TESR_MaterialBuffer (claude/material-buffer, `[Main.Main.Quality] MaterialBuffer`: r class, b roughness, -1 none), the floor
