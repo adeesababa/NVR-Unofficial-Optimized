@@ -452,6 +452,18 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				&Errors,
 				&ConstantTable
 			);
+			// UNOFFICIAL 2026-10-29: D3DX ran out of ps_3_0 temp registers (X4505). Measured: the 6-layer land shaders SLS2132-2138 with terrain
+			// blending and captured normals both on fail in Includes/Parallax.hlsl at flags 0 while 5 and 7 layers compile -- an allocation
+			// quirk, not a real budget. Compiled again with D3DXSHADER_PREFER_FLOW_CONTROL, which keeps the same branches and fits (all 256
+			// combinations of the land options at 6 layers: scratch terrain_sweep.py). Only after such a failure: every shader that compiles
+			// at flags 0 keeps exactly that bytecode.
+			if (!Shader && Errors && strstr((const char*)Errors->GetBufferPointer(), "X4505")) {
+				Logger::Log("UNOFFICIAL %s: out of temp registers at the default flags; compiling again with PREFER_FLOW_CONTROL", Name);
+				Errors->Release(); Errors = nullptr;
+				if (ConstantTable) { ConstantTable->Release(); ConstantTable = nullptr; }
+				D3DXCompileShader((const char*)ShaderSource->GetBufferPointer(), ShaderSource->GetBufferSize(), NULL, NULL, "main", ShaderProfile,
+					D3DXSHADER_PREFER_FLOW_CONTROL, &Shader, &Errors, &ConstantTable);
+			}
 			if (Errors) Logger::Log((char*)Errors->GetBufferPointer());
 			if (Shader) {
 				Function = Shader->GetBufferPointer();
