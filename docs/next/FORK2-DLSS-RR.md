@@ -268,3 +268,31 @@ the helper (`--wait cpu|gpu`, `--gpu-priority high|normal`), so changing one res
 
 Every exchange whose span is over 20 ms gets a `DLSS EXCHANGE STALL frame N` line: the span, the copies, the frames in flight then,
 and the helper's own GPU time and response. The DLSS HELPER line counts these stalls per window.
+
+## Verified on the GTX 1070 (2026-10-30 evening, claude/dlss-rr-2, DLL B74453AF, helper 67C90AC6)
+
+**Helper self-tests:** all pass.
+- `--probe` reports no DLSS and no RR.
+- `--selftest` and `--selftest cpuwait highprio`: 6 of 6 frames right.
+- `--selftest rr` and `--selftest rr cpuwait highprio`: every guide thumbnail pixel right, 300 RR frames.
+- `--selftest dlss` and `--selftest dlss rr`: the helper gives up cleanly with "DLSS not available".
+- GPU priority on this card: the WDDM class HIGH is set; Vulkan's HIGH is not permitted.
+
+**Off paths** (run 20261030-165718-slotC, og-goodsprings, still camera): at noise level. The base vs RayReconstruction-on-without-DLSS
+differs by a mean of 1.4, while the first and last base shots differ by 3.2. Real DLSS with and without RR differs by 2.6; both
+fall back to FSR 2 on the 1070, and RR logs that it cannot run.
+
+**The RR pass-through at 1080p** (run 20261030-170936-slotC) is RR's whole NVR side short of NGX:
+- the RR point after the god rays, the eight shared images and the exchange, with the guides as thumbnails along the bottom;
+- the frame is whole;
+- the RR point costs 2.0 ms of GPU time on the 1070 (FSRPrep, guides, exchange, composite), of which the exchange is 1.2 ms;
+- the helper's response is 0.025 ms with HelperWait 1.
+
+Away from the thumbnails, RR frames come out about 2.8 levels darker than SR pass-through frames. That is the test's bright
+thumbnails sitting in the pre-tonemap picture, which auto-exposure measures: RR vs RR with RRKeepDenoisers, both with
+thumbnails, differs by −0.15.
+
+**The DLAA stall** is not reproduced on the 1070 (run 20261030-164824-slotB: saloon16, interior shadows on, turning, the slot at
+960x540 about 200 fps). The exchange span is 0.38-0.43 ms (max under 1 ms) with HelperWait 0 and 1 and HelperGpuPriority 0 and 1,
+and there are no stall lines, so neither mode costs anything measurable. Whether it fixes the stall needs the RTX 5060 tester's
+log.
