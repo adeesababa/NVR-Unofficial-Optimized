@@ -55,6 +55,9 @@
 //   keep                                         (2026-10-27, FSR switch flicker) this shot's set/effect lines are NOT undone after its
 //                                                picture: they stay for the later shots (a mid-run switch, e.g. FSR switched on once and
 //                                                pictures every few frames after it with 'noreload'); undone when the run ends
+//   landflicker [frames]                         (2026-10-30, terrain flicker) the shot's last frames (default 60) measure the land's
+//                                                flicker from a still camera, then one frame marks the land magenta: LAND FLICKER log
+//                                                lines and <slug>-landstd.png (SettingShots::Land below; docs/next/TERRAIN-FLICKER.md)
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -75,7 +78,7 @@ namespace SettingShots {
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; int capture = 0;
-		bool renderdoc = false; std::string renderdocPath; bool keep = false; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); capture: RenderDoc frames (2026-10-26); renderdoc: 2026-10-26
+		bool renderdoc = false; std::string renderdocPath; bool keep = false; int landFrames = 0; };	// landFrames: 'landflicker' (2026-10-30)	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); capture: RenderDoc frames (2026-10-26); renderdoc: 2026-10-26
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -199,6 +202,12 @@ namespace SettingShots {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a renderdoc before the first 'shot'"; return false; }
 				List.back().renderdoc = true;
 				words >> List.back().renderdocPath;
+			}
+			else if (command == "landflicker") {	// 2026-10-30 terrain flicker: Land below
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a landflicker before the first 'shot'"; return false; }
+				int frames = 60;
+				words >> frames;
+				List.back().landFrames = std::clamp(frames, 4, 240);
 			}
 			else if (command == "sampler") { words >> CpuSampler::Hz; CpuSampler::Hz = std::clamp(CpuSampler::Hz, 100, 4000); }
 			else if (command == "affinity") {
@@ -412,6 +421,251 @@ namespace SettingShots {
 			(unsigned)d.MultiSampleType, path, saved ? "saved" : "NOT saved");
 	}
 
+	// UNOFFICIAL 2026-10-30 'landflicker <frames>' (terrain flicker deep dive, docs/next/TERRAIN-FLICKER.md): the shot's last <frames>
+	// frames before its picture are a still-camera flicker measurement of the LAND only. Each of them, the finished picture (before the
+	// HUD) is halved to at most 640 wide and read back as luma (three surfaces in turn: no stall); then one frame (three before the
+	// picture) draws every land shader (the TerrainShaders templates: land, LOD land, fade) flat magenta, which marks the land pixels.
+	// Logged per shot ('LAND FLICKER' lines): the land's share of the picture, the per-pixel temporal standard deviation over the frames
+	// (8-bit levels: mean, p95, p99; pixels over 2 and 5 levels), one-frame spikes (a pixel that jumps 10+ levels and comes back the next
+	// frame), the land's mean brightness frame by frame (a whole-ground pulse), by screen thirds (far / middle / near rows), and the same
+	// for the pixels that are not land. A heatmap is saved next to the picture (<slug>-landstd.png: land coloured by its deviation, the
+	// rest dim grey). The camera must be still (no 'turn' / 'walk'): every change of a pixel counts.
+	namespace Land {
+		inline UInt32 W = 0, H = 0;
+		inline int Frames = 0, First = 0, MaskAt = 0;	// this shot's: measured frames, the shot frame of the first, the mask frame
+		inline bool Active = false, MaskNow = false, Failed = false;
+		inline IDirect3DSurface9* Rt[3] = {};
+		inline IDirect3DSurface9* Mem[3] = {};
+		inline int SlotFrame[3] = { -1, -1, -1 };
+		inline D3DFORMAT Format = D3DFMT_UNKNOWN;
+		inline std::vector<unsigned char> Stack;		// Frames x W x H luma
+		inline std::vector<unsigned> Reference, Mask;	// BGRA: the last measured frame, the mask frame
+		inline bool HaveMask = false;
+		inline IDirect3DPixelShader9* Magenta = nullptr;
+		inline unsigned Replaced = 0;
+
+		inline void Release() {
+			for (int i = 0; i < 3; i++) {
+				if (Rt[i]) { Rt[i]->Release(); Rt[i] = nullptr; }
+				if (Mem[i]) { Mem[i]->Release(); Mem[i] = nullptr; }
+				SlotFrame[i] = -1;
+			}
+			Format = D3DFMT_UNKNOWN;
+		}
+
+		// SettingShots::BeginFrame, after Frame++ (frame: 1 .. total, the picture at total).
+		inline void OnShotFrame(int frame, int total, int frames) {
+			if (frames <= 0) { Active = MaskNow = false; return; }
+			if (frame == 1) {
+				Frames = (std::min)(frames, (std::max)(total - 12, 0));
+				MaskAt = total - 3;
+				First = MaskAt - Frames;
+				Active = Frames >= 4;
+				HaveMask = false; Replaced = 0;
+				for (int& s : SlotFrame) s = -1;
+				if (!Active) Logger::Log("LAND FLICKER %s: shot '%s' too short for landflicker %d (wait %d)", Run, List[Index].slug.c_str(), frames, total);
+			}
+			// BeginFrame runs in image space, after the world of this frame is drawn: the flag set here colours the NEXT frame's
+			// land, whose picture is frame MaskAt (run 20261030-141538: set at MaskAt itself, no picture ever had the land masked).
+			MaskNow = Active && frame == MaskAt - 1;
+		}
+
+		// SetShadersHook, after the game bound a pass's shaders: in the mask frame a land shader is swapped for flat magenta.
+		inline void OnBind(IDirect3DDevice9* device, const char* ps, bool world) {
+			if (!MaskNow || !Running || !world || !ps || Failed || !TheShaderManager->Shaders.Terrain) return;
+			if (!TheShaderManager->Shaders.Terrain->GetTemplate(ps).Name) return;
+			if (!Magenta) {
+				const char* src = "float4 main() : COLOR0 { return float4(1.0, 0.0, 1.0, 1.0); }";
+				ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
+				if (FAILED(D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL)) || !code ||
+					FAILED(device->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &Magenta))) {
+					Failed = true;
+					Logger::Log("LAND FLICKER: the mask shader failed: %s", errors ? (const char*)errors->GetBufferPointer() : "?");
+				}
+				if (errors) errors->Release();
+				if (code) code->Release();
+				if (!Magenta) return;
+			}
+			device->SetPixelShader(Magenta);
+			Replaced++;
+		}
+
+		inline unsigned char Luma(float r, float g, float b) {
+			const float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+			return (unsigned char)(std::clamp(l, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+
+		// Reads slot i (BGRA into out when asked, luma into luma when asked).
+		inline bool Read(int i, unsigned char* luma, std::vector<unsigned>* out) {
+			D3DLOCKED_RECT lock = {};
+			if (FAILED(TheRenderManager->device->GetRenderTargetData(Rt[i], Mem[i])) || FAILED(Mem[i]->LockRect(&lock, NULL, D3DLOCK_READONLY))) return false;
+			if (out) out->resize((size_t)W * H);
+			for (UInt32 y = 0; y < H; y++) {
+				const unsigned char* row = (const unsigned char*)lock.pBits + (size_t)y * lock.Pitch;
+				for (UInt32 x = 0; x < W; x++) {
+					float r, g, b;
+					if (Format == D3DFMT_A16B16G16R16F) {
+						float v[4];
+						D3DXFloat16To32Array(v, (const D3DXFLOAT16*)(row + x * 8), 4);
+						r = powf((std::max)(v[0], 0.0f), 1.0f / 2.2f); g = powf((std::max)(v[1], 0.0f), 1.0f / 2.2f); b = powf((std::max)(v[2], 0.0f), 1.0f / 2.2f);
+					}
+					else { const unsigned char* p = row + x * 4; b = p[0] / 255.0f; g = p[1] / 255.0f; r = p[2] / 255.0f; }
+					if (luma) luma[(size_t)y * W + x] = Luma(r, g, b);
+					if (out) {
+						const unsigned R = (unsigned)(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f), G = (unsigned)(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f),
+							B = (unsigned)(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
+						(*out)[(size_t)y * W + x] = 0xFF000000u | (R << 16) | (G << 8) | B;
+					}
+				}
+			}
+			Mem[i]->UnlockRect();
+			return true;
+		}
+
+		inline void Analyse();
+
+		// Render.cpp, the finished picture before the HUD, BEFORE SettingShots::Capture (which may end the shot).
+		inline void OnPicture(IDirect3DDevice9* device, IDirect3DSurface9* surface) {
+			if (!Running || !Active || Failed || !surface || Index >= List.size()) return;
+			if (Frame < First || Frame > MaskAt + 2) return;
+			D3DSURFACE_DESC d = {};
+			surface->GetDesc(&d);
+			if (d.Format != D3DFMT_A8R8G8B8 && d.Format != D3DFMT_X8R8G8B8 && d.Format != D3DFMT_A16B16G16R16F) {
+				Failed = true;
+				Logger::Log("LAND FLICKER: picture format %d not handled, off", (int)d.Format);
+				return;
+			}
+			if (!Rt[0] || d.Format != Format) {
+				Release();
+				W = (std::min)(d.Width / 2, 640u); H = (UInt32)((float)W * d.Height / d.Width);
+				for (int i = 0; i < 3; i++)
+					if (FAILED(device->CreateRenderTarget(W, H, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &Rt[i], NULL)) ||
+						FAILED(device->CreateOffscreenPlainSurface(W, H, d.Format, D3DPOOL_SYSTEMMEM, &Mem[i], NULL))) {
+						Release();
+						Failed = true;
+						Logger::Log("LAND FLICKER: could not make the read-back surfaces, off");
+						return;
+					}
+				Format = d.Format;
+			}
+			if (Frame == First) { Stack.assign((size_t)Frames * W * H, 0); Reference.clear(); Mask.clear(); }
+			// the frame written two frames ago
+			const int r = (Frame + 1) % 3;
+			if (SlotFrame[r] >= First && SlotFrame[r] <= MaskAt) {
+				const int f = SlotFrame[r];
+				if (f == MaskAt) { HaveMask = Read(r, nullptr, &Mask); Analyse(); }
+				else Read(r, &Stack[(size_t)(f - First) * W * H], f == MaskAt - 1 ? &Reference : nullptr);
+				SlotFrame[r] = -1;
+			}
+			if (Frame <= MaskAt) {
+				const int w = Frame % 3;
+				SlotFrame[w] = SUCCEEDED(device->StretchRect(surface, NULL, Rt[w], NULL, D3DTEXF_LINEAR)) ? Frame : -1;
+			}
+		}
+
+		inline void Analyse() {
+			const Shot& shot = List[Index];
+			if (!HaveMask || Reference.size() != (size_t)W * H) { Logger::Log("LAND FLICKER %s: shot '%s': no mask frame read, nothing measured", Run, shot.slug.c_str()); return; }
+			const size_t n = (size_t)W * H;
+			// land: magenta in the mask frame and clearly changed from the frame before it; eroded by one pixel (object edges)
+			std::vector<unsigned char> raw(n, 0), land(n, 0);
+			for (size_t i = 0; i < n; i++) {
+				const int r = (Mask[i] >> 16) & 255, g = (Mask[i] >> 8) & 255, b = Mask[i] & 255;
+				const int r0 = (Reference[i] >> 16) & 255, g0 = (Reference[i] >> 8) & 255, b0 = Reference[i] & 255;
+				// (TAA / FSR blend the mask frame with their history: the magenta comes out weaker than drawn)
+				raw[i] = (r - g) - (r0 - g0) > 25 && (b - g) - (b0 - g0) > 25;
+			}
+			for (UInt32 y = 1; y + 1 < H; y++) for (UInt32 x = 1; x + 1 < W; x++) {
+				const size_t i = (size_t)y * W + x;
+				land[i] = raw[i] && raw[i - 1] && raw[i + 1] && raw[i - W] && raw[i + W];
+			}
+			struct Group { double sum = 0.0; size_t count = 0, over2 = 0, over5 = 0; std::vector<float> stds; double spikes = 0.0; double third[3] = {}; size_t thirdCount[3] = {}; };
+			Group g[2];	// 0 land, 1 the rest
+			std::vector<float> std_(n, 0.0f);
+			std::vector<double> landMean(Frames, 0.0);
+			size_t landCount = 0;
+			for (size_t i = 0; i < n; i++) {
+				double s = 0.0, s2 = 0.0;
+				unsigned spikes = 0;
+				for (int f = 0; f < Frames; f++) {
+					const double v = Stack[(size_t)f * n + i];
+					s += v; s2 += v * v;
+					if (land[i]) landMean[f] += v;
+					if (f >= 2) {
+						const int a = Stack[(size_t)(f - 2) * n + i], b = Stack[(size_t)(f - 1) * n + i], c = Stack[(size_t)f * n + i];
+						if (abs(b - a) >= 10 && abs(c - b) >= 10 && (b - a) * (c - b) < 0) spikes++;
+					}
+				}
+				const double mean = s / Frames, var = (std::max)(s2 / Frames - mean * mean, 0.0);
+				const float sd = (float)sqrt(var);
+				std_[i] = sd;
+				Group& G = g[land[i] ? 0 : 1];
+				G.sum += sd; G.count++; G.stds.push_back(sd); G.spikes += spikes;
+				if (sd > 2.0f) G.over2++;
+				if (sd > 5.0f) G.over5++;
+				const int t = (int)((size_t)(i / W) * 3 / H);
+				G.third[t] += sd; G.thirdCount[t]++;
+				if (land[i]) landCount++;
+			}
+			auto pct = [](std::vector<float>& v, float p) { if (v.empty()) return 0.0f; const size_t k = (size_t)(p * (v.size() - 1)); std::nth_element(v.begin(), v.begin() + k, v.end()); return v[k]; };
+			char line[2][400];
+			for (int k = 0; k < 2; k++) {
+				Group& G = g[k];
+				const double c = (std::max)((double)G.count, 1.0);
+				const float p95 = pct(G.stds, 0.95f), p99 = pct(G.stds, 0.99f);
+				sprintf_s(line[k], "std mean %.2f p95 %.2f p99 %.2f levels; over 2 levels %.2f%%, over 5 %.2f%%; spikes %.2f per 1000 pixel-frames; rows far/mid/near std %.2f/%.2f/%.2f",
+					G.sum / c, p95, p99, 100.0 * G.over2 / c, 100.0 * G.over5 / c, 1000.0 * G.spikes / (c * (std::max)(Frames - 2, 1)),
+					G.third[0] / (std::max)((double)G.thirdCount[0], 1.0), G.third[1] / (std::max)((double)G.thirdCount[1], 1.0), G.third[2] / (std::max)((double)G.thirdCount[2], 1.0));
+			}
+			// the land's mean brightness frame by frame: a pulse of the whole ground
+			std::string series;
+			double lo = 1e9, hi = -1e9, sum = 0.0;
+			for (int f = 0; f < Frames; f++) {
+				landMean[f] /= (std::max)((double)landCount, 1.0);
+				lo = (std::min)(lo, landMean[f]); hi = (std::max)(hi, landMean[f]); sum += landMean[f];
+				char v[16]; sprintf_s(v, " %.1f", landMean[f]); series += v;
+			}
+			const double avg = sum / (std::max)(Frames, 1);
+			double step = 0.0;
+			for (int f = 1; f < Frames; f++) step = (std::max)(step, fabs(landMean[f] - landMean[f - 1]));
+			Logger::Log("LAND FLICKER %s: shot '%s': %d frames %ux%u, land %.1f%% of the picture (%u land draws masked)", Run, shot.slug.c_str(), Frames, W, H,
+				100.0 * landCount / n, Replaced);
+			Logger::Log("LAND FLICKER %s: shot '%s': land: %s", Run, shot.slug.c_str(), line[0]);
+			Logger::Log("LAND FLICKER %s: shot '%s': rest: %s", Run, shot.slug.c_str(), line[1]);
+			Logger::Log("LAND FLICKER %s: shot '%s': land mean %.2f, range %.2f%%, largest frame step %.2f%%; frames:%s", Run, shot.slug.c_str(), avg,
+				avg > 0.0 ? 100.0 * (hi - lo) / avg : 0.0, avg > 0.0 ? 100.0 * step / avg : 0.0, series.c_str());
+			// heatmap: land by its deviation (0 black, 2 blue, 5 yellow, 10+ red), the rest dim grey
+			Job* job = new (std::nothrow) Job();
+			if (!job) return;
+			job->width = W; job->height = H; job->bgra.resize(n);
+			for (size_t i = 0; i < n; i++) {
+				if (!land[i]) { const unsigned v = Stack[(size_t)(Frames - 1) * n + i] / 4; job->bgra[i] = 0xFF000000u | (v << 16) | (v << 8) | v; continue; }
+				const float s = std_[i];
+				float r, gg, b;
+				if (s < 2.0f) { r = 0.0f; gg = 0.0f; b = 0.25f + 0.75f * s / 2.0f; }
+				else if (s < 5.0f) { const float t = (s - 2.0f) / 3.0f; r = t; gg = t; b = 1.0f - t; }
+				else { const float t = (std::min)((s - 5.0f) / 5.0f, 1.0f); r = 1.0f; gg = 1.0f - t; b = 0.0f; }
+				job->bgra[i] = 0xFF000000u | ((unsigned)(r * 255) << 16) | ((unsigned)(gg * 255) << 8) | (unsigned)(b * 255);
+			}
+			sprintf_s(job->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s-landstd.png", Run, (unsigned)Index, shot.slug.c_str());
+			InFlight++;
+			HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
+			if (thread) CloseHandle(thread);
+			else { InFlight--; delete job; }
+			// the mask frame as read (what was taken as land: the check for this measurement)
+			if (Job* mask = new (std::nothrow) Job()) {
+				mask->width = W; mask->height = H; mask->bgra = Mask;
+				for (size_t i = 0; i < n; i++) if (land[i]) mask->bgra[i] = 0xFFFF00FFu;
+				sprintf_s(mask->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s-landmask.png", Run, (unsigned)Index, shot.slug.c_str());
+				InFlight++;
+				HANDLE t2 = CreateThread(nullptr, 0, Worker, mask, 0, nullptr);
+				if (t2) CloseHandle(t2);
+				else { InFlight--; delete mask; }
+			}
+			Stack.clear(); Stack.shrink_to_fit();
+		}
+	}
+
 	inline void QueueJob(Job* job);
 	inline void NextShot();
 
@@ -535,6 +789,7 @@ namespace SettingShots {
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
+		Land::OnShotFrame(Frame, ShotFrames(), List[Index].landFrames);	// 2026-10-30 'landflicker'
 		// 2026-10-26 'capture': asked one frame ahead, so RenderDoc's next frame (from the next present) is the picture frame.
 		if (List[Index].capture && Frame == ShotFrames() - 1) {
 			char why[96];

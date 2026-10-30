@@ -660,7 +660,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		distantFog = pows(smoothstep(LegacyDistantFogRange, 1.0, normalizedDepth), 0.5);
 		// The old shader's sky mask (only read here when DistantFogHeight is 0); it then set isSky to 0 for the rest.
 		[branch] if (LegacyDistantFogHeight == 0) distantHeightFade = 1.0 - (getSky(uv, interior) > 0);
-		else distantHeightFade = exp(-pointHeight / (80000 * LegacyDistantFogHeight));
+		else distantHeightFade = saturate(exp(-pointHeight / (80000 * LegacyDistantFogHeight)));	// UNOFFICIAL 2026-10-30: at most 1, as below
 
 		inScattering += SunsetFog;
 		extinction *= 1 - distantFog * isDayTimeFog;
@@ -864,7 +864,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100 * (classic ? 1.0 : TESR_VolumetricFogSun.x);
 
 		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
-		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));
+		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : saturate(exp(-worldPos.z / (80000 * DistantFogHeight)));	// UNOFFICIAL 2026-10-30: at most 1 (below z 0 the exp passed 1 and the sky lerp ran past the sky colour: white, then inf in the TAA history)
 	}
 
 	// ---- sky ambient in-scattering (SH-reconstructed, or flat fallback), unshadowed ----
@@ -1682,7 +1682,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100;
 
 		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
-		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));
+		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : saturate(exp(-worldPos.z / (80000 * DistantFogHeight)));	// UNOFFICIAL 2026-10-30: at most 1 (below z 0 the exp passed 1 and the sky lerp ran past the sky colour: white, then inf in the TAA history)
 	}
 
 	// ---- sky ambient in-scattering (SH-reconstructed, or flat fallback), unshadowed ----

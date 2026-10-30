@@ -25,6 +25,7 @@ DebugVar2 = 0.0         # Custom variable used when developing shaders.
 DebugVar3 = 0.0         # Custom variable used when developing shaders.
 DebugVar4 = 0.0         # Custom variable used when developing shaders.
 TraceShaders = 25       # Keyboard shortcut to print used shaders list to the log.
+FailShaders = ""        # Test builds only (terrain flicker A/B): shader names, comma separated, loaded as a failed compile.
 GpuDebugLabels = false  # Debug only (2026-10-26): every NVR step (each effect, shadow map, sun cascade, the game's world scene, the DXVK extension's passes) is a named group in a frame capture (D3DPERF events). Under DXVK they need the environment variable DXVK_DEBUG=markers. Guide: docs/next/FORK-DEBUG-CAPTURE.md.
 RenderDocCaptureKey = 0 # Debug only: keyboard key (DirectInput code, e.g. 87 = F11) that asks RenderDoc for a capture of the next frame(s). Works only when the game was started from RenderDoc (on the DXVK d3d9.dll); NVR never loads RenderDoc. 0 = no key.
 RenderDocCaptureFrames = 1  # Debug only: how many frames the RenderDocCaptureKey captures (1-10).

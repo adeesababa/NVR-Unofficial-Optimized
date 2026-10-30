@@ -442,10 +442,25 @@ void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
 			}
 		}
 
+		// UNOFFICIAL 2026-10-30 (terrain flicker deep dive): the game's depth surface can be larger than the picture (seen: 1024 lines
+		// tall with a 720-line picture, native D3D9 on NVIDIA with the game's MSAA off). A copy of the whole surface squashed it into the
+		// depth texture: below 720/1024 of the screen every pixel read far (the near ground fogged white). Only the picture's own area
+		// (top left, the size of the depth texture) is copied.
+		RECT source = {}, *sourceRect = NULL;
+		D3DSURFACE_DESC from = {}, to = {};
+		if (SUCCEEDED(TheTextureManager->DepthSurface->GetDesc(&from)) && SUCCEEDED(Buffer->GetLevelDesc(0, &to)) &&
+			(from.Width != to.Width || from.Height != to.Height)) {
+			source.right = (LONG)(std::min)(from.Width, to.Width);
+			source.bottom = (LONG)(std::min)(from.Height, to.Height);
+			sourceRect = &source;
+			static bool told = false;
+			if (!told) { told = true; Logger::Log("UNOFFICIAL depth (NVAPI): the game's depth surface is %ux%u, the depth texture %ux%u: the top-left %ix%i is copied.", from.Width, from.Height, to.Width, to.Height, source.right, source.bottom); }
+		}
+		RECT target = { 0, 0, source.right, source.bottom };
 		if (TheTextureManager->DepthTextureINTZ)
-			NvAPI_D3D9_StretchRectEx(device, TheTextureManager->DepthTextureINTZ, NULL, Buffer, NULL, D3DTEXF_NONE);
-        else 
-			NvAPI_D3D9_StretchRectEx(device, TheTextureManager->DepthSurface, NULL, Buffer, NULL, D3DTEXF_NONE);
+			NvAPI_D3D9_StretchRectEx(device, TheTextureManager->DepthTextureINTZ, sourceRect, Buffer, sourceRect ? &target : NULL, D3DTEXF_NONE);
+		else
+			NvAPI_D3D9_StretchRectEx(device, TheTextureManager->DepthSurface, sourceRect, Buffer, sourceRect ? &target : NULL, D3DTEXF_NONE);
 	}
 }
 
