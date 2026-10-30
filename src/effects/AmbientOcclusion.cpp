@@ -384,7 +384,10 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 namespace {
 	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtImageAlbedoStandIn = -1, RtShader = -1;
 	int RtGIShader = -1, RtImageReservoir[2][2] = { { -1, -1 }, { -1, -1 } };	// (2026-10-30) GIReuse: RtGITrace and its two reservoir pairs (A, B)
-	bool RtGIHistory = false;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
+	bool RtGIHistory = false;
+	int RtImageGIOut = -1, RtImageGlowList = -1;	// (2026-10-30) the reuse passes' bounce light out (estimate + GlowDirect) and the glow lights
+	IDirect3DTexture9* RtGlowTexture = nullptr;	// the glow lights' source (32 x 3, dynamic: filled each frame from RtCore::GlowLights())
+	constexpr UINT GlowLightsMax = 32;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -411,6 +414,57 @@ namespace {
 			RtImageReservoir[set][1] = RtCore::AddImage(set ? "NVR RT gi reservoir B1" : "NVR RT gi reservoir B0", w, h, NVR_EXT_SHARED_RGBA16F);
 		}
 		RtGIHistory = false;
+		RtImageGIOut = RtCore::AddImage("NVR RT gi out", w, h, NVR_EXT_SHARED_RGBA16F);
+		RtImageGlowList = RtCore::AddImage("NVR RT glow lights", GlowLightsMax, 3, NVR_EXT_SHARED_RGBA16F);
+	}
+
+	// (2026-10-30) GlowDirect: the strongest glow-mapped instances as seen from the eye (colour x radius^2 / distance^2), at most 32, into
+	// RtGlowTexture (row 0 centre + radius, row 1 colour, texel (0, 2) count + strength; RtAOTrace.comp GlowDirect). False: no texture.
+	bool RtFillGlowLights(IDirect3DDevice9* Device, float Strength) {
+		if (!RtGlowTexture && FAILED(Device->CreateTexture(GlowLightsMax, 3, 1, D3DUSAGE_DYNAMIC, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &RtGlowTexture, nullptr)))
+			return false;
+		struct Pick { const RtCore::GlowLight* light; float weight; };
+		std::vector<Pick> picks;
+		// (v2, rt-gi-18) only small bright emitters: meshes over 256 units left out (rooms, facades with a few lit details), the emitting
+		// radius at most 32, the colour gated by its brightness (strongest channel 0.35 -> 0.8, as GlowGI) so grey averages give nothing.
+		auto emit = [](const RtCore::GlowLight& g, float* rgb, float& radius) {
+			const float peak = (std::max)(g.rgb[0], (std::max)(g.rgb[1], g.rgb[2]));
+			float t = (std::min)((std::max)((peak - 0.35f) / 0.45f, 0.0f), 1.0f);
+			t = t * t * (3.0f - 2.0f * t);
+			for (int k = 0; k < 3; k++) rgb[k] = g.rgb[k] * t;
+			radius = (std::min)(g.radius, 32.0f);
+			return g.radius <= 256.0f && t > 0.0f;
+		};
+		if (Strength > 0.0f) {
+			for (const RtCore::GlowLight& g : RtCore::GlowLights()) {
+				float rgb[3], radius;
+				if (!emit(g, rgb, radius)) continue;
+				const float d2 = (std::max)(g.center[0] * g.center[0] + g.center[1] * g.center[1] + g.center[2] * g.center[2], radius * radius);
+				const float w = (0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2]) * radius * radius / (std::max)(d2, 1.0f);
+				if (w > 0.0f && radius > 0.0f) picks.push_back({ &g, w });
+			}
+			const size_t keep = (std::min)(picks.size(), (size_t)GlowLightsMax);
+			std::partial_sort(picks.begin(), picks.begin() + keep, picks.end(), [](const Pick& a, const Pick& b) { return a.weight > b.weight; });
+			picks.resize(keep);
+		}
+		D3DLOCKED_RECT r;
+		if (FAILED(RtGlowTexture->LockRect(0, &r, nullptr, D3DLOCK_DISCARD))) return false;
+		float row[3][GlowLightsMax * 4] = {};
+		for (size_t i = 0; i < picks.size(); i++) {
+			const RtCore::GlowLight& g = *picks[i].light;
+			float rgb[3], radius;
+			emit(g, rgb, radius);
+			memcpy(&row[0][i * 4], g.center, sizeof(g.center));
+			row[0][i * 4 + 3] = radius;
+			memcpy(&row[1][i * 4], rgb, sizeof(rgb));
+		}
+		row[2][0] = (float)picks.size();
+		row[2][1] = Strength;
+		for (int y = 0; y < 3; y++) D3DXFloat32To16Array((D3DXFLOAT16*)((BYTE*)r.pBits + y * r.Pitch), row[y], GlowLightsMax * 4);
+		RtGlowTexture->UnlockRect(0);
+		static bool logged = false;
+		if (!logged && !picks.empty()) { logged = true; Logger::Log("UNOFFICIAL RT AO: GlowDirect lights the bounce from %u glow-mapped instances (of %u this frame).", (UInt32)picks.size(), (UInt32)RtCore::GlowLights().size()); }
+		return true;
 	}
 
 	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
@@ -577,7 +631,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		auto lin = [](float v) { return powf((std::max)(v, 0.0f), 2.2f); };
 		c.sunDir = D3DXVECTOR4(sunDir.x, sunDir.y, sunDir.z, sunUp ? 1.0f : 0.0f);
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
-		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), 0.0f);
+		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), rt.GlowGI);	// (w: GlowGI, 2026-10-30)
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
 		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, rt.GIClamp, (float)rt.Interleave);
 		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
@@ -604,21 +658,15 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// count; the sun's luminance and height), the history may stand for 1 frame of samples only, growing back by one each frame.
 	static float prevLight[GILightKeys] = {};
 	static float giCap = 0.0f;
-	const bool giPass = gi && rt.GIReuse > 0 && RtGIShader >= 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
+	// (2026-10-30) At full rate (Interleave 1, GIInterleave 1) the reuse runs inside the AO pass (one pass instead of two: ~6 ms on the
+	// iGPU, rt-gi-10/14), which then binds 10 images (the RT core's passes take up to 12 since rt-sun-core 6b9784c3); interleaved GI keeps
+	// its own pass (its whole-grid dispatch and tiles).
+	const bool reuse = gi && rt.GIReuse > 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
+	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1;
+	const bool giPass = reuse && !merged && RtGIShader >= 0;
 	RtAmbient::GIConstants g = {};
-	if (giPass) {
+	if (reuse && (giPass || merged)) {
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
-		g.viewToWorld = c.viewToWorld;
-		g.prevViewToWorld = RtGIHistory ? prevViewToWorld : c.viewToWorld;
-		g.projection = c.projection;
-		g.origin = c.origin;
-		g.gi = c.gi;
-		g.sunDir = c.sunDir;
-		g.sunColor = c.sunColor;
-		g.ambient = c.ambient;
-		memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
-		memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
-		g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
 		float light[GILightKeys] = {};
 		auto luma = [](const D3DXVECTOR4& c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
 		for (int k = 0; k < RtAmbient::GILampsMax && k < (int)c.gi.z; k++) {	// (order-free: the list is sorted by distance)
@@ -636,24 +684,63 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		static int cuts = 0, frames = 0;	// (logged every 600 GI frames: how often the light changed enough to cut the history)
 		cuts += changed ? 1 : 0;
 		if (++frames >= 600) { Logger::Log("UNOFFICIAL RT AO: GI reuse history cut %d times in the last 600 frames (the lamps or the sun changed by > 10 %%).", cuts); cuts = frames = 0; }
-		g.reuse = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (std::max)(giCap, 1.0f) + 64.0f * rt.GISpatial)
-							  : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		const D3DXVECTOR4 reuseNow = RtGIHistory ? D3DXVECTOR4(camera.x - prevCamera.x, camera.y - prevCamera.y, camera.z - prevCamera.z, (std::max)(giCap, 1.0f) + 64.0f * rt.GISpatial)
+												 : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		const D3DXMATRIX& last = RtGIHistory ? prevViewToWorld : c.viewToWorld;
+		if (giPass) {
+			g.viewToWorld = c.viewToWorld;
+			g.prevViewToWorld = last;
+			g.projection = c.projection;
+			g.origin = c.origin;
+			g.gi = c.gi;
+			g.sunDir = c.sunDir;
+			g.sunColor = c.sunColor;
+			g.ambient = c.ambient;
+			memcpy(g.lampPos, c.lampPos, sizeof(g.lampPos));
+			memcpy(g.lampColor, c.lampColor, sizeof(g.lampColor));
+			g.gi2 = D3DXVECTOR4(c.gi2.x, c.gi2.y, c.gi2.z, (float)rt.GIInterleave);
+			g.reuse = reuseNow;
+			c.gi.y = 0.0f;	// (no GI rays in the AO pass)
+		}
+		else {
+			// The shader takes last frame's point as M x (p + the camera's move), M = last frame's viewToWorld as stored (its rows, as the GI
+			// pass's transpose(mat3(M)) reads it). 32 bytes of constants were free, the matrix is 64: rows 0 and 1 go, row 2 is their cross
+			// x the determinant's sign (rt-gi-17: a quaternion could not hold the game's view; it need not be a pure rotation).
+			const D3DXMATRIX& m = last;
+			const D3DXVECTOR3 r0(m._11, m._12, m._13), r1(m._21, m._22, m._23), r2(m._31, m._32, m._33);
+			D3DXVECTOR3 x;
+			D3DXVec3Cross(&x, &r0, &r1);
+			const float sign = D3DXVec3Dot(&x, &r2) < 0.0f ? -1.0f : 1.0f;
+			c.prevRot = D3DXVECTOR4(r0.x, r0.y, r0.z, r1.x);
+			c.reuse = D3DXVECTOR4(r1.y, r1.z, reuseNow.x, reuseNow.y);
+			c.gi3.z = 1.0f;
+			c.gi3.w = reuseNow.z;
+			c.sky.z = reuseNow.w;
+			c.sky.w = sign;
+			static bool logged = false;
+			if (!logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: GI reuse at full rate runs inside the AO pass (one pass, 10 images; view determinant sign %+.0f).", sign); }
+		}
 		prevViewToWorld = c.viewToWorld;
 		prevCamera = camera;
-		c.gi.y = 0.0f;	// (no GI rays in the AO pass)
 	}
-	const int images[6] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas };
+	const bool mergedNow = merged && c.gi3.z > 0.5f;
 	const int cur = giParity & 1, prev = cur ^ 1;
-	const int giImages[8] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
-		RtImageReservoir[cur][0], RtImageReservoir[cur][1] };
+	const int images[12] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1],
+		RtImageGIOut, RtImageGlowList };	// (6-11 only when merged)
+	const int giImages[10] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList };
+	const bool glowOk = (giPass || mergedNow) && RtImageGIOut >= 0 && RtImageGlowList >= 0 && RtFillGlowLights(Device, rt.GlowDirect);
+	if ((giPass || mergedNow) && !glowOk) { RtGIHistory = false; return; }
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, 6, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		(glowOk && !RtCore::CopyIn(RtImageGlowList, RtGlowTexture)) ||
+		!RtCore::AddPass(RtShader, images, mergedNow ? 12 : 6, mergedNow ? 0x706 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
-		(giPass && !RtCore::AddPass(RtGIShader, giImages, 8, 0xC0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
+		(giPass && !RtCore::AddPass(RtGIShader, giImages, 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
-		(gi && !RtCore::CopyOut(giPass ? RtImageReservoir[cur][0] : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
-	if (giPass) giParity++;
-	RtGIHistory = giPass;
+		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageGIOut : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
+	if (giPass || mergedNow) giParity++;
+	RtGIHistory = giPass || mergedNow;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
 	if (traced++ == 0)
@@ -663,7 +750,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (gi && !giLogged) {
 		giLogged = true;
 		Logger::Log("UNOFFICIAL RT AO: GI traced (1 bounce ray of %.0f units, %d lamps, sun %s, %s).", rt.GIDistance, (int)c.gi.z, c.sunDir.w > 0.5f ? "up" : "down / indoors",
-			giPass ? "its own pass with ReSTIR GI temporal reuse (GIReuse)" : "in the AO pass");
+			giPass ? "its own pass with ReSTIR GI temporal reuse (GIReuse)" : mergedNow ? "in the AO pass with ReSTIR GI temporal reuse" : "in the AO pass");
 	}
 }
 

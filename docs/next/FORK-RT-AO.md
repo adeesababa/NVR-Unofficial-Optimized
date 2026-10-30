@@ -387,3 +387,89 @@ helper's own timing).
   pixel: mean |diff| 0.83 (2 rays), 0.90 (1 ray), 0.88 (Interleave 2), 0.91 (2 + I2) of 255; pixels off by > 8: 59 / 147 / 182 / 210
   of 230400. The shared denoiser (Kernel 3) makes 2 rays look like 4 here. **Default RayCount 2** (DLL EA6439D2): -4.5 ms. In motion
   fewer rays show more grain while the history rebuilds; 1 ray / Interleave 2 left as user options.
+
+### rt-gi-14 cost summary at the new defaults (78d8d119, DLL EA6439D2; RayCount 2, Kernel 3, AOAlpha 1, GIReuse 8)
+iGPU (Radeon 610M-class), 720p, AlphaTested + HitTextures, helper per-pass GPU time + NVR's own denoisers:
+
+| scene | setting | RtAOTrace | RtGITrace | AO denoise | GI denoise | game "Ray tracing" p50 |
+|---|---|---|---|---|---|---|
+| Lucky 38 (20261030-040512-slotA) | AO | 9.7 | - | 4.6 | - | 12.3 |
+| Lucky 38 | AO + GI full rate | 9.2 | 28.6 | 4.3 | 5.9 | 44.1 |
+| Goodsprings (20261030-042959-slotC) | AO | 4.8 | - | 4.0 | - | 6.3 |
+| Goodsprings | AO + GI full rate | 6.1 | 20.0 | 4.0 | 5.4 | 27.3 |
+| (rtgi16/19, Lucky 38 in motion) | AO + GI GIInterleave 4 | 12-17 | 8.5-11.7 | ~4 | ~5.4 | - |
+| Lucky 38 + Actors (rt-gi-15, 20261030-054434-slotA, fork-0033b) | AO + GI full rate | 8.9 | 28.0 | 3.9 | 5.4 | 41.1 |
+| Lucky 38 + Actors (rt-gi-15) | AO + GI GIInterleave 4 | 9.1 | 9.9 | 3.9 | 5.4 | 22.3 |
+| Goodsprings + Actors (rtgi22, 20261030-065451-slotC) | AO + GI full rate | 7.5-9.3 | 19.3-25.7 | - | - | 31.4-38.8 |
+| Goodsprings + Actors (rtgi22) | AO + GI GIInterleave 4 | 12.0 | 10.2 | - | - | 26.7 |
+
+GIInterleave 4's own row in rt-gi-14 is the trailing RT shot, so it has no per-pass print (lists from now on end with a spare RT
+shot). CPU frame intervals on the iGPU are dominated by 300-700 ms "Game render" spikes in these runs (Lucky 38: al 118 / ao 133 /
+aogi 162 / aogi-g4 156 ms; Goodsprings 127-191 ms) and are not used for verdicts. Recommended iGPU preset: AO on (RayCount 2),
+GI with GIInterleave 4 (reuse on): ~20-25 ms of helper GPU time at Lucky 38, ~11-13 at Goodsprings (estimate from the rows above).
+
+- **rt-gi-15 (fork-0033b, AlphaTested + HitTextures + Actors, 20261030-054434-slotA):** no crash with skinned actors in the scene
+  and textured in the hit atlas; the GI costs are as without actors (rows above). The game-side "Ray tracing" p50 at GIInterleave 4:
+  22.3 ms for 19.0 ms of helper passes (+ copies and waits ~3 ms). The bounce-light view shows no player or NPC in frame (Lucky 38's
+  still spot looks away from the player), so the actors' bounce colour is not judged yet: needs a spot facing an NPC.
+- **rtgi22 (Goodsprings, actors on, fork-0033b):** no crash. The bounce-light view has the player in frame: the body reads warm
+  (skin-toned, as a receiver) and a faint warm patch sits on the ground at the feet, which fits light bounced off the textured body
+  (not grey). Not an A/B (og spots move), so "plausible", not proven.
+
+## Strand status (2026-10-30 07:10)
+Done on claude/rt-ao-gi: every AO ray hits (step 1); the shared RtDenoise for AO and GI, Kernel 3, half res (step 2); one-bounce GI
+with screen-light lookup, hit textures, RIS lamps, ReSTIR GI temporal reuse (+ v2 tiles, light-change cut, opt-in spatial step)
+(step 3); AO RayCount 2, AOAlpha. All off by default, own switches, auto-off without RT; READY lines in RT-TRAIN.md.
+Open, smaller: GIInterleave 1 pays ~6 ms for the GI pass being separate (merge it back into the AO pass when not interleaved);
+game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial outdoors at night; an NPC-facing A/B for actor bounce colour.
+
+## Emissive surfaces as GI light: GlowGI (main session's new direction, 2026-10-30)
+- **a41beb9f (DLL 3DFEEAE7):** `GlowGI` (0-4, default 0 = off). A bounce hit on a draw with a glow map (record flag 0x04, rt-sun-core
+  35f88f09: neon, lit windows, lamp globes, screens) adds its own light = the hit texture's colour x GlowGI, weighted by
+  smoothstep(0.35, 0.8, its strongest channel) because the flag covers the whole mesh while the glow map marks parts of it. Only
+  off-screen hits: on-screen ones already take the lit frame (glow included). Both passes (AO pass GI and RtGITrace), constant
+  ambient.w.
+- **rt-gi-16 (Lucky 38 20261030-071542-slotA, Ultra-Luxe 20261030-072733-slotA):** cost unchanged (RtGITrace Lucky 38 25.8 / 26.4 /
+  26.5 ms at GlowGI 0 / 1 / 2; Ultra-Luxe 21.4-22.9). Lucky 38 bounce light (still camera) mean 18.78 -> 21.96 (GlowGI 1, +17 %) ->
+  23.68 (GlowGI 2, +26 %); at 2 the floor gets a broad warm fill from the glowing machines and signs off screen, no fireflies, no
+  facade glowing whole. Ultra-Luxe: GlowGI 1 +3 % (fewer glow meshes); its GlowGI 2 shot is a different view (the camera moved), not
+  compared. Verdict: works, opt-in; it reads as a warm fill more than as distinct coloured pools (the bounce is one ray at half res,
+  denoised). ReSTIR sampling of emissive instances (aiming rays at them) would make pools; not done.
+
+## GI merged back into the AO pass at full rate (2026-10-30)
+- **1e82b5bc -> 50ab0656 (DLL 1D0EE95D), helper extra-p3d (rt-sun-core 6b9784c3: up to 12 images a pass), fork-0033c.** With GIReuse at
+  Interleave 1 and GIInterleave 1 the reuse step runs inside the AO pass (10 images: last frame's reservoirs at bindings 8 / 9, this
+  frame's at 12 / 13); interleaved GI keeps RtGITrace. The reuse step is one shared function (ReuseGI). Last frame's view goes in the
+  AO constants' 32 free bytes as matrix rows 0 and 1 + the determinant's sign (row 2 = their cross): the first try (a quaternion,
+  rtgi24 20261030-075206-slotA) failed its self-check because the game's view matrix has determinant -1 (a mirrored axis), and the
+  fallback kept the separate pass as designed.
+- **rt-gi-17 rerun (rtgi25, 20261030-081152-slotA, Lucky 38): PASS**, the first 10-image RT pass: logged "inside the AO pass (one pass,
+  10 images; view determinant sign -1)", no helper error, no crash. Pictures equal to the separate pass's (rt-gi-10): raw bounce mean
+  17.38 (no reuse) / 19.58 (reuse), sd 9.71 / 8.90; denoised 18.84 (rt-gi-10: 17.38 / 19.57, 9.70 / 8.90, 18.84). Cost at full rate:
+  no reuse 30.6 ms (RT p50 33.5); **merged reuse 34.8-34.9 ms (RT p50 37.1-37.3)**; the separate passes were 9.3-10.2 + 32.2-33.6 ms
+  (RT p50 43.0-46.3, rtgi24): **-6 to -9 ms**. GIInterleave 4 still runs RtGITrace (AO 10.1 + GI 12.4 ms, RT p50 24.0).
+
+## GlowDirect: glow-mapped instances as sphere lights (main session's next direction, 2026-10-30)
+- **2ee5d105 (DLL BCAAAC9A):** RtCore::GlowLights() (this frame's glow-flagged instances: bound centre in scene space, radius, average
+  colour); NVR picks the 32 strongest from the eye into a 32 x 3 RGBA16F shared image; the GI pass and the merged AO pass pick one per
+  texel by RIS over the list (unshadowed sphere-light irradiance) + one shadow ray to a point on it, added to a new bounce-light-out
+  image (the reservoir stays clean). `GlowDirect` 0-8, default 0. The GI pass now binds 10 images, the merged pass 12.
+- **rt-gi-18 v1 (Lucky 38 20261030-085251-slotA, Ultra-Luxe 20261030-085719-slotA): FAIL, too bright everywhere.** 143-147
+  glow-flagged instances a frame, 32 used. Bounce-light mean Lucky 38 21.8 -> 95 (GlowDirect 1 and 2 alike: the GIClamp cap
+  saturated), Ultra-Luxe 36.5 -> 137 / 111; the whole view flat grey. Cause: big glow-flagged meshes (rooms, facades with small lit
+  details) whose bounds hold most of the room, greyish average colours, and every texel inside a bound took its full colour with no
+  shadow ray. Cost +6..10 ms (32-light loops + a shadow ray). No crash; the merged 12-image pass ran.
+- **v2 (C64D9369):** only small bright emitters: meshes over 256 units left out, emitting radius at most 32, colour gated by its
+  brightness like GlowGI (strongest channel 0.35 -> 0.8). Re-bench rt-gi-18.
+- **rt-gi-18 v2 (rtgi27: Lucky 38 20261030-090739-slotA, Ultra-Luxe 20261030-091221-slotA): safe but nearly invisible.** No crash, still
+  32 lights after the filter. Bounce-light mean Lucky 38 21.9 -> 23.4 / 23.5 (GlowDirect 1 / 2; ~600 of 230400 pixels brighter by > 8,
+  no fireflies); Ultra-Luxe 36.5 -> 36.6 at 1 (its 2 shot is another view). Looking at the pictures: a slight warm lift, no coloured
+  pools. Cost: the merged pass 39-54 ms vs 39-41 with GlowGI alone (+8..12 ms at full rate on the iGPU); the separate pass ~20 ms.
+- **Verdict:** kept, opt-in (default 0); not worth its cost as it stands. The limit is the data, not the sampling: the glow flag covers a
+  whole mesh, its average colour is the diffuse texture's (mostly dull), and its bound is the mesh's. Real neon pools need the
+  emissive colour and where on the mesh it is: a glow atlas (the glow map's colour at a hit, as the albedo atlas) or per-record glow
+  colour + emitting bounds from the core (rt-sun-core). With that, GlowDirect's sampling stays as is.
+- **Second bounce from a last-frame radiance cache:** not built. AO + GI at full rate is already ~37 ms of helper time on the iGPU (the
+  recommended preset GIInterleave 4 ~20-25); a world-space cache (hash grid) adds an update pass and lookups (~5-10 ms) for a
+  second bounce that is mostly a few percent of light indoors. The cheap form (at a bounce hit seen on screen, add last frame's GI
+  there x the hit's albedo) needs a 13th image in the merged pass. Worth doing on a discrete RT GPU, not on this iGPU budget.

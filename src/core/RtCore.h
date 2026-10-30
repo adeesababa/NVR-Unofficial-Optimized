@@ -87,4 +87,8 @@ public:
 	// UNOFFICIAL 2026-10-29 (rt-lamp-shadows): true while the scene holds the posed skinned actors ([Main.Main.RayTracing] Actors +
 	// fork patch 0033; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
 	static bool			Actors();
+	// UNOFFICIAL 2026-10-30 (rt-ao-sky, GlowDirect): this frame's instances with a glow map (NVR_RT_RECORD_GLOW) as sphere lights: the
+	// world bound's centre in scene space (camera relative, as the instances), its radius and the draw's average colour (the record's).
+	struct GlowLight { float center[3]; float radius; float rgb[3]; };
+	static const std::vector<GlowLight>& GlowLights();
 };
