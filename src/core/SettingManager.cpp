@@ -1,5 +1,6 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
 #include <unordered_map>
+#include <mutex>	// UNOFFICIAL 2026-10-30 SettingsCache
 #include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels / RenderDoc capture key ([Main.Develop.Main])
 
 // GetCurrentDirectoryA is reliable at startup but GetSaveFileNameA (and other
@@ -1216,27 +1217,57 @@ void SettingManager::SaveSettingsTo(const char* Path) {
 	file.close();
 }
 
-int SettingManager::GetSettingI(const char* Section, const char* Key) {
-	Configuration::ConfigNode Node;
-	int Value = 0; //default in case the setting doesn't exist
+// UNOFFICIAL 2026-10-30 SettingsCache ([Main.Main.Performance], live; ROOTPLAN round 7 step 18): effects read their settings with these
+// every frame, and each read went through Configuration::FillNode: the section path split twice, two toml trees walked, the values
+// (comments and all) copied and formatted -- about 2 % of the main thread in Goodsprings (CPU sampler, FillNode / SplitString / the toml
+// map). The result of each (section, key) is kept until any setting changes (SettingsRevision: every SetSetting and LoadSettings, so
+// also the menu, Max Quality and the test shots); a read then returns exactly what FillNode would. Off: every read as before. A lock,
+// for the loader threads that read settings too.
+namespace {
+	struct CachedSetting { bool ok; int i; float f; std::string s; };
+	std::unordered_map<std::string, CachedSetting> SettingCache;
+	std::mutex SettingCacheLock;
+	UInt32 SettingCacheRevision = 0xFFFFFFFFu;
+	bool SettingCacheOn = false;
+}
 
-	if (Config.FillNode(&Node, Section, Key)) Value = Node.IntValue; // read the typed value directly, no string re-parse
-	return Value;
+static const CachedSetting* CachedNode(SettingManager* manager, const char* Section, const char* Key, CachedSetting& scratch) {
+	auto fill = [&](CachedSetting& c) {
+		SettingManager::Configuration::ConfigNode Node;
+		c.ok = manager->Config.FillNode(&Node, Section, Key);
+		c.i = c.ok ? Node.IntValue : 0; c.f = c.ok ? Node.FloatValue : 0.0f; c.s = c.ok ? Node.Value : "";
+	};
+	if (SettingCacheRevision != manager->SettingsRevision) {	// a setting changed (or the first read): the switch again, the cache emptied
+		SettingManager::Configuration::ConfigNode Node;
+		SettingCacheOn = !manager->Config.FillNode(&Node, "Main.Main.Performance", "SettingsCache") || Node.BoolValue;
+		SettingCache.clear();
+		SettingCacheRevision = manager->SettingsRevision;
+	}
+	if (!SettingCacheOn) { fill(scratch); return &scratch; }
+	std::string key(Section); key += '\x1f'; key += Key;
+	auto it = SettingCache.find(key);
+	if (it == SettingCache.end()) { CachedSetting c; fill(c); it = SettingCache.emplace(std::move(key), std::move(c)).first; }
+	return &it->second;
+}
+
+int SettingManager::GetSettingI(const char* Section, const char* Key) {
+	std::lock_guard<std::mutex> lock(SettingCacheLock);
+	CachedSetting scratch;
+	return CachedNode(this, Section, Key, scratch)->i;	// the typed value directly, no string re-parse (0 when the setting does not exist)
 }
 
 float SettingManager::GetSettingF(const char* Section, const char* Key) {
-	Configuration::ConfigNode Node;
-	float Value = 0.0f; //default in case the setting doesn't exist
-
-	if (Config.FillNode(&Node, Section, Key)) Value = Node.FloatValue; // read the typed value directly, no string re-parse
-	return Value;
+	std::lock_guard<std::mutex> lock(SettingCacheLock);
+	CachedSetting scratch;
+	return CachedNode(this, Section, Key, scratch)->f;
 }
 
 char* SettingManager::GetSettingS(const char* Section, const char* Key, char* Value) {
-	Configuration::ConfigNode Node;
-	
-	strcpy(Value, "\""); //default in case the setting doesn't exist
-	if (Config.FillNode(&Node, Section, Key)) strcpy(Value, Node.Value);
+	std::lock_guard<std::mutex> lock(SettingCacheLock);
+	CachedSetting scratch;
+	const CachedSetting* c = CachedNode(this, Section, Key, scratch);
+	if (c->ok) strcpy(Value, c->s.c_str());
+	else strcpy(Value, "\""); //default in case the setting doesn't exist
 	return Value;
 }
 
