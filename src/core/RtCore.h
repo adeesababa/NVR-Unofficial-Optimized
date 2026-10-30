@@ -47,6 +47,8 @@ public:
 
 	// Record only:
 	static bool			CopyIn(int Image, IUnknown* Source, const RECT* Rect = nullptr);
+	// Up to 12 images (2026-10-30): Images[0..7] at bindings 2..9, Images[8..11] at 12..15 (records 10, geometry 11 unchanged;
+	// a helper older than 2026-10-30 skips a pass with more than 8)
 	static bool			AddPass(int Shader, const int* Images, UINT ImageCount, UINT WriteMask, const void* Constants, UINT ConstantsSize,
 							UINT GroupsX, UINT GroupsY);
 	static bool			CopyOut(int Image, IUnknown* Target);
