@@ -162,7 +162,8 @@ namespace {
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
-		UInt32		partitionFate[5] = {};				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
+		UInt32		partitionFate[5] = {};
+		UInt32		skinTex[6] = {};	// hit textures on actors: not PPLighting, no diffuse, texcoords elsewhere, no slot, staged without texcoords, textured				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
 		std::vector<std::string> imageNames;
 		std::vector<NVR_EXT_SHARED_IMAGE_DESC> imageDescs;	// the sizes made (rounded up: kImageAlign)
@@ -713,10 +714,12 @@ namespace {
 		static const Albedo grey = { { 0.5f, 0.5f, 0.5f }, false };
 		const Albedo& albedo = ppLighting ? AlbedoOf(geo, shaderProperty) : grey;
 		IDirect3DBaseTexture9* diffuse = nullptr;	// hit textures: the body's diffuse texture
+		if (hitTextures && !ppLighting) skinTex[0]++;
 		if (hitTextures && ppLighting) {
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
 			if (texture && texture->rendererData) diffuse = texture->rendererData->dTexture;
+			if (!diffuse) skinTex[1]++;
 		}
 		const float cx = TheRenderManager->CameraPosition.x, cy = TheRenderManager->CameraPosition.y, cz = TheRenderManager->CameraPosition.z;
 		static std::vector<NVR_EXT_RT_RANGE> ranges;
@@ -776,9 +779,11 @@ namespace {
 			s.pPalette = palette.data();
 			// Hit textures: the texcoords go with the posed positions (fork 0033 stages them for skinned geometry too), the colour in the atlas
 			int slot = -1;
+			if (diffuse && e.uvStream != e.stream) skinTex[2]++;
 			if (diffuse && e.uvStream == e.stream) {
 				slot = AlphaSlotOf(diffuse);
 				if (slot >= 0) desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)e.uvOffset - (int)e.offset, e.uvHalf);
+				else skinTex[3]++;
 			}
 
 			GeometryEntry& entry = geometries[key];
@@ -806,6 +811,7 @@ namespace {
 					op.arenaTexel = arenaUsed;
 					hasUv = slot >= 0 && info.Texels == 3u * (info.VertexCount + info.TriangleCount) + 2u * info.VertexCount;
 					entry.textured = hasUv;
+					if (slot >= 0) skinTex[hasUv ? 5 : 4]++;
 					op.flags = NVR_RT_OP_FLAG_DYNAMIC | (hasUv ? NVR_RT_OP_FLAG_TEXCOORDS : 0u);
 					arenaUsed += info.Texels;
 					entry.sent = true;
@@ -1242,8 +1248,10 @@ namespace {
 			c.shared->responseUsMax = 0;
 			if (n == 60 && c.actorsOn)
 				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
-					"streams / half positions %u, palette %u", c.actorPartitions, c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off",
-					c.partitionFate[0], c.partitionFate[1], c.partitionFate[2], c.partitionFate[3], c.partitionFate[4]);
+					"streams / half positions %u, palette %u; hit textures: not PPLighting %u, no diffuse %u, texcoords in another stream %u, "
+					"no slot %u, staged without texcoords %u, textured %u", c.actorPartitions, c.rtSkin ? "fork 1.8-rt-skin" : "this d3d9.dll has no skinning: off",
+					c.partitionFate[0], c.partitionFate[1], c.partitionFate[2], c.partitionFate[3], c.partitionFate[4],
+					c.skinTex[0], c.skinTex[1], c.skinTex[2], c.skinTex[3], c.skinTex[4], c.skinTex[5]);
 			if (n == 60) {
 				const UInt32* a = c.alphaFate;
 				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
