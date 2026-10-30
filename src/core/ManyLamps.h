@@ -92,7 +92,18 @@ namespace ManyLamps {
 		if (TableWanted < 0) TableWanted = TheSettingManager->GetSettingI("Main.Main.Misc", "LightCommonLamps") != 0;
 		return TableWanted != 0;
 	}
-	inline const char* ShaderDefine() { return ShadersWant() ? (TableAtStartup() ? "2" : "1") : "0"; }
+	// UNOFFICIAL 2026-10-30 ClusteredLamps ([Main.Main.Misc], restart to compile, then live; needs LightCommonLamps; Conor: "some form of
+	// deferred rendering"): lighting decoupled from the game's per-object lamp lists. Once a frame the table's lamps are binned on the CPU into
+	// screen tiles (64 px) x 8 depth slices (froxels; slice 0 nearer than 64 units, slice k covers 2^(k+5)..2^(k+6), slice 7 the rest), up to
+	// 31 lamps a froxel, most important first; the lists go into the lamp table's rows 1+. The many-lamp shader keeps the draw's first six
+	// lamps (their cube-map shadow slots) and then lights, per pixel, every other lamp of ITS froxel instead of the draw's list (no 24-lamp
+	// cap; only the lamps that reach that part of the screen and depth). 0 live = the LightCommonLamps loop over the draw's list, as before.
+	inline int ClusterWanted = -1;
+	inline bool ClusterAtStartup() {
+		if (ClusterWanted < 0) ClusterWanted = TableAtStartup() && TheSettingManager->GetSettingI("Main.Main.Misc", "ClusteredLamps") != 0;
+		return ClusterWanted != 0;
+	}
+	inline const char* ShaderDefine() { return ShadersWant() ? (TableAtStartup() ? (ClusterAtStartup() ? "3" : "2") : "1") : "0"; }
 
 	inline bool Active() {
 		if (State < 0 && TheRenderManager && TheRenderManager->device) {
@@ -139,6 +150,14 @@ namespace ManyLamps {
 
 	// --- LightCommonLamps: the frame's lamp table ---------------------------------------------------------------------------------
 	enum { TableLamps = 1024, TableTexels = 2 * TableLamps, NoLamp = 4095 };	// LightCommon.hlsl LIGHT_COMMON_TEXELS / LIGHT_COMMON_NONE
+	// UNOFFICIAL 2026-10-30 ClusteredLamps: the froxel grid (LightCommon.hlsl LIGHT_COMMON_ROWS, ManyLightsDirect.hlsl MANY_LAMPS_ON 3)
+	enum { TilePx = 64, MaxTilesX = 40, MaxTilesY = 24, Slices = 8, ListTexels = 8, ListLamps = 31,
+		MaxFroxels = MaxTilesX * MaxTilesY * Slices, TableRows = 1 + (MaxFroxels * ListTexels + TableTexels - 1) / TableTexels };
+	static_assert(TableRows == 31, "LIGHT_COMMON_ROWS 31.0f in ObjectTemplate.hlsl");
+	inline int TilesX = 0, TilesY = 0;
+	inline bool ClusterLive = false;	// this frame: compiled in, the setting on, the lists made
+	inline double StatClusterMs = 0;
+	inline unsigned long long StatClusterLamps = 0, StatClusterEntries = 0, StatClusterOver = 0, StatClusterFrames = 0;
 	inline IDirect3DTexture9* Table = nullptr;
 	inline bool TableFailed = false;
 	inline UInt32 TableFrame = 0;		// FrameId the table was filled for
@@ -150,11 +169,78 @@ namespace ManyLamps {
 
 	// Every lamp of the scene (ShadowSceneNode's list) into the table, once a frame, at the first draw that wants it (so the lamps' LOD
 	// dimmers are this frame's: the scene walk sets them). Position in the world (the draw adds its lighting offset), reach, colour as Put.
+	// UNOFFICIAL 2026-10-30 ClusteredLamps: the active lamps into the froxel lists (rows 1+ of the locked table; pitch in floats).
+	inline void BinFroxels(float* t, int pitch, const std::vector<const ShadowSceneLight*>& active) {
+		if (TheSettingManager->GetSettingI("Main.Main.Misc", "ClusteredLamps") == 0) return;
+		LARGE_INTEGER freq, c0, c1; QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&c0);
+		D3DVIEWPORT9 vp = {};
+		TheRenderManager->device->GetViewport(&vp);
+		TilesX = (std::min)((int)MaxTilesX, (int)(vp.Width + TilePx - 1) / TilePx);
+		TilesY = (std::min)((int)MaxTilesY, (int)(vp.Height + TilePx - 1) / TilePx);
+		if (TilesX <= 0 || TilesY <= 0) return;
+		const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
+		const D3DXVECTOR3 right(inv._11, inv._12, inv._13), up(inv._21, inv._22, inv._23), fwd(inv._31, inv._32, inv._33);
+		const float tanX = fabsf(TheRenderManager->InvProjMatrix._11), tanY = fabsf(TheRenderManager->InvProjMatrix._22);
+		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		auto sliceOf = [](float z) { return z < 64.0f ? 0 : (std::min)((int)Slices - 1, (int)floorf(log2f(z)) - 5); };
+		struct L { int index; float key; float x, y, z, r; };
+		std::vector<L> lamps; lamps.reserve(active.size());
+		for (const ShadowSceneLight* light : active) {
+			const NiPointLight* s = light->sourceLight;
+			const D3DXVECTOR3 v(s->m_worldTransform.pos.x - cam.x, s->m_worldTransform.pos.y - cam.y, s->m_worldTransform.pos.z - cam.z);
+			const float x = D3DXVec3Dot(&v, &right), y = D3DXVec3Dot(&v, &up), z = D3DXVec3Dot(&v, &fwd), r = s->Spec.r;
+			if (r <= 0.0f || z + r <= 1.0f) continue;	// wholly behind the camera
+			const float dist = (std::max)(sqrtf(x * x + y * y + z * z), 0.25f * r + 1.0f);
+			const float brightness = (s->Diff.r + s->Diff.g + s->Diff.b) * s->Dimmer * light->fLODDimmer;
+			lamps.push_back({ TableIndex[light], brightness * r / dist, x, y, z, r });
+		}
+		std::sort(lamps.begin(), lamps.end(), [](const L& a, const L& b) { return a.key > b.key; });	// a full list drops the least important
+		static std::vector<UInt8> counts;
+		counts.assign((size_t)TilesX * TilesY * Slices, 0);
+		float* lists = t + pitch;	// row 1
+		auto put = [&](int froxel, int k, float value) {	// entry k of the froxel's list (-1 = its count)
+			const int texel = froxel * ListTexels + (k + 1) / 4, comp = (k + 1) % 4;
+			lists[(texel / TableTexels) * pitch + (texel % TableTexels) * 4 + comp] = value;
+		};
+		for (const L& l : lamps) {
+			const float zmin = l.z - l.r, zmax = l.z + l.r;
+			int x0 = 0, x1 = TilesX - 1, y0 = 0, y1 = TilesY - 1;
+			if (zmin > 8.0f) {	// a conservative screen rect of the sphere (each side taken at the depth that makes it widest)
+				const float lx = l.x - l.r, hx = l.x + l.r, ly = l.y - l.r, hy = l.y + l.r;
+				const float nx0 = lx / ((lx < 0.0f ? zmin : zmax) * tanX), nx1 = hx / ((hx > 0.0f ? zmin : zmax) * tanX);
+				const float ny0 = ly / ((ly < 0.0f ? zmin : zmax) * tanY), ny1 = hy / ((hy > 0.0f ? zmin : zmax) * tanY);
+				if (nx0 > 1.0f || nx1 < -1.0f || ny0 > 1.0f || ny1 < -1.0f) continue;	// off screen
+				x0 = (std::max)(0, (int)floorf((nx0 * 0.5f + 0.5f) * vp.Width / TilePx));
+				x1 = (std::min)(TilesX - 1, (int)floorf((nx1 * 0.5f + 0.5f) * vp.Width / TilePx));
+				y0 = (std::max)(0, (int)floorf((0.5f - ny1 * 0.5f) * vp.Height / TilePx));
+				y1 = (std::min)(TilesY - 1, (int)floorf((0.5f - ny0 * 0.5f) * vp.Height / TilePx));
+			}
+			const int s0 = sliceOf((std::max)(zmin, 0.0f)), s1 = sliceOf(zmax);
+			StatClusterLamps++;
+			for (int sl = s0; sl <= s1; sl++)
+				for (int ty = y0; ty <= y1; ty++)
+					for (int tx = x0; tx <= x1; tx++) {
+						const int froxel = (sl * TilesY + ty) * TilesX + tx;
+						UInt8& c = counts[froxel];
+						if (c >= ListLamps) { StatClusterOver++; continue; }
+						put(froxel, c, (float)l.index);
+						c++;
+						StatClusterEntries++;
+					}
+		}
+		for (size_t f = 0; f < counts.size(); f++) put((int)f, -1, (float)counts[f]);
+		ClusterLive = true;
+		QueryPerformanceCounter(&c1);
+		StatClusterMs += 1000.0 * (c1.QuadPart - c0.QuadPart) / freq.QuadPart;
+		StatClusterFrames++;
+	}
+
 	inline void BuildTable() {
 		TableFrame = FrameId;
 		TableIndex.clear();
 		IDirect3DDevice9* d = TheRenderManager->device;
-		if (!Table && FAILED(d->CreateTexture(TableTexels, 1, 1, D3DUSAGE_DYNAMIC, D3DFMT_A32B32G32R32F, D3DPOOL_DEFAULT, &Table, NULL))) {
+		const UINT rows = ClusterAtStartup() ? TableRows : 1;	// UNOFFICIAL 2026-10-30 ClusteredLamps: the froxel lists below the lamps
+		if (!Table && FAILED(d->CreateTexture(TableTexels, rows, 1, D3DUSAGE_DYNAMIC, D3DFMT_A32B32G32R32F, D3DPOOL_DEFAULT, &Table, NULL))) {
 			Logger::Log("[ERROR] UNOFFICIAL LightCommonLamps: the lamp table could not be made: the lamps of many-lamp objects stay dark (set it off)");
 			TableFailed = true;
 			return;
@@ -163,6 +249,7 @@ namespace ManyLamps {
 		if (FAILED(Table->LockRect(0, &r, NULL, D3DLOCK_DISCARD))) return;
 		float* t = (float*)r.pBits;
 		memset(t, 0, TableTexels * 4 * sizeof(float));
+		std::vector<const ShadowSceneLight*> active;	// UNOFFICIAL 2026-10-30 ClusteredLamps: the lamps the game has on
 		const bool linear = LinearCompiled && LinearPreDecode::Gamma > 1.0f;
 		const float gamma = LinearPreDecode::Gamma;
 		int n = 0;
@@ -180,7 +267,12 @@ namespace ManyLamps {
 			if (linear) LinearPreDecode::DecodeFast(p + 4, raw, gamma);
 			else memcpy(p + 4, raw, sizeof(raw));
 			TableIndex[light] = n++;
+			// as GetNumberOfActiveNonShadowLights: not switched off for the view (+0x110), not culled, not flagged (+0xEC)
+			const UInt8* raw8 = (const UInt8*)light;
+			if (*(const UInt16*)(raw8 + 0x110) != 0xFF && !(((const UInt8*)source)[0x30] & 1) && !raw8[0xEC]) active.push_back(light);
 		}
+		ClusterLive = false;
+		if (ClusterAtStartup()) BinFroxels(t, r.Pitch / (int)sizeof(float), active);
 		Table->UnlockRect(0);
 		StatTableLamps = n;
 	}
@@ -238,6 +330,21 @@ namespace ManyLamps {
 		for (int f = 0; f < 12; f++)	// two 12-bit indices a float (exact below 2^24), eight a float4 (LightCommonIndex)
 			Block[5 + f / 4][f % 4] = (float)(idx[f * 2] + 4096 * idx[f * 2 + 1]);
 		BlockRegisters = 8;
+		if (ClusterAtStartup()) {	// UNOFFICIAL 2026-10-30 ClusteredLamps: c45 view depth from the object's space, c46-c47 the froxel grid
+			D3DXMATRIX toWorld;
+			const bool on = ClusterLive && !FirstPerson && D3DXMatrixInverse(&toWorld, nullptr, &ToObject);
+			if (on) {	// view depth = (object point, 1) x toWorld - camera, along the camera's forward axis
+				const D3DXMATRIX& iv = TheRenderManager->InvViewMatrix;
+				const float f[3] = { iv._31, iv._32, iv._33 };
+				const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+				for (int j = 0; j < 3; j++) Block[8][j] = toWorld.m[j][0] * f[0] + toWorld.m[j][1] * f[1] + toWorld.m[j][2] * f[2];
+				Block[8][3] = (toWorld.m[3][0] - cam.x) * f[0] + (toWorld.m[3][1] - cam.y) * f[1] + (toWorld.m[3][2] - cam.z) * f[2];
+			}
+			else memset(Block[8], 0, sizeof(Block[8]));
+			Block[9][0] = 1.0f / TilePx; Block[9][1] = (float)TilesX; Block[9][2] = (float)(TilesX * TilesY); Block[9][3] = on ? 1.0f : 0.0f;
+			Block[10][0] = (float)Slices - 1.0f; Block[10][1] = (float)TableRows; Block[10][2] = Block[10][3] = 0.0f;
+			BlockRegisters = 11;
+		}
 		Upload();
 		TheRenderManager->renderState->SetTexture(3, Table);	// through the game's state cache, so its own binds there still happen
 		for (DWORD s : { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER }) TheRenderManager->renderState->SetSamplerState(3, (D3DSAMPLERSTATETYPE)s, D3DTEXF_POINT, false);
@@ -366,12 +473,18 @@ namespace ManyLamps {
 		if (!GpuTimer::Enabled) { StatFrames = 0; return; }
 		if (++StatFrames < 240) return;
 		const double f = StatFrames;
-		char line[512]; int n = 0;
+		char line[1024]; int n = 0;
 		n += sprintf_s(line + n, sizeof(line) - n, "MANY LAMPS %u frames, per frame: draws %.0f, lamps per draw", StatFrames, StatDraws / f);
 		for (int k = 0; k <= MaxLamps; k++) if (StatByCount[k]) n += sprintf_s(line + n, sizeof(line) - n, " %d:%.1f", k, StatByCount[k] / f);
 		n += sprintf_s(line + n, sizeof(line) - n, " | capped many-lamp passes given their other lamps %.1f (%.1f lamps), lamps past %d dropped %.2f",
 			StatExtraDraws / f, StatExtras / f, (int)MaxLamps, StatOver / f);
 		if (TableMode()) n += sprintf_s(line + n, sizeof(line) - n, " | lamp table %u lamps, lamps not in it %.2f", StatTableLamps, StatTableMissing / f);
+		if (StatClusterFrames) {	// UNOFFICIAL 2026-10-30 ClusteredLamps
+			const double cf = (double)StatClusterFrames;
+			n += sprintf_s(line + n, sizeof(line) - n, " | CLUSTERED %dx%dx%d froxels: binning %.3f ms CPU, %.1f lamps binned, %.0f list entries (%.2f a froxel), over 31 dropped %.0f",
+				TilesX, TilesY, (int)Slices, StatClusterMs / cf, StatClusterLamps / cf, StatClusterEntries / cf, StatClusterEntries / cf / (std::max)(1, TilesX * TilesY * (int)Slices), StatClusterOver / cf);
+			StatClusterMs = 0; StatClusterLamps = StatClusterEntries = StatClusterOver = StatClusterFrames = 0;
+		}
 		Logger::Log("%s", line);
 		StatFrames = 0; StatDraws = StatExtraDraws = StatExtras = StatOver = 0; StatTableMissing = 0;
 		memset(StatByCount, 0, sizeof(StatByCount));
