@@ -225,3 +225,51 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   noise. **PASS** (under 0.1 ms, same look as the one-pass version). The bar view darkens more (-14 % at 1.0) because much of it lies
   in lamp shadow. **Proposed defaults:** ShadowContrast stays 0 (a look change; the user / Conor decide); 0.5 the suggested value
   (rooms -1..-5 %); with ManyLampsOnePass off it also needs MaterialBuffer on.
+
+## Round 7 (2026-10-30 03:05), claude/rootplan-round3 -- step 18, NVR's main-thread costs
+Profiles: CPU sampler 1 kHz (core/CpuSampler.h), user toml on the DXVK fork, AI on, 4 shots of 600 frames per place; samples in
+bench\deep-roadmap\rootplan\samples (luxe / gs / v21 / fs.txt), analysed with cpulimits\samples.py. The sampler stops the thread
+~0.22 ms per sample, so the shares rank, they are not times. Top 5 NVR costs per scene (share of the main thread):
+
+| scene | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Ultra-Luxe | ConstantFilter ~15 % (Redundant 4.4 %, its driver calls ~8 %) | lamp caster check ~3 % (PointShadowCasterState + HashCasterBytes + motion map) | MaterialRulesDraw::RuleFor 1.0 % | LinearPreDecode::DecodeFast 0.85 % | toml string map ~0.7 % + ImGui mouse 0.66 % |
+| Goodsprings (GPU-bound, Present 21 %) | PhysAtmosphere Chapman / Radiance / EvalSky ~5.5 % | SettingManager FillNode / SplitString / toml ~2 % | ImGui 1 % | ConstantFilter | sun cell walk |
+| Vault 21 | ConstantFilter ~12 % (Redundant 4.3, SendPixel 2.9, HookVertex 2.0, HookPixel 2.8 %) | LinearPreDecode 1.24 % | PointShadowForward::SetForPass 1.22 % | ManyLamps::SetForPass 1.13 % (+0.78 % its driver calls) | MaterialRulesDraw 0.70 % |
+| Freeside night | ConstantFilter ~3.6 % (+ NVR's driver calls 23 % incl. Present) | sun walk (WalkSunChildren + WalkSunCell) 1.7 % | LinearPreDecode + powf 1.55 % | ImGui_ImplWin32_UpdateMouseData 0.91 % | RmaosDraw::ForObject 0.64 % |
+
+The sky (Goodsprings) already skips unchanged inputs; its inputs change every frame, so a cut would need a tolerance (not the same
+picture): left. Freeside at night: `set gamehour` crashed the game twice (0x00877C6D, game code only); profiled in lucky22 + moveto.
+
+Cuts (each its own switch, [Main.Main.Performance], live; same picture; A/B = 4 rotated rounds, AI off, CPU-bound):
+- **SettingsCache** (7ffeb721, DLL 473F53BC; default on): GetSettingI/F/S keep each (section, key) result until any setting changes
+  (SettingsRevision). Ultra-Luxe: off 6.72 / on 6.45 ms frame interval, **-0.27 ms**, every round (+0.35 / +0.25 / +0.11 / +0.33 off).
+  PASS, stays on.
+- **SkipRedundantConstants off** (the ConstantFilter, ~15 % of the thread in the sampler): 6.37 vs 6.45 ms, **-0.08 ms** with the
+  filter off, all 4 rounds the same way. Under DXVK the filter costs slightly more than the driver calls it saves; under 0.1 ms.
+- **CasterListCache** (4e3cd2f4, DLL 7E744708; default off): each lamp keeps its casters' motion entries and only looks up a caster that
+  is new at its place in the list; a caster's hash reuses its transform's hash. 6.37 vs 6.45 ms, **-0.08 ms** (rounds -0.24 / +0.12 /
+  -0.10 / -0.11): under 0.1 ms.
+- **MenuHiddenLean** (1f828641, DLL 5A8F5401; default off): with the menu closed, no Win32 backend frame (only the display size and
+  the time step are set).
+
+Second A/B, the same cuts in Vault 21 and Freeside at night (cut-3, AI off, 4 rotated rounds; frame interval ms, base / with the cut):
+
+| cut | Ultra-Luxe | Vault 21 | Freeside night | verdict |
+|---|---|---|---|---|
+| SkipRedundantConstants off | 6.45 / 6.37 (-0.08) | 6.86 / 6.71 (-0.15) | 4.74 / 4.64 (-0.10) | -0.08..-0.15: candidate, see below |
+| CasterListCache | 6.45 / 6.37 (-0.08) | 6.86 / 6.83 (-0.03) | 4.74 / 4.60 (-0.14) | under 0.1 ms on average: stays off |
+| MenuHiddenLean | - | 6.86 / 6.82 (-0.04) | 4.74 / 4.81 (+0.07) | nothing: stays off |
+| all three | - | 6.86 / 6.73 (-0.13) | 4.74 / 4.58 (-0.16) | = SkipRedundantConstants off alone |
+
+Runs 20261030-025737-slotB (Vault 21) and -030515-slotB (Freeside). Both overlapped another session's game run (rtrefl20 and rtgi17)
+on the same machine; Freeside's rounds drift by up to 0.9 ms, so its column is weak. Pictures: every variant within base vs base.
+
+**Round 7 verdict.** SettingsCache is the one cut over 0.1 ms (-0.27 ms, on). Turning the ConstantFilter off
+(SkipRedundantConstants false) is the only other candidate: faster in all three scenes, the same picture, but -0.08..-0.15 ms
+measured beside other games. Proposed: flip its default to false after one clean confirmation run (no other game on the machine);
+not flipped here. The rest of NVR's top 5 is under 0.1 ms each (caster check, menu, pre-decode: PreDecodeCache already keeps powf's
+results) or not a same-picture cut (the sky), so step 18's rule (cut while each saves >= 0.1 ms) ends here.
+
+Pictures: every variant vs base is within base vs base (>16/255: 0.01-0.04 % of pixels). Run 20261030-025208-slotB (cut-2);
+cut-1 (-023913-slotB) is void: another session's game overlapped it until 02:40 and every variant slowed by 2x for that window.
