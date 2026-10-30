@@ -421,6 +421,18 @@ namespace ObjectMotion {
 			Logger::Log("ObjectMotion: per frame %.1f geometries noted, %.1f moved ones drawn (%.1f skinned), %.1f left out as following the camera; this frame %d of 5184 sampled pixels carry a move (largest %.2f units)",
 				Noted / (double)Frames, DrawnGeometries / (double)Frames, DrawnSkinned / (double)Frames, CameraFollowers / (double)Frames, moving, largest);
 			Frames = DrawnGeometries = DrawnSkinned = Noted = CameraFollowers = 0;
+			// UNOFFICIAL 2026-10-30 (blur ring hunt): what moved this frame, against the camera's own move.
+			for (size_t k = 0; k < Moving.size() && k < 8; k++) {
+				auto found = Map.find(Moving[k]);
+				if (found == Map.end()) continue;
+				const Entry& e = found->second;
+				const D3DXVECTOR3 cam = e.camCur - e.camPrev;
+				const float mx = e.cur.pos.x - e.prev.pos.x, my = e.cur.pos.y - e.prev.pos.y, mz = e.cur.pos.z - e.prev.pos.z;
+				const NiAVObject* parent = (const NiAVObject*)Moving[k]->m_parent;
+				Logger::Log("ObjectMotion: moved '%s' (parent '%s') %s: move %.2f %.2f %.2f, camera %.2f %.2f %.2f, radius %.0f",
+					Moving[k]->m_pcName ? Moving[k]->m_pcName : "", parent && parent->m_pcName ? parent->m_pcName : "", e.skinned ? "skinned" : "rigid",
+					mx, my, mz, cam.x, cam.y, cam.z, Moving[k]->m_kWorldBound ? Moving[k]->m_kWorldBound->Radius : -1.0f);
+			}
 		}
 	}
 }
