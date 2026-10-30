@@ -399,3 +399,34 @@ Lucky 38 (20261030-122534-slotA): no flips in any variant; visible shadowed lamp
 The pops were not reproduced at these spots with today's ranking (0 flips); what the numbers show is that 2/3 of the slots were spent on
 lamps behind walls. **Proposal: VisibleRanking 1 + ShadowHold 2 (+ FadeIn 0.25)**: three times the visible lamp shadows at LightPoints
 24, no churn. Not defaulted: it changes the picture (more lamp shadows where the player looks). Not done: fade-out of a lost live slot.
+
+## Round 11: clustered forward lamps (ClusteredLamps, off) + the G-buffer question
+
+Branch claude/motion-ring-fix 8e72e4bd (DLL DE0BEDFF), base installed aee0046c. `[Main.Main.Misc] ClusteredLamps` (needs a restart with
+LightCommonLamps + ManyLampsOnePass on, then switches live): the CPU bins the frame's lamp table into 64 px tiles x 8 log-depth slices
+(31 lamps a froxel, most important first) at the frame's first world draw; the many-lamp shader keeps the draw's 6 shadowed lamps and then
+lights every lamp of the pixel's froxel instead of the draw's own list (no per-object cap). Off for reflections, cube maps, first person.
+
+Bench cluster-1, night, 600 frames still, ABBA x2, 1070 slot (640x360 render, FSR 0.67): run 20261030-142219-slotA (toml with the table,
+cl0/cl1 live) and 20261030-150954-slotA (the user's toml = today). Medians of the second half of each shot, ms:
+
+| place | world GPU cl0 / cl1 | frame GPU cl0 / cl1 | CPU render cl0 / cl1 | binning CPU | entries a froxel, dropped |
+|---|---|---|---|---|---|
+| Lucky 38 | 3.48 / 3.53 | 5.92 / 5.91 | 5.24 / 5.15 | 0.009 | 3.1, 0 |
+| Vault 21 | 4.06 / 4.22 | 7.04 / 7.00 | 6.19 / 6.09 | 0.115 | 8.4, 265 (499 lamps binned) |
+| Freeside | 1.92 / 1.93 | 4.90 / 4.83 | 3.13 / 3.05 | 0.006 | 1.4, 0 |
+| today (L38 / V21 / FS) | 2.94 / 4.08 / 1.76 world | 5.23 / 6.82 / 4.65 | 4.60 / 5.94 / 3.01 | - | - |
+
+Picture: cl0 vs cl1 is within TAA/FSR noise everywhere (>16 of 255: 0.01-0.05 % of pixels, mean +0.00..+0.05; cl0 vs cl0 gives the same).
+The draws' own lists already reached every lamp that lights them (lamps past 24 dropped 0.00, 16 capped passes a frame), so the froxel
+loop re-lights the same lamps: no visible gain, +0.05..+0.16 ms world GPU, binning 0.01-0.12 ms CPU. Vault 21's coarse froxels overflow
+(265 of 4044 entries dropped, the faintest ones, still no picture change). **Verdict: keep ClusteredLamps off**; worth it only with a
+content case where objects are lit by more than 24 lamps or the game's per-object lamp pick misses lamps (none in these three places).
+The table toml vs today differs at Lucky 38 (+0.5 ms world and CPU) but not in Vault 21: two launches, not trusted; re-check in one launch
+before the table (LightCommonLamps) is offered as a default.
+
+G-buffer albedo pass: no. Census (run 20261030-133028-slotA, Lucky 38): 1772 world draws a frame, multi-pass objects 0, extra lamp /
+highlight / texture passes 0 (one-pass lighting already); world GPU 3.1 ms, of it NVR 4+-lamp shaders 70 %, 1-3-lamp 21 %. The lighting
+a deferred pass would replace is already one pass and clustered shows no missing lamps, while the frame is CPU-bound (render 3-6 ms CPU =
+the frame interval, GPU 4.6-7 ms on the 1070 at 640x360); a G-buffer pass re-submits every world draw (~1772 a frame, the costly part on
+the CPU) to save at most the 21 % (~0.65 ms GPU) the game's own short lamp lists already light cheaply. Nothing in these numbers it would add.
