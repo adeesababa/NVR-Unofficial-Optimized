@@ -985,6 +985,10 @@ namespace {
 				if (it->second.uvOffset == NVR_RT_NO_DATA) continue;	// no texcoords (no room in the data): it would block as a solid quad
 				memcpy(&r.albedo[3], &it->second.uvOffset, 4);
 			}
+			else if (r.flags & NVR_RT_RECORD_TEXTURED) {	// hit textures: the texcoords' offset, or no texture when there was no room
+				if (it->second.uvOffset == NVR_RT_NO_DATA) r.flags &= ~NVR_RT_RECORD_TEXTURED;
+				else memcpy(&r.albedo[3], &it->second.uvOffset, 4);
+			}
 			VkAccelerationStructureInstanceKHR& o = out[count++];
 			memcpy(&o.transform, in.transform, sizeof(o.transform));
 			o.instanceCustomIndex = in.customIndex & 0xFFFFFF;

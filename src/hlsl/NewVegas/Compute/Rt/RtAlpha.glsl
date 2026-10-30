@@ -18,6 +18,7 @@
 struct RtRecord { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
 layout(set = 0, binding = 10, std430) readonly buffer RtRecords { RtRecord records[]; };
 layout(set = 0, binding = 11, std430) readonly buffer RtGeometry { uint words[]; };
+#define RT_RECORDS_DECLARED
 #endif
 
 #define RT_RECORD_ALPHA_TESTED 0x20u

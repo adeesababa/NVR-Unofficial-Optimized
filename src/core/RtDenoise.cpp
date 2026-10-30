@@ -100,7 +100,7 @@ namespace RtDenoise {
 		if (!tried) {
 			tried = true;
 			temporal = Make("RtDenoiseTemporal", 3, 160);
-			atrous = Make("RtDenoiseAtrous", 2, 48);
+			atrous = Make("RtDenoiseAtrous", 3, 48);
 			temporalRgb = Make("RtDenoiseTemporalRgb", 4, 160, 2);
 			atrousRgb = Make("RtDenoiseAtrousRgb", 3, 48, 2);
 		}
@@ -152,7 +152,7 @@ namespace RtDenoise {
 		Device->SetRenderTarget(0, park);
 		struct { float params[4], size[4]; UInt32 samplerIndex, pad[3]; } a = {};
 		a.params[1] = S.DepthSigma; a.params[2] = S.NormalPower; a.params[3] = S.ValueSigma;
-		a.size[0] = 1.0f / w; a.size[1] = 1.0f / h;
+		a.size[0] = 1.0f / w; a.size[1] = 1.0f / h; a.size[2] = S.Ids ? 1.0f : 0.0f;
 		const int iterations = (std::max)(0, (std::min)(S.Iterations, 5));
 		const UInt32 last = d->frame & 1, now = (d->frame + 1) & 1;
 		bool ok = true;
@@ -167,8 +167,8 @@ namespace RtDenoise {
 				const bool lastPass = i == (std::max)(iterations, 1) - 1;
 				IDirect3DSurface9* target = lastPass ? nullptr : Surface(d->chain[i & 1]);
 				a.params[0] = iterations ? (float)(1 << i) : 0.0f;
-				IUnknown* images[2] = { source, normals };
-				ok = Draw(atrous, lastPass ? Output : target, images, 2, &a, sizeof(a));
+				IUnknown* images[3] = { source, normals, S.Ids ? (IUnknown*)S.Ids : (IUnknown*)normals };	// [2]: a stand-in without ids
+				ok = Draw(atrous, lastPass ? Output : target, images, 3, &a, sizeof(a));
 				if (target) target->Release();
 				source = d->chain[i & 1];
 			}
