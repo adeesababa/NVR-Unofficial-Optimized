@@ -115,6 +115,17 @@ namespace LampFixtures {
 		return bound && bound->Radius > 0.0f && bound->Radius <= MaxLampPart;
 	}
 
+	// UNOFFICIAL OwnGlassDistance (2026-10-30, [Shaders.ShadowsInteriors.Forward]): is this a lamp part (glowing glass, bulb, glow) whose
+	// bound reaches within distance of the light, i.e. the light's own glass? The light shines out through it, so it casts nothing into
+	// that light's own map (other lamps' maps keep it, LampGlassShadows). Vault 21's floor lamps sit inside their glass, 15 units above
+	// the floor: with a shadow (VisibleRanking gives the visible ones a slot) the glass took their whole floor and wall pool.
+	inline bool OwnGlass(NiGeometry* geo, const NiPoint3* at, float distance) {
+		if (distance < 0.0f || !LampPart(geo)) return false;
+		const NiBound* bound = geo->GetWorldBound();
+		const float dx = bound->Center.x - at->x, dy = bound->Center.y - at->y, dz = bound->Center.z - at->z;
+		return sqrtf(dx * dx + dy * dy + dz * dz) - bound->Radius <= distance;
+	}
+
 	inline void ListGlows(TESObjectCELL* cell, bool log) {
 		const double started = Now();
 		std::vector<Glow> found;

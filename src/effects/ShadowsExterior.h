@@ -216,6 +216,7 @@ public:
 			float MaxSoftness;			// UNOFFICIAL (2026-10-20): the widest blur LampSize may give, in shadow-map texels (1..32)
 			float InvisibleLightSize;	// UNOFFICIAL (2026-10-20): world units, invisible lights' own lamp size for soft shadows (0 = as LampSize)
 			bool LampGlassShadows;
+			float OwnGlassDistance;		// UNOFFICIAL (2026-10-30): world units; a lamp part this near a light casts nothing into that light's map (below 0 off)
 			bool LampModelShadows;		// UNOFFICIAL (2026-10-20): false = a light leaves lamp models near it out of its shadow map (LampFixtures::NearLampModel)
 			float LampModelDistance;	// UNOFFICIAL (2026-10-20): world units, how near (to a lamp model's bound) that is
 			float InvisibleShadowFromLamp;	// UNOFFICIAL (2026-10-20): world units; invisible lights cast from the nearest lamp part within it (0 off)		// UNOFFICIAL (2026-10-20): false = lamp parts (LampFixtures::LampPart) cast no lamp shadows; true = as before
