@@ -193,3 +193,23 @@ nothing here is pushed, released or installed unless the user says so.
   Vault 21 STILL has the floor-lamp pools gone (same as round 10). SHADOW FLIPS 5.1-5.5 gained / lost per second.
   iGPU (132206-slotA): Lucky 38 within 0.5 % of round 9, protocol-4 helper ready, RT effects run, no crash.
 - DLL CRC32 9206EA8E, NvrRtHelper 2304B910 (protocol 4), fork-0033c. Not packaged.
+
+## Round 10 final (2026-10-30 17:35, 927065d9) - packaged
+- On rounds 10/10b (which already hold rt-sun-2 9f05fd21 protocol 4, rt-refl-2 408a21cc, rt-ao-gi b9f112ee and the installed
+  claude/motion-ring-fix aee0046c), the main session asked for every READY line since round 9:
+  - claude/rt-sun-grass 108cfa5b: RT grass ([Main.Main.RayTracing] Grass false, GrassRadius 1500, GrassMaxTufts 8192), RT sun cloud
+    shadows ([Shaders.ShadowsExteriors.RT] CloudShadows false), player rigid parts on their own mask NVR_RT_MASK_PLAYER 0x40;
+  - claude/rt-gaps ef50de0c: PlantSway true (acts only with RT and [Shaders.Plants.Wind]);
+  - claude/rt-refl-weapon 2c9f7a41: [Shaders.Reflections.RT] Weapon 0 (off), WeaponMetal 1, WeaponRoughness 0.3; non-finite guards
+    in the reflection resolve / temporal / composite;
+  - claude/fog-clear-noon 529dd55b: [Shaders.VolumetricFog.Main] GameFogFloor 0 (off), GameFogFloorScale 1;
+  - 1a8a5e48 cherry-picked alone from claude/terrain-flicker (the rest is test-only): unknown user toml keys logged once each.
+  - Balebandro's water fix 1ce5d62 already in since round 8 (a605e259). claude/motion-ring-fix 51498f42 (ClusteredLamps, off, no
+    gain) has no READY line: not taken.
+- Conflicts: RtCore.cpp player walk (walkingPlayer flag + playerInstances count: both kept, file kept LF). Defaults toml: lines
+  added with CRLF set back to LF (927065d9).
+- Smoke (one bulk iGPU run, 20261030-171723-slotC, rtm-igpu-ext5): helper ready by LUID (protocol 4, 20 images, 10 shaders,
+  ready after 10.8 s), each RT toggle changes the picture vs off (sun 4-8 %, AO+GI 21 %, reflections 12 %, all on 23 % of pixels),
+  no errors, no crash; the unknown-key line works (DlssHelperTest). Camera spot differs from round 8b's run, so no cross-round A/B.
+- KNOWN: Vault 21 floor-lamp pools gone with the motion-ring-fix lamp-shadow defaults (rounds 10/10b, 1070 + iGPU).
+- DLL CRC32 0CE498AB, NvrRtHelper F8AE9D5A (protocol 4), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-927065d9\`.
