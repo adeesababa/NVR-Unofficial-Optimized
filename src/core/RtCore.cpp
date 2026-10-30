@@ -158,6 +158,7 @@ namespace {
 		ID3D9NvrExtShare*		share = nullptr;
 		ID3D9NvrExtRt*			rt = nullptr;
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
+		ID3D9NvrExtRtSeq*		rtSeq = nullptr;	// fork patch 0034 (the arena's sequence texel, 2026-10-30); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
@@ -223,6 +224,16 @@ namespace {
 		int			AlphaSlotOf(IDirect3DBaseTexture9* texture);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
 		float		radius = 8192.0f;
+		// UNOFFICIAL 2026-10-30 scene cost (the main session's soak list, item 2), all [Main.Main.RayTracing], live:
+		//   Compact: static geometry is compacted by the helper after its build (NVR_RT_OP_FLAG_COMPACT; about half the memory).
+		//   BuildTrianglesPerFrame: new geometry farther than BuildNearRadius waits a frame once this many triangles were staged this
+		//     frame (0: no limit, as before): a cell change builds its near geometry at once and the rest over the next frames.
+		//   CullSmallAngle: objects (not land, not actors) whose bound radius / distance is below this (radians) stay out of the scene.
+		bool		compactOn = false;
+		UInt32		buildBudget = 0, trianglesThisFrame = 0, budgetWaits = 0, culledSmall = 0;
+		float		buildNear = 2048.0f, cullAngle = 0.0f;
+		std::vector<UInt32> pendingReleases;	// release ops that did not fit this frame's op list (sent first next frame)
+		void		Release(UInt32 id) { pendingReleases.push_back(id); released++; }
 		std::vector<NiAVObject*> stack;
 
 		void		TurnOff(const char* why);
@@ -378,6 +389,9 @@ namespace {
 			return false;
 		}
 		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSkin), (void**)&rtSkin))) rtSkin = nullptr;
+		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRtSeq), (void**)&rtSeq))) rtSeq = nullptr;
+		if (!rtSeq) Logger::Log("UNOFFICIAL NVR DXVK: RT: this d3d9.dll has no arena sequence check (fork patch 0034, 1.8-rt-seq); on some GPUs its "
+			"geometry copy can run before the geometry is converted (RTX GPU fault, 2026-10-30): update the NVR DXVK fork.");
 		actorsOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Actors") != 0;
 		if (actorsOn && !rtSkin) Logger::Log("UNOFFICIAL NVR DXVK: RT actors off: this d3d9.dll cannot pose skinned geometry (fork patch 0033, 1.8-rt-skin).");
 		NVR_EXT_SHARE_INFO info = {};
@@ -529,6 +543,7 @@ namespace {
 		state = Starting;
 		lastSerial = 0;
 		geometries.clear();
+		pendingReleases.clear();
 		nextId = 1;
 		_snprintf_s(status, sizeof(status), _TRUNCATE, "starting on %s", info.DeviceName);
 		Logger::Log("UNOFFICIAL NVR DXVK: RT helper started (%ls): %u shared images (arena %ux%u), %u shaders, GPU %s.", exe.c_str(),
@@ -566,11 +581,13 @@ namespace {
 		DxvkCompute::Drop(outputReady);
 		DxvkCompute::Drop(rt);
 		DxvkCompute::Drop(rtSkin);
+		DxvkCompute::Drop(rtSeq);
 		DxvkCompute::Drop(share);
 		if (shared) { UnmapViewOfFile(shared); shared = nullptr; }
 		HANDLE* handles[] = { &mapping, &frameEvent, &statusEvent };
 		for (HANDLE* h : handles) if (*h) { CloseHandle(*h); *h = nullptr; }
 		geometries.clear();
+		pendingReleases.clear();
 		alphaSlots.clear();
 		if (alphaUpload) { alphaUpload->Release(); alphaUpload = nullptr; }
 		if (albedoUpload) { albedoUpload->Release(); albedoUpload = nullptr; }
@@ -799,7 +816,7 @@ namespace {
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
 			bool hasUv = entry.textured;	// what the helper has: decided by what the fork staged (an older 0033 drops skinned texcoords)
 			if (pose) {
-				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; if (!entry.sent) continue; }
 				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 				else {
 					NvrRtGeometryOp& op = record->ops[record->opCount++];
@@ -838,6 +855,14 @@ namespace {
 	void Core::AddGeometry(NiGeometry* geo, bool land, bool lod) {
 		UInt32* skip = skips[lod ? 2 : land ? 1 : 0];
 		skip[kSeen]++;
+		float distance = 0.0f;	// the bound's centre from the camera (objects only: land's bounds are not usable)
+		if (!land && geo->m_kWorldBound) {
+			const NiBound* b = geo->m_kWorldBound;
+			const float dx = b->Center.x - TheRenderManager->CameraPosition.x, dy = b->Center.y - TheRenderManager->CameraPosition.y,
+				dz = b->Center.z - TheRenderManager->CameraPosition.z;
+			distance = sqrtf(dx * dx + dy * dy + dz * dz);
+			if (cullAngle > 0.0f && distance > b->Radius && b->Radius < cullAngle * distance) { culledSmall++; return; }
+		}
 		if (!geo->shader || !geo->geomData || !geo->geomData->m_pkBuffData) { skip[kNoShader]++; return; }
 		if (geo->skinInstance) { skip[kSkinned]++; return; }
 		BSShaderProperty* shaderProperty = (BSShaderProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Shade);
@@ -911,8 +936,12 @@ namespace {
 				Logger::Log("UNOFFICIAL NVR DXVK: RT alpha-tested casters off: this d3d9.dll does not stage texcoords (fork patch 0029, 1.8-rt-uv).");
 				return;
 			}
-			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; return; }	// next frame
+			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels + 1 > arenaCapacity) { waiting++; return; }	// next frame (+1: the sequence texel)
+			if (buildBudget && !land && distance > buildNear && trianglesThisFrame && trianglesThisFrame + info.TriangleCount > buildBudget) {
+				waiting++; budgetWaits++; return;	// far: a later frame (BuildTrianglesPerFrame)
+			}
 			if (FAILED(rt->StageGeometry(&desc, images[0], arenaUsed, &info))) { entry.refused = true; return; }
+			trianglesThisFrame += info.TriangleCount;
 			NvrRtGeometryOp& op = record->ops[record->opCount++];
 			op = NvrRtGeometryOp();
 			op.op = NVR_RT_OP_BUILD;
@@ -921,6 +950,7 @@ namespace {
 			op.triangleCount = info.TriangleCount;
 			op.arenaTexel = arenaUsed;
 			op.flags = alphaTested ? (NVR_RT_OP_FLAG_TEXCOORDS | NVR_RT_OP_FLAG_ALPHA) : textured ? NVR_RT_OP_FLAG_TEXCOORDS : 0u;
+			if (compactOn) op.flags |= NVR_RT_OP_FLAG_COMPACT;
 			arenaUsed += info.Texels;
 			entry.sent = true;
 			static int probes = 0;
@@ -1040,17 +1070,25 @@ namespace {
 		if (cell != lastCell) {
 			for (auto it = geometries.begin(); it != geometries.end(); ) {
 				if (!it->second.skinned) { ++it; continue; }
-				if (it->second.sent && record->opCount < NVR_RT_MAX_OPS) {
-					NvrRtGeometryOp& op = record->ops[record->opCount++];
-					op = NvrRtGeometryOp();
-					op.op = NVR_RT_OP_RELEASE;
-					op.id = it->second.id;
-					released++;
-				}
+				if (it->second.sent) Release(it->second.id);	// (2026-10-30: queued; a full op list used to drop it and the helper kept it)
 				it = geometries.erase(it);
 			}
 			lastCell = cell;
 		}
+		// the releases that did not fit an earlier frame's op list go first
+		size_t sent = 0;
+		while (sent < pendingReleases.size() && record->opCount < NVR_RT_MAX_OPS) {
+			NvrRtGeometryOp& op = record->ops[record->opCount++];
+			op = NvrRtGeometryOp();
+			op.op = NVR_RT_OP_RELEASE;
+			op.id = pendingReleases[sent++];
+		}
+		pendingReleases.erase(pendingReleases.begin(), pendingReleases.begin() + sent);
+		compactOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "Compact") != 0;
+		buildBudget = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "BuildTrianglesPerFrame"));
+		buildNear = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "BuildNearRadius"));
+		cullAngle = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "CullSmallAngle"));
+		trianglesThisFrame = 0;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
@@ -1074,14 +1112,8 @@ namespace {
 		// Geometries not met for a while (their cell unloaded, the object gone): released in the helper
 		if ((sceneFrame % 30) == 0) {
 			for (auto it = geometries.begin(); it != geometries.end(); ) {
-				if (sceneFrame - it->second.lastSeen > kReleaseAfterFrames && record->opCount < NVR_RT_MAX_OPS) {
-					if (it->second.sent) {
-						NvrRtGeometryOp& op = record->ops[record->opCount++];
-						op = NvrRtGeometryOp();
-						op.op = NVR_RT_OP_RELEASE;
-						op.id = it->second.id;
-						released++;
-					}
+				if (sceneFrame - it->second.lastSeen > kReleaseAfterFrames) {
+					if (it->second.sent) Release(it->second.id);
 					it = geometries.erase(it);
 				}
 				else ++it;
@@ -1203,7 +1235,12 @@ namespace {
 		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
 		if (c.gatheredFrame != now) {
 			c.Gather();
-			c.rt->FlushStagedGeometry(c.images[0]);
+			// 2026-10-30: with fork 0034 the texel after this frame's geometry gets the frame's sequence number, written after the
+			// conversions; the helper checks it before building (a reordered copy = an earlier flush's data: built empty, logged once)
+			if (c.rtSeq && f.arenaTexels && f.arenaTexels < c.arenaCapacity &&
+				SUCCEEDED(c.rtSeq->FlushStagedGeometrySeq(c.images[0], NvrRtSequenceOf(n), f.arenaTexels)))
+				f.arenaTexels |= NVR_RT_ARENA_SEQUENCE;
+			else c.rt->FlushStagedGeometry(c.images[0]);
 			c.frameInstances.assign(f.instances, f.instances + f.instanceCount);
 			c.frameRecords.assign(f.records, f.records + f.instanceCount);
 			c.gatheredFrame = now;
@@ -1246,6 +1283,10 @@ namespace {
 				(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
 				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
 			c.shared->responseUsMax = 0;
+			if (c.buildBudget || c.cullAngle > 0.0f || c.compactOn || !c.pendingReleases.empty())
+				Logger::Log("RT CORE: scene cost: compact %s, %u far builds deferred by BuildTrianglesPerFrame %u, %u small objects culled (CullSmallAngle %.4f), "
+					"%u releases queued", c.compactOn ? "on" : "off", c.budgetWaits, c.buildBudget, c.culledSmall, c.cullAngle, (unsigned)c.pendingReleases.size());
+			c.budgetWaits = c.culledSmall = 0;
 			if (n == 60 && c.actorsOn)
 				Logger::Log("RT CORE: actors: %u skinned partitions posed in exchanges 1-60 (%s); skipped: no buffer data %u, bones %u, not described %u, "
 					"streams / half positions %u, palette %u; hit textures: not PPLighting %u, no diffuse %u, texcoords in another stream %u, "

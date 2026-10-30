@@ -94,6 +94,12 @@ struct NvrRtImageDesc {
 #define NVR_RT_OP_FLAG_TEXCOORDS  0x1u   // 2 x vertexCount more texels: the texcoords after the triangle list (fork 1.8-rt-uv)
 #define NVR_RT_OP_FLAG_ALPHA      0x2u   // built non-opaque (alpha-tested: the rays test the candidates)
 #define NVR_RT_OP_FLAG_DYNAMIC    0x4u   // rebuilt every frame (skinned actors): fast build instead of fast trace
+// UNOFFICIAL 2026-10-30 ([Main.Main.RayTracing] Compact): static geometry built with ALLOW_COMPACTION; the helper reads the compacted
+// size once the build's frame is done and copies it into a structure of that size a frame later (typically half the memory). An older
+// helper ignores the flag (no compaction, nothing else changes).
+#define NVR_RT_OP_FLAG_COMPACT    0x8u
+#define NVR_RT_ARENA_SEQUENCE     0x80000000u   // NvrRtFrame::arenaTexels: a sequence texel follows the geometry (2026-10-30)
+inline uint32_t NvrRtSequenceOf(uint64_t frame) { return (uint32_t)frame ? (uint32_t)frame : 1u; }
 
 struct NvrRtGeometryOp {             // 32 bytes
 	uint32_t	op;                  // NvrRtOp
@@ -146,7 +152,9 @@ struct NvrRtFrame {
 	uint32_t	opCount;
 	uint32_t	instanceCount;
 	uint32_t	passCount;
-	uint32_t	arenaTexels;         // texels of the arena this frame's builds read (0 = none)
+	uint32_t	arenaTexels;         // texels of the arena this frame's builds read (0 = none); bit 31 (NVR_RT_ARENA_SEQUENCE): the texel
+	                                 // right after them holds (uint32_t)frame (or 1 for 0), written by the fork after its conversions
+	                                 // (1.8-rt-seq): another value = the arena holds an earlier flush's data (UNOFFICIAL 2026-10-30)
 	NvrRtGeometryOp	ops[NVR_RT_MAX_OPS];
 	NvrRtInstance	instances[NVR_RT_MAX_INSTANCES];
 	NvrRtInstanceRecord records[NVR_RT_MAX_INSTANCES];	// v2: records[i] belongs to instances[i]
