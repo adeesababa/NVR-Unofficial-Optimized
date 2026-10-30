@@ -461,3 +461,15 @@ game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial out
   shadow ray. Cost +6..10 ms (32-light loops + a shadow ray). No crash; the merged 12-image pass ran.
 - **v2 (C64D9369):** only small bright emitters: meshes over 256 units left out, emitting radius at most 32, colour gated by its
   brightness like GlowGI (strongest channel 0.35 -> 0.8). Re-bench rt-gi-18.
+- **rt-gi-18 v2 (rtgi27: Lucky 38 20261030-090739-slotA, Ultra-Luxe 20261030-091221-slotA): safe but nearly invisible.** No crash, still
+  32 lights after the filter. Bounce-light mean Lucky 38 21.9 -> 23.4 / 23.5 (GlowDirect 1 / 2; ~600 of 230400 pixels brighter by > 8,
+  no fireflies); Ultra-Luxe 36.5 -> 36.6 at 1 (its 2 shot is another view). Looking at the pictures: a slight warm lift, no coloured
+  pools. Cost: the merged pass 39-54 ms vs 39-41 with GlowGI alone (+8..12 ms at full rate on the iGPU); the separate pass ~20 ms.
+- **Verdict:** kept, opt-in (default 0); not worth its cost as it stands. The limit is the data, not the sampling: the glow flag covers a
+  whole mesh, its average colour is the diffuse texture's (mostly dull), and its bound is the mesh's. Real neon pools need the
+  emissive colour and where on the mesh it is: a glow atlas (the glow map's colour at a hit, as the albedo atlas) or per-record glow
+  colour + emitting bounds from the core (rt-sun-core). With that, GlowDirect's sampling stays as is.
+- **Second bounce from a last-frame radiance cache:** not built. AO + GI at full rate is already ~37 ms of helper time on the iGPU (the
+  recommended preset GIInterleave 4 ~20-25); a world-space cache (hash grid) adds an update pass and lookups (~5-10 ms) for a
+  second bounce that is mostly a few percent of light indoors. The cheap form (at a bounce hit seen on screen, add last frame's GI
+  there x the hit's albedo) needs a 13th image in the merged pass. Worth doing on a discrete RT GPU, not on this iGPU budget.
