@@ -71,9 +71,12 @@ namespace {
 		return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
 	}
 
+	bool HitView() { return S.debugView == 7 || S.debugView == 8; }	// RtHitDebug.comp: camera rays, no sun
+
 	bool Wants() {
 		ReadSettings();
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
+		if (S.enabled && HitView()) return true;	// 2026-10-30: the hit texture / glow checks run indoors too (the neon is in casinos)
 		return S.enabled && TheShaderManager->GameState.isExterior && shadows && shadows->Enabled && shadows->Settings.Exteriors.Enabled;
 	}
 
@@ -243,9 +246,11 @@ namespace RtSunShadows {
 	}
 
 	void RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
-		const bool traced = tracedForDebug;
+		const bool hitIndoors = HitView() && tracedThisFrame && !TheShaderManager->GameState.isExterior;	// no Apply indoors
+		if (hitIndoors) tracedThisFrame = false;
+		const bool traced = tracedForDebug || hitIndoors;
 		tracedForDebug = false;
-		if (!traced || S.debugView < 4 || !signalTexture || !RenderTarget) return;
+		if (!traced || S.debugView < 4 || (!signalTexture && !hitIndoors) || !RenderTarget) return;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(2);
 		ID3D9NvrExtSampler* point = S.halfResolution ? DxvkCompute::LinearClamp() : DxvkCompute::PointClamp();	// half: bilinear up
 		SunShadowsEffect* sunShadows = TheShaderManager->Effects.SunShadows;

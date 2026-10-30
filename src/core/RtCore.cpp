@@ -217,7 +217,7 @@ namespace {
 		// position's stream, [4] no diffuse texture, [5] alpha unreadable (format / pool) or atlas full, [6] waited (upload budget), [7] taken
 		UInt32		alphaFate[8] = {};
 		int			atlasImage = -1;
-		UInt32		atlasUsed = 0, atlasThisFrame = 0;
+		UInt32		atlasUsed = 0, atlasThisFrame = 0, glowSlots = 0;	// glowSlots: slots with a glow map (GlowTextures)
 		std::unordered_map<UInt64, int> alphaSlots;			// diffuse texture | glow texture << 32 -> slot (-1: unreadable)
 		IDirect3DTexture9* alphaUpload = nullptr;			// 64 x 64 R16F, dynamic: one slot's alpha on its way to the atlas
 		IDirect3DTexture9* albedoUpload = nullptr;			// 64 x 64 A8R8G8B8: one slot's colour on its way to the albedo atlas
@@ -343,7 +343,7 @@ namespace {
 						glowTarget->Release();
 					}
 				}
-				if (slot >= 0) atlasUsed++;
+				if (slot >= 0) { atlasUsed++; if (glow) glowSlots++; }
 			}
 			target->Release();
 		}
@@ -441,6 +441,7 @@ namespace {
 		albedoAtlasImage = -1;
 		glowAtlasImage = -1;
 		atlasUsed = 0;
+		glowSlots = 0;
 		alphaSlots.clear();
 		if (alphaOn || hitTextures) {	// the slots are shared: hit textures keep the alpha atlas too
 			atlasImage = (int)imageDescs.size();
@@ -1326,7 +1327,7 @@ namespace {
 				const UInt32* a = c.alphaFate;
 				Logger::Log("RT CORE: alpha-tested meshes met (exchanges 1-60): taken %u, atlas %u slots; left out: blended only %u, AlphaTested off %u, "
 					"not described %u, texcoords not in the position's stream %u, no diffuse texture %u, alpha unreadable or atlas full %u; "
-					"waited for an upload %u", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+					"waited for an upload %u; glow maps in the atlas %u (%s)", a[7], c.atlasUsed, a[0], a[1], a[2], a[3], a[4], a[5], a[6], c.glowSlots, c.glowAtlasImage >= 0 ? "GlowTextures on" : "GlowTextures off");
 			}
 			if (n == 60)
 				for (int k = 0; k < 3; k++) {
