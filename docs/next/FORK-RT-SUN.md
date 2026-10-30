@@ -193,6 +193,12 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   mark fully lit far from any caster.
 - RtDenoise RGB mode (Channels 3) is rt-ao-sky's to test (its GI bounce); the 1-channel path is verified here.
 
+### rtsun-19 (20261029-220551-slotC): HalfResolution
+- `[Shaders.ShadowsExteriors.RT] HalfResolution` (off): a quarter of the rays (depth / normals read at the matching full-size pixel),
+  denoised at half size (RtDenoise Downscale 2), upsampled bilinearly. The sun trace pass (the helper's per-pass time, this view):
+  hard 4.48 -> 2.10 ms, SunAngle 2 4.63 -> 2.25 ms at 720p on the iGPU. With SunAngle 2 the half-size picture is nearly the same as
+  the full-size one (slightly blockier edges); recommended pairing on slow GPUs: SunAngle 0.53-2 + HalfResolution.
+
 ## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first; RESUMED 2026-10-29 03:20, fixed since)
 - **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
   helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
