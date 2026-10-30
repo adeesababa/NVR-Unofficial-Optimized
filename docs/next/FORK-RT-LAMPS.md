@@ -35,6 +35,12 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### People cast traced lamp shadows: PROVEN (rtlamp-16, 2026-10-29 22:29, 20261029-222901-slotA, PASS; DLL 86893D44, fork-0033, Actors on)
+- Vault 21, AI frozen, DebugView 3 per lamp (white lit / black blocked / magenta = that lamp not traced there): lamp 15 (overhead,
+  z 8028, ~590 units over the floor) traces the floor round the standing NPCs: black leg/dress shadows on the floor behind them and
+  black patches on their bodies where another body part blocks the lamp; no speckle (H:\_NVR-rtlamp\people-slot15.png). Lamps 5 and 7
+  (the big ceiling lights) and the floor lamps 3/11/13 are not among those pixels' 3 strongest: magenta there.
+
 ### Cost: Interleave + where the frame goes (rtlamp-13/14/15, 2026-10-29 21:14-22:20, all PASS; 7a6d54a2, DLL 86893D44, protocol-3 helper)
 - Interleave (1, 2, 4; 973134db, default 1): works (static camera: 0.02-0.66 % of pixels differ from every-pixel tracing, at edges:
   the traced frames' TAA jitter), but saves little: whole-frame GPU time with actors on, L38 ~150 / 149 / 151 ms, V21 128 / 127 / 128.
