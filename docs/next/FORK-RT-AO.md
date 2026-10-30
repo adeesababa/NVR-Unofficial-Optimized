@@ -372,3 +372,7 @@ helper's own timing).
   (-5 %), sd 9.02 -> 8.79. Lucky 38 drifts from the 4th shot on, so the denoised and moving pairs are different views (their -6 % /
   lower sd are not comparable). Cost: RtGITrace full rate 32.3 / 34.0 (s0 / s4 raw), 30.7 / 29.7 (denoised); GIInterleave 4: 9.2 ->
   10.4 ms. Worth a try where noise shows (outdoors at night?), not as a default on this evidence.
+- **rt-gi-13 (20261030-031814-slotC, Goodsprings, fe57c778): reuse holds up outdoors.** Each shot is a different view (og spots
+  move), so judged one by one: GIReuse 0 + GIInterleave 4 smears (cloudy blobs over the ground and the shack); GIReuse 8 +
+  GIInterleave 4 is crisp (rocks, truck, windmill, the player keep their shape), no holes. Helper times: full rate GIReuse 0 21.0 ms
+  vs GIReuse 8 9.5 + 15.6 = 25.1 ms; GIInterleave 4: 17.7 vs 12.6 + 7.3 = 19.9 ms. The final picture with reuse looks normal.
