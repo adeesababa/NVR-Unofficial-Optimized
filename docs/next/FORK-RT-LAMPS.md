@@ -35,6 +35,14 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Run rtlamp-12 (actors + the partial-loop fix d6d71721, DLL 98511EF1), 2026-10-29 20:15, 20261029-201506-slotA, PASS
+- Cube maps with traced shadows on (fork-0033, Actors on): ~0.0 ms GPU in both rooms (profile windows wholly inside traced shots:
+  0.0002 ms; windows straddling a cube shot 1.2-2.5 ms) -- Vault 21 was 8.1 ms, Lucky 38 1.5 ms. People-only refreshes: 0.0-0.1 a
+  frame while traced (the cube shots, Live 0, still redraw 2-3.5 as they should). Steps 2 + 4 done.
+- Picture unchanged: rt vs cube L38 2.15 % / V21 1.10 % (rtlamp-10: 2.16 / 1.09), A/B repeats 0.00 %.
+- RT (helper, copies, waits; iGPU 720p, LampsPerPixel 2, 1 ray, actors in): L38 33.5-37.6 ms, V21 38.7 ms. On this 2-CU iGPU the trace
+  still costs more than the cube maps it replaces (8.1 ms in V21); the cube-map side of the bill is now gone.
+
 ### Runs rtlamp-10 (actors) + rtlamp-11 (soft 32 + filter v2), 2026-10-29 19:44-19:57, both PASS (DLL FB49B761, rt-sun-2 c9e185d8)
 - rtlamp-10, fork-0033 + Actors: the core posed 5040 skinned partitions in exchanges 1-60 (~84 a frame); A/B repeats 0.00 %; rt vs
   cube L38 2.2 %, V21 1.1 %; nothing wrong on or round the people (no speckle, no self-shadow); people moved between shots, so the
