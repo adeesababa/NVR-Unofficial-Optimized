@@ -123,6 +123,9 @@ namespace ReactiveMask {
 		IDirect3DSurface9* rt0 = MainTarget(d, t);
 		if (!rt0) return;
 		if (!Ensure(d, t) || !Compile(d) || FAILED(d->StretchRect(rt0, NULL, FinalSurface, NULL, D3DTEXF_NONE))) { rt0->Release(); return; }
+		// This frame's world depth: NVR's own resolve into TESR_DepthBufferWorld runs only after the world scene (RenderWorldSceneGraphHook),
+		// so until then it holds the last frame's (run 20261030-183656-slotA: the sky still marked). The same resolve, once more, here.
+		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 		const bool count = GpuTimer::Enabled && (Query || SUCCEEDED(d->CreateQuery(D3DQUERYTYPE_OCCLUSION, &Query)));
 
 		NiDX9RenderState* state = TheRenderManager->renderState;
