@@ -169,6 +169,17 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-29 19:26 hit-distance-aware blur (rtrefl-6; DLL adbea5a0, f79a0a7b): ContactSharpness 0.3 vs 1 (the old even blur)
+
+The runs are `bench/autotest/20261029-192624-slotA` (luxe) and `20261029-195738-slotA` (lucky22), all 9 shots each.
+- luxe: 0.32 % of pixels vs a 0.14 % floor; reflection alone 0.37 %. The differences sit on the edges where things meet the floor
+  (the fountain's base, counter and table edges): the contact sharpening acts where it should.
+- lucky22: 0.08 % vs 0.04 %; reflection alone 0.17 %.
+- **Verdict: works, small at these defaults.** In both rooms most hits are far from the surface compared with the eye's distance,
+  so the share is near 1 and the blur stays full. This becomes the main lever once the shared denoiser has a specular mode
+  (rt-sun-core's RtDenoise, 2026-10-29: one channel, no hit distance yet). Until then ContactSpread can go lower (sharper sooner)
+  at the price of more visible noise on rough floors. No measurable cost (a texture read in the blur; one more R16F target).
+
 ### 2026-10-29 18:58 foliage in reflections: noon, `[Main.Main.RayTracing] AlphaTested` on (fork-0029, DLL b618044a, 77079aa2)
 
 The run is `bench/autotest/20261029-185845-slotA`, list rtrefl-3, all 9 shots. The core took the alpha-tested meshes (41877 met over 60
