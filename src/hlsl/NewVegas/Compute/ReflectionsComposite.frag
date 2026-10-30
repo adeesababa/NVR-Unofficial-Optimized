@@ -51,7 +51,7 @@ void main() {
     }
     reflection /= weights;
 
-    vec3 V = normalize(ViewPosition(uv, depth));
+    vec3 V = normalize(SurfacePosition(uv, depth));   // (2026-10-30: the weapon's own FOV)
     vec3 share;
     if (MaterialOn) {
         // MaterialAware: metal reflects in its own colour (F0 = its albedo, guessed from the lit colour's hue), the rest at F0 0.04.
@@ -61,6 +61,7 @@ void main() {
     }
     else share = vec3(saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a));
     vec3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
+    if (any(isnan(reflected)) || any(isinf(reflected)) || isnan(reflection.a)) { o_color = color; return; }   // (UNOFFICIAL 2026-10-30)
     // REFL_SPECOCC_ON: SpecularOcclusion.
     if (SpecOccOn && cb.data4.w > 0.0) {
         float surfaceLight = luma(linearize(color.rgb));

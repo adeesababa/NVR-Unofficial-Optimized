@@ -18,7 +18,7 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 size;          // x width, y height (of the images), z Distance, w 1 = sun shadow rays
 	vec4 forward;       // xyz camera forward (scene space), w the lamp count (0..12) + RoughReach (the fraction)
-	vec4 right;         // xyz camera right / projection[0][0]
+	vec4 right;         // xyz camera right / projection[0][0], w (2026-10-30) the first-person weapon's offset scale (1 / Reflections.glsl's cb.weapon.y)
 	vec4 up;            // xyz camera up / projection[1][1]
 	vec4 origin;        // xyz the eye in scene space (RtCore::Eye()), w 1 = the alignment check (RT DebugView 5)
 	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up (outdoors, by day)
@@ -111,7 +111,9 @@ void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y)) return;
 	vec2 ray = imageLoad(rayImage, pixel).xy;
-	if (ray.x <= 0.0 || ray.y < 1.5 || ray.y > 3.5) {   // (> 3.5: a rough pixel that borrows its block's ray this frame)
+	// 2026-10-30 RT weapon reflections: 5.5..7.5 a first-person weapon pixel's ray (RayGen +6)
+	const bool weapon = ray.y > 5.5 && ray.y < 7.5;
+	if (ray.x <= 0.0 || ray.y < 1.5 || (ray.y > 3.5 && !weapon)) {   // (> 3.5: a rough pixel that borrows its block's ray this frame)
 		imageStore(hitImage, pixel, vec4(-1.0, 0.0, 0.0, 0.0));
 		imageStore(shadeImage, pixel, vec4(0.4, 0.4, 0.4, 1.0));
 		return;
@@ -119,14 +121,16 @@ void main() {
 
 	// The surface as RayGen read it: ReflectionsTrace's pixel centre in the block, ViewPosition() in scene axes.
 	vec2 uv = (vec2(pixel) + 0.5) * p.layout_.xy - 0.5 * (p.layout_.xy - p.layout_.zw);
-	vec3 surface = p.origin.xyz + (p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0)) * ray.x;
+	// (the weapon: drawn with its own narrower field of view, so its sideways offsets shrink by right.w)
+	const float side = weapon && p.right.w > 0.0 ? p.right.w : 1.0;
+	vec3 surface = p.origin.xyz + (p.forward.xyz + (p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0)) * side) * ray.x;
 	vec3 dir = OctDecode(imageLoad(dirImage, pixel).xy);
 	// Start a little way along the ray: past the depth buffer's own error far away (no hit on the surface itself).
 	float tMin = 1.0 + ray.x * 0.0015;
 	vec3 start = surface;
 	// Ray budget by roughness: a rough reflection blurs far detail away, so its rays need not go as far. The reach share at
 	// roughness 1 (RoughReach) is forward.w's fraction (its integer part is the lamp count).
-	float roughness = ray.y - 2.0;   // (cast pixels: roughness + 2)
+	float roughness = ray.y - (weapon ? 6.0 : 2.0);   // (cast pixels: roughness + 2; weapon pixels + 6)
 	float roughReach = fract(p.forward.w);   // RoughReach (0 = full reach; the integer part is the lamp count)
 	float tMax = p.size.z * (roughReach > 0.0 ? mix(1.0, roughReach, clamp(roughness, 0.0, 1.0)) : 1.0);
 	if (p.origin.w > 0.5) {
@@ -139,7 +143,10 @@ void main() {
 	}
 
 	rayQueryEXT q;
-	rayQueryInitializeEXT(q, scene, RT_RAY_FLAGS, RtMask, start, tMin, dir, tMax);
+	// (a weapon's ray leaves the people out (0x20) and the player's own rigid parts, their held and holstered weapons (0x40,
+	// NVR_RT_MASK_PLAYER, rt-sun-core 108cfa5b): they stand round the gun in the scene, and it would reflect them from inside)
+	const uint mask = weapon ? (RtMask & ~0x60u) : RtMask;
+	rayQueryInitializeEXT(q, scene, RT_RAY_FLAGS, mask, start, tMin, dir, tMax);
 	RtProceed(q);
 	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
 		imageStore(hitImage, pixel, vec4(0.0, 0.0, 0.0, 0.0));
@@ -151,7 +158,7 @@ void main() {
 	// a ray leaving displaced ground can hit that same ground right away (amber blotches of "ground" in wet ground's reflection). A land
 	// hit very close to the start (LandSelfHit + 1 % of the view distance) is taken as the ground itself: one more query from past it.
 	if (p.origin.w < 0.5 && (records[rayQueryGetIntersectionInstanceIdEXT(q, true)].flags & RecordLand) != 0u && t < LandSelfHit + ray.x * 0.01) {
-		rayQueryInitializeEXT(q, scene, RT_RAY_FLAGS, RtMask, start, t + 1.0, dir, tMax);
+		rayQueryInitializeEXT(q, scene, RT_RAY_FLAGS, mask, start, t + 1.0, dir, tMax);
 		RtProceed(q);
 		if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
 			imageStore(hitImage, pixel, vec4(0.0, 0.0, 0.0, 0.0));

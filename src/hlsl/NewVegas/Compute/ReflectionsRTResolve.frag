@@ -24,11 +24,12 @@ void main() {
     vec4 hitData = texelFetch(sampler2D(t_rtHit, POINT_S), texel, 0);
     vec4 shade = texelFetch(sampler2D(t_rtShade, POINT_S), texel, 0);
     vec3 worldR = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), texel, 0).xy);
-    bool borrowed = ray.y > 3.5;   // a rough pixel whose block's ray this frame was another pixel's (RayGen's budget)
+    bool weaponRay = ray.y > 5.5;   // 2026-10-30 RT weapon reflections: a weapon pixel's own ray (RayGen +6)
+    bool borrowed = !weaponRay && ray.y > 3.5;   // a rough pixel whose block's ray this frame was another pixel's (RayGen's budget)
     bool rayCast = ray.y > 1.5;
-    float roughness = ray.y - (borrowed ? 4.0 : rayCast ? 2.0 : 0.0);
+    float roughness = ray.y - (weaponRay ? 6.0 : borrowed ? 4.0 : rayCast ? 2.0 : 0.0);
     vec2 pixelUV = uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy);   // RayGen's pixel centre in the block
-    vec3 surfaceW = ViewToWorldDir(ViewPosition(pixelUV, ray.x));       // camera-relative
+    vec3 surfaceW = ViewToWorldDir(SurfacePosition(pixelUV, ray.x));    // camera-relative (2026-10-30: the weapon's own FOV)
     vec3 borrowHitW = vec3(0.0);
     if (borrowed) {
         // The block's casting pixel this frame (the same rule as RayGen): its hit point, a world point, shaded from here as our own.
@@ -155,4 +156,6 @@ void main() {
     float brightest = max(colour.r, max(colour.g, colour.b));
     colour *= min(1.0, mix(BrightestReflection, 3.0, saturate(roughness * 2.0)) / max(brightest, 1.0e-4));
     o_color = vec4(Tame(colour) * confidence, confidence);
+    // UNOFFICIAL 2026-10-30: never hand a non-finite value on (the temporal history would keep it: the weapon's history is screen-locked).
+    if (any(isnan(o_color)) || any(isinf(o_color))) o_color = vec4(0.0);
 }

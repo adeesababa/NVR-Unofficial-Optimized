@@ -60,6 +60,9 @@ public:
 		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
 		float	RtGlowBrightness;	// 2026-10-29: glowing hits (the core's emissive flag) add their colour x this as light
 		bool	RtHitAmbientGrid;	// 2026-10-30: a hit's ambient from the light grid at the hit (AmbientLight's), else the cube near the camera
+		float	RtWeapon;			// 2026-10-30: the first-person weapon reflects the RT scene, this strong (0 off)
+		float	RtWeaponRoughness;	// 2026-10-30: the weapon's roughness where no material data says (MaterialAware / MaterialBuffer)
+		float	RtWeaponMetal;		// 2026-10-30: the weapon's metal guessed from its colour (grey = metal) x this, without material data
 		bool	RtHitTextures;		// 2026-10-29: with the core's [Main.Main.RayTracing] HitTextures, hits take the texture's colour (else the draw's average)
 	};
 	SettingsStruct	Settings;
@@ -153,6 +156,8 @@ public:	// (the RT core user in Reflections.cpp reads the images)
 	void				RtRegister();		// its RT core user (ShaderManager, once, before the core's first frame)
 private:
 	bool				rtRays = false;		// this frame's RayGen casts rays (the helper is up; false in SplitTest)
+	float				WeaponFovScale() const;	// UNOFFICIAL 2026-10-30
+	bool				weaponFrame = false;	// UNOFFICIAL 2026-10-30: this frame's RT trace takes the first-person weapon too ([Shaders.Reflections.RT] Weapon)
 	bool				rtResolved = false;	// Resolve drew this frame (the blur passes read Rt.Spread)
 	bool				RtWanted() const;	// RT on, nothing failed, the RT core up (its helper alive, RT on that GPU)
 	bool				RtImages();			// makes Rt on first use

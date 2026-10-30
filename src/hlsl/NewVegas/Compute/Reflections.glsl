@@ -55,6 +55,8 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 flags;                 // x REFL_MATERIAL_ON, y REFL_ADD_ON, z REFL_SPECOCC_ON, w 1 = the material buffer is bound on stage 15
     vec4 material2;             // UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess (MaterialBufferRoughness),
                                 // y 1: the cloud sky probe over the sky gradient (CloudSky), z the clouds' brightness (TESR_CloudsLayout.w)
+    vec4 weapon;                // UNOFFICIAL 2026-10-30 RT weapon reflections ([Shaders.Reflections.RT] Weapon): x 1 on (RT traced this frame),
+                                // y tan(world FOV / 2) / tan(1st-person FOV / 2), z the strength, w the roughness without material data
 } cb;
 
 layout(push_constant) uniform Push {
@@ -141,6 +143,10 @@ bool IsWeapon(vec2 uv) {
     return cb.depthConstants.z == 0.0 ? viewmodelDepth < 0.9 : viewmodelDepth > 0.01;
 }
 
+// UNOFFICIAL 2026-10-30 RT weapon reflections: the first-person weapon's pixels reflect too (only while RT traces this frame).
+#define WeaponOn (cb.weapon.x > 0.5)
+bool WeaponAt(vec2 uv) { return WeaponOn && IsWeapon(uv); }
+
 vec3 ViewNormal(vec2 uv) { return normalize(textureLod(sampler2D(t_normals, POINT_S), uv, 0.0).xyz * 2.0 - 1.0); }
 
 // View space -> world space direction: mul((float3x3)TESR_ViewTransform, v).
@@ -156,6 +162,14 @@ float OpenAbove(vec2 uv, float depth) {
     vec3 depthAxis = vec3(cb.shadowOrtho[0][2], cb.shadowOrtho[1][2], cb.shadowOrtho[2][2]);
     float perUnit = length(depthAxis) / max(abs(cb.shadowOrtho[3][3]), 1.0e-6);
     return top > p.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
+}
+
+// UNOFFICIAL 2026-10-30 a reflecting pixel's view-space position: ViewPosition, except on the first-person weapon, which the game draws
+// with its own (narrower) field of view from the same eye: the same depth, the sideways offsets shrunk by the two FOVs' ratio.
+vec3 SurfacePosition(vec2 uv, float depth) {
+    vec3 p = ViewPosition(uv, depth);
+    if (WeaponAt(uv)) p.xy /= cb.weapon.y;
+    return p;
 }
 
 // REFL_MATERIAL_ON: the material buffer.
@@ -185,7 +199,32 @@ const float GlassRoughness = 0.03;
 float Reflectivity(vec2 uv, float depth, vec3 viewNormal, out float roughness) {
     roughness = DryRoughness;
     if (MaterialOn) SurfaceMetal = 0.0;
-    if (depth >= DrawDistance || depth >= farZ * 0.98 || IsWeapon(uv)) return 0.0;
+    if (depth >= DrawDistance || depth >= farZ * 0.98) return 0.0;
+    if (IsWeapon(uv)) {
+        // UNOFFICIAL 2026-10-30 RT weapon reflections: off, the weapon never reflects here (its own chrome pass does). On: its roughness
+        // and metal from MaterialAware where its texture has a map, else the roughness the game lit it with (TESR_MaterialBuffer), else
+        // the Weapon roughness; the strength x (1 - roughness) on the last two (a matte stock reflects little). The composite's Fresnel
+        // (metal tinted by the weapon's own colour) lays it over the weapon's own reflection.
+        if (!WeaponOn) return 0.0;
+        if (MaterialOn) {
+            vec4 material = MaterialAt(uv);
+            if (material.b > 0.5) { roughness = max(material.r, 0.02); SurfaceMetal = material.g; return cb.weapon.z; }
+        }
+        roughness = cb.weapon.w;
+        // (2026-10-30: the first-person pass never writes MaterialAware's buffer (world scene only), so a gun has no metal data:
+        // WeaponMetal guesses it from the gun's own lit colour: grey steel (low saturation) metal, brown wood and coloured parts not.)
+        if (cb.material2.w > 0.0) {
+            vec3 lit = linearize(textureLod(sampler2D(t_rendered, POINT_S), uv, 0.0).rgb);
+            float top = max(lit.r, max(lit.g, lit.b));
+            float saturation = top > 1.0e-4 ? (top - min(lit.r, min(lit.g, lit.b))) / top : 0.0;
+            SurfaceMetal = cb.material2.w * (1.0 - smoothstep(0.12, 0.35, saturation));
+        }
+        if (cb.material2.x > 0.5) {
+            vec4 written = textureLod(sampler2D(t_matbuf, POINT_S), uv, 0.0);
+            if (written.r > 0.5 && written.b >= 0.0) roughness = saturate(written.b);
+        }
+        return cb.weapon.z * (1.0 - roughness);
+    }
     if (cb.material.w > 0.0 && textureLod(sampler2D(t_glass, POINT_S), uv, 0.0).r > 0.5) {
         roughness = GlassRoughness;
         return cb.material.w * (1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth));

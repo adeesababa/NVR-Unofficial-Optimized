@@ -20,8 +20,9 @@ void main() {
     float amount = Reflectivity(pixelUV, depth, N, roughness);
     if (amount <= 0.0) { o_color = vec4(0.0); o_dir = vec4(0.0); o_ray = vec4(0.0); return; }
 
-    vec3 position = ViewPosition(pixelUV, depth);
+    vec3 position = SurfacePosition(pixelUV, depth);   // (2026-10-30: the weapon's own field of view)
     vec3 V = normalize(position);   // eye -> surface
+    bool weapon = WeaponAt(pixelUV);   // 2026-10-30 RT weapon reflections: no screen march (it would find the weapon), always a ray
 
     // Spread the reflected direction by the roughness: a GGX half vector round the normal, a new one every frame.
     float a = roughness * roughness;
@@ -57,7 +58,7 @@ void main() {
     float lastT = 0.0;
     float lastZ = position.z;
     float hitT = -1.0;
-    bool searching = true;
+    bool searching = !weapon;
     for (float i = 1.0; i <= Steps && searching; i += 1.0) {
         float s = (i - 1.0 + jitter) / Steps;
         float t = RayLength * s * s + 2.0;
@@ -95,6 +96,12 @@ void main() {
     // The helper rebuilds the surface from its view z as ViewPosition does, and begins the ray a little way along it (Rt/ReflectionsRT.comp).
     // (RT DebugView 5, the scene alignment check: a ray for every reflecting pixel; the helper then traces from the camera to it.)
     bool wantRay = RtOn && ((RtFade(roughness) > 0.0 && (confidence < 0.999 || abs(RtDebugView - 3.0) < 0.5)) || abs(RtDebugView - 5.0) < 0.5);
+    if (weapon) {   // +6: a weapon pixel's own ray (the helper widens its origin by the FOVs and leaves the player out); no budget
+        o_color = vec4(0.0);
+        o_dir = vec4(OctEncode(ViewToWorldDir(R)), 0.0, 0.0);
+        o_ray = vec4(depth, RtOn && RtFade(roughness) > 0.0 ? roughness + 6.0 : roughness, 0.0, 0.0);
+        return;
+    }
     o_color = vec4(colour, confidence);
     o_dir = vec4(OctEncode(ViewToWorldDir(R)), 0.0, 0.0);
     // Ray budget by roughness (rt3.y = RoughShare's roughness, 0 off): above it, one pixel of each 2x2 block casts this frame (the

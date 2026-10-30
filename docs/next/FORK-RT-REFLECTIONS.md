@@ -200,6 +200,37 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 16:30 RT reflections on the first-person weapon (claude/rt-refl-weapon, on the installed motion-ring-fix aee0046c)
+`[Shaders.Reflections.RT] Weapon` (0 = off; strength), `WeaponRoughness` (0.3), `WeaponMetal` (1.0), only in frames the RT trace runs:
+- **Where the gun is:** FNV draws the viewmodel from the same eye with its own FOV (PlayerCharacter firstPersonFoV vs worldFoV), so a
+  weapon pixel's view position is the depth's with the sideways offsets divided by tan(world/2) / tan(first/2) (`SurfacePosition`;
+  the helper gets 1/scale in its pass block's right.w). The combined depth already holds the gun's view distance (CombineDepth).
+- **Rays:** no screen march on the gun (it would find the gun); every gun pixel casts its own ray (RayGen +6), no 2x2 budget, and
+  the helper leaves the people out (mask & ~0x20: the player's own body stands round the gun in the RT scene). Shaded like every hit
+  (lamps, sun, glow maps, textures). Temporal history is screen-locked on the gun (it moves with the camera).
+- **Material:** MaterialAware where a map says, else the material buffer's roughness, else WeaponRoughness; strength x (1 - rough).
+  The first-person pass never writes MaterialAware's buffer (ReflMaterial::ForPass: world scene only), so the gun had no metal and
+  reflected as a dielectric (4 %): WeaponMetal guesses metal from the gun's lit colour (grey steel metal, brown wood / coloured parts
+  not). The composite lays it over the gun's own chrome pass with its Fresnel, metal tinted by the gun's colour.
+- **Bench** (iGPU 720p; per gun a launch: equip + draw at normal speed, then time slowed; Ultra-Luxe bans weapons and the self-test
+  stops near 15 shots, so rtrefl-15 never drew the gun), gun-box pixels on vs off against on vs on-b:
+  - saloon16 .44 Magnum, no metal guess (a4bc54f9, 20261030-142555-slotA): 23.3 % vs 13.9 %, mean -1.27 (the dim saloon in place of
+    the bright chrome); with WeaponMetal (be0d161d, 20261030-153527-slotA): **41.6 % vs 19.4 %, mean -3.60**: the gun now mostly shows
+    the dark room, the windows on its edges.
+  - noon .44 Magnum (20261030-160121-slotA): 11.7 % vs 6.0 %, mean +0.87 (the sky on its top faces); Varmint Rifle
+    (20261030-161532-slotA): 21.7 % vs 3.0 %, +1.82 (its steel barrel). saloon16 rifle: the be0d161d run had the gun out of view (rerun).
+  - **Black gun once:** saloon16 rifle 20261030-162450-slotA rendered the rifle and the arm black (53 % of the gun box) in every
+    Weapon-1 shot; the off shot was normal; no other run did. rt-sun-core: the first-person gun and arms are never in the RT scene
+    (no self-hits), and those runs had Actors off. Taken as a non-finite value held by the screen-locked history: guards added
+    (77975038: Resolve output, temporal current / taps / history, composite). saloon16 then would not draw the gun reliably (two
+    reruns: other camera, no gun), so the indoor recheck moved to int23 (Tops floor): rifle 20261030-165459-slotB 13.8 % vs 3.6 %,
+    +0.33; .44 Magnum 20261030-170649-slotA 7.8 % vs 3.5 % (+0.18; alone 9.3 % vs 2.0 %); no black pixels.
+  - With Actors on, the player's held / holstered third-person weapon sits in the RT scene round the camera: rt-sun-core gave it its
+    own mask bit (NVR_RT_MASK_PLAYER 0x40, claude/rt-sun-grass 108cfa5b); gun rays drop 0x20 and 0x40 (f7da3623).
+  - No self-reflection seen, no smear (screen-locked history).
+- **Cost:** Reflections RT exchange +0.3-0.5 ms indoors, +0.4-1.2 ms outdoors; Reflections trace +0.5-0.7 / +1.0-1.6 ms (every gun
+  pixel casts; outdoors the rest of the screen casts few).
+
 ### 2026-10-30 10:30 glow maps at hits (rtrefl-9 again; c42ddf9f = rt-sun-2 d40b6645, DLL 5FFC6D66; fork-0033c, helper extra-p3d)
 With the core's `[Main.Main.RayTracing] GlowTextures` (+ HitTextures) a glowing draw's glow map is in a shared RGBA8 atlas; the pass
 (`ReflectionsRTTexGlow` / `ReflectionsRTAlphaTexGlow`, glow atlas after the albedo atlas) reads `rtHitGlow` at the hit: where the
