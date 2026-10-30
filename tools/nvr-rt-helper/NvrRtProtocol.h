@@ -60,6 +60,8 @@
 #define NVR_RT_RECORD_TEXTURED      0x40u
 #define NVR_RT_MASK_ACTOR           0x20u     // UNOFFICIAL 2026-10-29: skinned actors ([Main.Main.RayTracing] Actors), posed every frame
 #define NVR_RT_MASK_ALPHA           0x10u     // the instance mask of alpha-tested geometry (rays that cannot test alpha leave it out)
+#define NVR_RT_MASK_PLAYER          0x40u     // UNOFFICIAL 2026-10-30: the player's own rigid parts with Actors on (the third-person body's
+                                              // held and holstered weapons, rigid armour): rays leaving from the player's gun leave it out
 #define NVR_RT_ALPHA_SLOT_SIZE      64u
 #define NVR_RT_ALPHA_ATLAS_SLOTS    32u       // a row (and rows): 2048 x 2048 texels, 1024 slots
 

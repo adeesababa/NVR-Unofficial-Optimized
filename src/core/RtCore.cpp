@@ -163,6 +163,7 @@ namespace {
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
 		ID3D9NvrExtRtSeq*		rtSeq = nullptr;	// fork patch 0034 (the arena's sequence texel, 2026-10-30); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
+		bool		walkingPlayer = false;				// Gather's walk of the player's own node (NVR_RT_MASK_PLAYER on its rigid parts)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
@@ -1048,6 +1049,7 @@ namespace {
 		instance.customIndex = land ? 1u : 0u;
 		instance.mask = MaskHook ? (MaskHook(geo, land) & 0xFFu) : (land ? 0x01u : 0x02u);	// default: bit 0 land, bit 1 objects
 		if (alphaTested) instance.mask = NVR_RT_MASK_ALPHA;	// only rays that test alpha (RtAlpha.glsl) see it
+		else if (walkingPlayer) instance.mask = NVR_RT_MASK_PLAYER;	// the player's rigid parts: every ray sees them but the gun's (rt-refl)
 		instance.flags = 0x1u;	// both faces (the game's two-sided and one-sided meshes alike: shadows need the back faces too)
 	}
 
@@ -1283,7 +1285,11 @@ namespace {
 			const UInt32 count = cells->size * cells->size;
 			const UInt32 landBefore = skips[1][kTaken];
 			for (UInt32 i = 0; i < count; i++) WalkCell(cells->GetCell(i));
-			if (actorsOn && rtSkin && Player) Walk(Player->GetNode(), false);	// the player's third-person body (not in the cells' lists)
+			if (actorsOn && rtSkin && Player) {	// the player's third-person body (not in the cells' lists)
+				walkingPlayer = true;
+				Walk(Player->GetNode(), false);
+				walkingPlayer = false;
+			}
 			// LOD land only when the loaded cells gave no land geometry this frame (rtsun-8 at og-lake: every land node empty, the ground on
 			// screen is LOD terrain). With the full land there, LOD land stays out: its coarse quads stand above the real ground and cast
 			// false shadows on it (rtsun-9 at og-goodsprings: black slabs on the road and the house front).
