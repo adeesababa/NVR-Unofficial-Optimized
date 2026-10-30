@@ -61,6 +61,9 @@
   tai; rtlamp-20 (Actors off, no tai) passed. Not split yet. NB the "noactors" run toml of rtlamp-20..22 turned off EVERY `Actors`
   key (also [Shaders.ShadowsInteriors.Main] and three other sections' actor shadows), not only [Main.Main.RayTracing]: the same in all
   their shots, so the exterior verdict stands, but rtlamp-20 is no clean split; rtlamp-24 = rtlamp-19's toml (all on) without tai.
+  rtlamp-24 (2026-10-30 02:21, 20261030-022109-slotA): PASS, 15 shots, actors posed (1810 partitions in exchanges 1-60), the same
+  Freeside + Novac route: the crash came with tai before the cross-world moveto (MultithreadedAI in the slot), not with RT actors
+  (one clean run each way; a rare crash is not ruled out).
 
 ### Denoise: soft lamp shadows through the shared RtDenoise (rtlamp-18, 2026-10-29 23:03, 20261029-230326-slotA, PASS; 6a2646f2, DLL 9B8F8786)
 - Built as asked: LampRadius 16, 1 jittered ray; the trace's split variant writes ranks 0/1 apart, RtDenoise runs per rank with the
