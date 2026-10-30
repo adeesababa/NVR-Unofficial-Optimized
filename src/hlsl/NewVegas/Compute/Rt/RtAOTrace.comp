@@ -369,7 +369,17 @@ void main() {
     float bias = 0.75 + viewZ * 0.003;
     int turn = int(cb.origin.w + 0.5);
 
-    // Last frame's reservoir of this surface.
+    // GIInterleave: a new candidate only in every 2nd / 4th 8 x 8 tile a frame, in turn (whole tiles: the waves without do no ray work).
+    int giInterleave = int(cb.gi2.w + 0.5);
+    ivec2 tile = ivec2(gl_WorkGroupID.xy);
+    bool giTile = giInterleave >= 4 ? ((tile.x & 1) + 2 * (tile.y & 1)) == (turn & 3)
+                : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
+                : true;
+
+    // Last frame's reservoir of this surface. (2026-10-30, v2) Outside the frame's tiles a texel without its own history (a
+    // disocclusion, a screen edge) borrows a neighbour's last frame (2 texels round the reprojected point, depth within 15 %) instead
+    // of tracing: v1 traced there, and one such texel made its whole wave pay for the bounce (rt-gi-10/11: GIInterleave 4 cost ~12-14
+    // ms where a quarter of the full rate's 26 is 6.5). Nothing usable: empty (M 0) until its tile's turn.
     float cap = cb.reuse.w, historyM = 0.0;
     vec4 history = vec4(0.0);
     if (cap > 0.5) {
@@ -377,10 +387,15 @@ void main() {
         if (v.z > 1.0) {
             vec2 q = vec2(0.5 + 0.5 * v.x / (v.z * cb.projection.x), 0.5 - 0.5 * v.y / (v.z * cb.projection.y));
             ivec2 qt = ivec2(floor(q * cb.projection.zw));
-            if (all(greaterThanEqual(qt, ivec2(0))) && all(lessThan(qt, ivec2(cb.projection.zw)))) {
-                vec4 b = imageLoad(prevB, qt);
-                if (b.x > 0.5 && abs(b.y - v.z) < 0.05 * v.z + 2.0 && dot(OctDecode(b.zw), n) > 0.9) {
-                    history = imageLoad(prevA, qt);
+            const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2));
+            int tries = giTile ? 1 : 5;
+            for (int k = 0; k < tries && historyM < 0.5; k++) {
+                ivec2 at = qt + around[k];
+                if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, ivec2(cb.projection.zw)))) continue;
+                vec4 b = imageLoad(prevB, at);
+                float tolerance = k == 0 ? 0.05 : 0.15;
+                if (b.x > 0.5 && abs(b.y - v.z) < tolerance * v.z + 2.0 && dot(OctDecode(b.zw), n) > 0.9) {
+                    history = imageLoad(prevA, at);
                     historyM = min(b.x, cap);
                     if (!(history.a >= 0.0) || any(isnan(history.rgb)) || any(isinf(history.rgb))) { history = vec4(0.0); historyM = 0.0; }
                 }
@@ -390,14 +405,8 @@ void main() {
     vec3 chosen = history.a > 0.0 ? history.rgb / history.a : vec3(0.0);
     float weightSum = Luma(chosen) * history.a * historyM, m = historyM;
 
-    // GIInterleave: a new candidate only in every 2nd / 4th 8 x 8 tile a frame (whole tiles: the waves without do no ray work), and
-    // wherever there is no history (disocclusions, the first frame) so no texel stays dark.
-    int giInterleave = int(cb.gi2.w + 0.5);
-    ivec2 tile = ivec2(gl_WorkGroupID.xy);
-    bool giTile = giInterleave >= 4 ? ((tile.x & 1) + 2 * (tile.y & 1)) == (turn & 3)
-                : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
-                : true;
-    if (giTile || historyM < 0.5) {
+    // The first frame of a reservoir (cap 0: no history at all) traces everywhere.
+    if (giTile || cap < 0.5) {
         float frame = cb.origin.w;
         vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
         vec3 light = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840)).rgb;
