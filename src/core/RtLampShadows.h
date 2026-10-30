@@ -400,6 +400,7 @@ namespace RtLampShadows {
 			if (!MaskSurface || imageMask < 0 || exteriorShader < 0) return;
 			const D3DXVECTOR4& pointNear = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear;
 			c.mask[0] = pointNear.y; c.mask[1] = pointNear.z;
+			c.mask[2] = (float)TheSettingManager->GetSettingI(kSection, "ExteriorDebug");	// diagnostic: 1 = mask 0, 2 = mask 1
 			const int exteriorImages[5] = { imageDepth, imageNormals, imageResult, imageTable, imageMask };
 			if (!RtCore::AddPass(exteriorShader, exteriorImages, 5, 0x14, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 			MaskThisFrame = RtCore::CopyOut(imageMask, MaskSurface);
