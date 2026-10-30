@@ -168,3 +168,20 @@ nothing here is pushed, released or installed unless the user says so.
   noise = the NPCs moved (diff image). iGPU Lucky 38 + Vault 21 (102334-slotA, rtm-igpu-int3) vs round 8: every shot within
   0.2-1.3 %, helper by LUID (24 shared images), merged GI pass active, no errors, no crash.
 - DLL CRC32 B97D6E83, NvrRtHelper 45ADE162, fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-a93b6f18\`.
+
+## Round 10 (2026-10-30 13:10, bc6a83c2) - HELD, not packaged
+- Merged: rt-sun-2 9f05fd21 (helper shader limit 16 -> 32 = PROTOCOL 4: NVR DLL and helper ship together; a protocol-3 helper
+  refuses, RT off with one log line), rt-refl-2 408a21cc (glow maps at RT reflection hits, with GlowTextures), rt-ao-gi b9f112ee
+  (GlowGI takes the glow atlas), claude/motion-ring-fix e1568f79.
+- motion-ring-fix: NEW ON DEFAULTS: [Main.Main.Quality] ObjectMotionSkipCameraFollow true (FSR blur-ring fix: the sky layers that
+  follow the camera no longer count as moving); [Shaders.ShadowsInteriors.Forward] VisibleRanking 1 (lamp-shadow slots ranked by
+  occlusion-queried visible share, 0.07-0.10 ms GPU), ShadowHold 2 (also holds pool lamps), lamp-shadow FadeIn 0.25 (Vault 21
+  shadow popping). Also: ObjectMotion logs what moved; bench setting-shots walk command.
+- Conflicts: none. ObjectMotion.h came back LF: CRLF restored (bc6a83c2). ShaderManager.cpp normalised to all CRLF by the branch.
+- Bench: 1070 RT off (20261030-130207-slotC) vs round 9: Goodsprings at noise level; VAULT 21 5.5 % of pixels changed: the small
+  floor lamps along the walls lost their bright floor pools (mean brightness 89.9 -> 86.6 in the lamp row). Looks like a
+  regression from the new lamp-shadow defaults (VisibleRanking / ShadowHold), not only the intended pop fix: SHADOW FLIPS still
+  4.2 gained / 4.2 lost per second. iGPU Lucky 38 + Vault 21 (130420-slotA): protocol-4 helper ready by LUID, RT effects run, no
+  crash; Lucky 38 within 0.5 % of round 9; Vault 21 shows the same lamp change.
+- DLL CRC32 CDD6912E, NvrRtHelper 2304B910 (protocol 4), fork-0033c D58B4425. Not packaged until the Vault 21 lamp change is
+  confirmed intended or fixed.
