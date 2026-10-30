@@ -110,7 +110,7 @@ float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardenin
 // The cube path stays in the shader, for the A/B (c215.x 0) and the compare view. 0: as before, byte for byte.
 // UNOFFICIAL 2026-10-30 POINT_SHADOW_RT_ONLY: the outdoor lamp-shadow records ([Shaders.ShadowsInteriors.RT] ExteriorForward,
 // ShaderManager::LoadShader): the traced result only, no cube-map code or samplers (outdoors the stages and the instruction budget
-// belong to the sun), the reprojection on c228-c231 (c206-c209 are the character shadow map's outdoors). A lamp not traced at a
+// belong to the sun), the reprojection on c200-c203 (c206-c209 are the character shadow map's outdoors). A lamp not traced at a
 // pixel stays lit, as every lamp outdoors was before.
 #ifndef POINT_SHADOW_RT_ONLY
     #define POINT_SHADOW_RT_ONLY 0
@@ -125,7 +125,7 @@ float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardenin
 
 #if POINT_SHADOW_RT
 #if POINT_SHADOW_RT_ONLY
-row_major float4x4 NVR_RtLampReproject : register(c228); // (outdoors: c206-c209 hold the character shadow map's)
+row_major float4x4 NVR_RtLampReproject : register(c200); // (outdoors: c206-c209 hold the character shadow map's; c200-c203 are free in the object pixel shaders, ps_3_0 ends at c223)
 #else
 row_major float4x4 NVR_RtLampReproject : register(c206); // camera-relative position (this frame) -> the traced frame's clip space
                                                 // (w = its view depth); c206-c209 are the character shadow map's outdoors only

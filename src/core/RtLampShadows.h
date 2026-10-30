@@ -247,8 +247,8 @@ namespace RtLampShadows {
 		memcpy(c[5], slots, 4 * sizeof(float));
 		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = DebugLamp; c[6][3] = -1.0f;	// z: DebugView 3's lamp
 		if (force || !UploadedValid || memcmp(c, Uploaded, sizeof(c))) {
-			// (outdoors the forward records read it at c228: POINT_SHADOW_RT_ONLY; c206-c209 are the character shadow map's there)
-			TheRenderManager->device->SetPixelShaderConstantF(TheShaderManager->GameState.isExterior ? 228 : 206, &c[0][0], 4);
+			// (outdoors the forward records read it at c200: POINT_SHADOW_RT_ONLY; c206-c209 are the character shadow map's there)
+			TheRenderManager->device->SetPixelShaderConstantF(TheShaderManager->GameState.isExterior ? 200 : 206, &c[0][0], 4);
 			TheRenderManager->device->SetPixelShaderConstantF(215, &c[4][0], 3);
 			memcpy(Uploaded, c, sizeof(c));
 			UploadedValid = true;
