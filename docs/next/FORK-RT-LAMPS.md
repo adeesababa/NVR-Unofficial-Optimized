@@ -35,6 +35,33 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### PLAN (2026-10-30): outdoor lamps that really cast shadows (forward per-draw lamp term outdoors) -- not built yet
+Why: outdoors NVR's lamp shadows are only the screen-space mask (Exteriors above: wired, but the mask 0 -> 1 moves the night picture
+by < 0.4 / 255). Modern RT games shadow each light inside its own lighting. Indoors NVR already does that: the lit pixel shaders get an
+Interior record (INTERIOR_SHADOWS 1, PointShadowForward.hlsl) that multiplies each lamp's own light by its shadow (cube map or the
+traced buffer, POINT_SHADOW_RT). Outdoors the Default / Exterior records are used (Player->GetWorldSpace(), ShaderRecord.cpp), with no
+lamp shadow term at all. The lamps do light outdoor draws: rtlamp-24's census in Freeside at night: ~960 world draws a frame, 25 shiny
+objects in multi-pass with 3-14 lamps each, OPT lamp passes C9 59 / CD 16 / CF 20 / D0 31 a frame.
+Steps:
+1. Measure (diagnostic, LogLamps): per exterior pixel shader name, draws a frame with point lights at night, lamps per draw, and
+   whether the draw's lamps are in the published set (Freeside Kings street, the Strip, Novac). Decides which records need it.
+2. Exterior lamp-shadow records ([Shaders.ShadowsInteriors.RT] ExteriorForward, off, needs a restart): for the same eligible lit
+   shaders, a record compiled from the EXTERIOR defines (sun code kept) + INTERIOR_SHADOWS 1 + POINT_SHADOW_RT 1. The six-lamp
+   shiny shaders sit near the instruction limit indoors even without the sun code, so: a POINT_SHADOW_RT_ONLY level (no cube-map
+   code: one point-sampled read of the traced buffer a lamp) tried first, the full cube + RT version only where it fits; the
+   Fit levels' scheme (log what loaded). Record choice in ShaderRecordPixel::SetupShader: outdoors with the mode on -> that record.
+   Check first: which sampler stages the exterior records use (the sun's maps): the traced buffer needs one free stage (s15 indoors).
+3. Per draw outdoors: publish the outdoor lamp set (ShadowManager's ShadowLights + tracked lamps, ids 0-62 = the table) like
+   Publish indoors; SetForPass matches each draw's lights to ids (TracedSlot) -> c216-c217; the same c206-c209 reprojection.
+4. Trace: outdoors with ExteriorForward, the per-pixel lamp selection variant (RtLampTrace.spv, entries + depth code) instead of the
+   mask variant; the same table (SubmitExterior). Fallback where a lamp is not traced at a pixel: unshadowed (as today), or the
+   cube map where the full record fits and the outdoor cube maps are drawn.
+5. Test: night, same spot A/B (Live 0 = today's unshadowed lamps, Live 1 = traced), Freeside Kings street (heading 180), the Strip,
+   Novac; DebugView 3 per lamp; the GPU's verdict on each record (instruction slots) from the startup log; iGPU cost.
+Risks: the instruction limit with the sun code (the RT-only level is the answer); sampler / constant register clashes with exterior
+code (c206-c217, s15); more records to compile at startup (the shader cache); lamps that light a draw but are not in the set (the
+game's light list outdoors is larger than ShadowLights + tracked lamps: they stay unshadowed).
+
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
   flashlight's reach toward it (people included, lamp glass not), stopping FlashlightStop 40 short (the player's body and weapon);
