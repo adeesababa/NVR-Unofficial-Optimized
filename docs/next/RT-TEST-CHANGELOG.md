@@ -213,3 +213,18 @@ nothing here is pushed, released or installed unless the user says so.
   no errors, no crash; the unknown-key line works (DlssHelperTest). Camera spot differs from round 8b's run, so no cross-round A/B.
 - KNOWN: Vault 21 floor-lamp pools gone with the motion-ring-fix lamp-shadow defaults (rounds 10/10b, 1070 + iGPU).
 - DLL CRC32 0CE498AB, NvrRtHelper F8AE9D5A (protocol 4), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-927065d9\`.
+
+## Round 11 (2026-10-30 18:40, e4e76fdd)
+- Merged on round 10 (927065d9): claude/terrain-flicker 80b1dd4b (native D3D9 on NVIDIA without game MSAA: the NVAPI depth copy
+  takes only the picture's area, no more white near ground; VolumetricFog.fx.hlsl height fade clamped 0..1; FailShaders test key
+  in [_Main.Develop.Main], empty), claude/fog-clear-noon 01c7d9db (the same clamp in the Vulkan VolumetricFog.glsl, 44 .spv
+  rebuilt), claude/motion-ring-fix 888133d1.
+- motion-ring-fix 888133d1: CHANGED DEFAULT [Shaders.ShadowsInteriors.Forward] OwnGlassDistance 24 (a lamp's own glowing glass no
+  longer shadows its light; fixes the Vault 21 floor-lamp pools lost in round 10); new, off: [Shaders.TAA.FSR] ReactiveMask 0,
+  ReactiveMax 0.9, ReactiveThreshold 0.04, ReactiveDebug false (FSRPrep.spv / FSRUpPrep.spv); ClusteredLamps 0 (restart).
+- Conflicts: none; no line-ending churn.
+- Check (one iGPU run, 20261030-182657-slotA, rtm-igpu-int3 Lucky 38 + Vault 21 with every RT toggle): Lucky 38 within 0.1 % of
+  round 9; Vault 21 floor-lamp pools back as in round 9 (rest 3-4 % = lamp-shadow ranking + NPCs); helper ready in 1.3 s
+  (round 10's 10.8 s ran while rtlamp slot runs used the machine), 15 shaders, no errors, no crash.
+- DLL CRC32 92341FB0, NvrRtHelper B1ACA97E (protocol 4, source unchanged), fork-0033c D58B4425. Package
+  `H:\_NVR-pkgt-test-e4e76fdd\` (carries VolumetricFog.fx.hlsl, VolumetricFog.glsl + the 44 fog .spv, FSRPrep/FSRUpPrep.spv).
