@@ -1,4 +1,5 @@
 #include "DxvkCompute.h"
+#include <unordered_map>
 #include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 (DisplaceObjectsLayout)
 
@@ -453,6 +454,12 @@ static NVR_EXT_TESS_STATE	DisplaceWanted = {};
 static bool					DisplaceFarOn = true;
 static unsigned				DisplaceLandPasses[3] = {}, DisplaceLandStrips[3] = {}, DisplaceFarPasses = 0, DisplaceFarStrips = 0, DisplaceFarSwitches = 0;
 static const float			kDisplaceFarMargin = 256.0f;	// game units past FadeEnd (the eye the TCS gets is the game's, in object space)
+// UNOFFICIAL 2026-10-29 FarHysteresis ([Shaders.Terrain.Displacement], game units, live, 0 = off; ROOTPLAN round 3 step 9: a Nuclear
+// Sunset tester saw road pieces pop near FadeEnd + 256): a piece's far / near decision is kept per piece and changes only once the piece is
+// FarHysteresis past the line on the other side, so a camera moving back and forth round the line does not flip it every frame.
+static float				DisplaceFarHysteresis = 0.0f;
+struct DisplaceFarRecord { bool isFar; UInt32 frame; };
+static std::unordered_map<const NiGeometry*, DisplaceFarRecord> DisplaceFarPieces;
 
 static void DisplaceSend(const NVR_EXT_TESS_STATE& State, unsigned Family = DxvkCompute::kDisplaceLand) {
 	// 2026-10-28 far land: one off state for every far piece, so a run of them sends nothing more
@@ -818,6 +825,18 @@ void DxvkCompute::DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, int Co
 			const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y;
 			const float reach = DisplaceBase.ControlParams[4] + kDisplaceFarMargin + bound->Radius;
 			pieceFar = dx * dx + dy * dy > reach * reach;
+			if (DisplaceFarHysteresis > 0.0f) {	// UNOFFICIAL 2026-10-29 FarHysteresis: the piece's last decision, unless clearly past the other way
+				const UInt32 frame = TheFrameRateManager->FrameNumber;
+				auto known = DisplaceFarPieces.find(Geometry);
+				if (known != DisplaceFarPieces.end() && frame - known->second.frame <= 2) {
+					const float d = sqrtf(dx * dx + dy * dy);
+					pieceFar = known->second.isFar ? d > reach - DisplaceFarHysteresis : d > reach + DisplaceFarHysteresis;
+				}
+				DisplaceFarPieces[Geometry] = { pieceFar, frame };
+				if (DisplaceFarPieces.size() > 8192) {	// pieces long gone (cells unloaded): dropped
+					for (auto it = DisplaceFarPieces.begin(); it != DisplaceFarPieces.end();) it = frame - it->second.frame > 600 ? DisplaceFarPieces.erase(it) : std::next(it);
+				}
+			}
 		}
 		if (pieceFar) {
 			DisplaceFarPasses++;
@@ -931,6 +950,7 @@ void DxvkCompute::DisplaceTick() {
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
 		DisplaceCastShadows = DisplaceSettingOr("CastShadows", true);	// 2026-10-27 (core/DisplaceShadows.h); on by default
 		DisplaceFarOn = DisplaceSettingOr("FarUntessellated", true);	// 2026-10-28 (DisplaceLandPass); on by default
+		DisplaceFarHysteresis = std::clamp(DisplaceFloatOr("FarHysteresis", 0.0f), 0.0f, 4096.0f);	// UNOFFICIAL 2026-10-29 (DisplaceLandPass)
 		DisplaceContactOutside = DisplaceSettingOr("ContactShadowsOutside", true);	// 2026-10-28 (DisplaceContactFade)
 		DisplaceIgnoreMipBias = DisplaceSettingOr("IgnoreMipBias", true);			// 2026-10-28 (DisplaceMipCompensation)
 		DisplaceBlendShadows = DisplaceSettingOr("ObjectBlendShadows", false);		// 2026-10-28 (DisplaceBlendInShadows)
