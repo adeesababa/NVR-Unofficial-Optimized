@@ -13,6 +13,7 @@
 #include "../../core/PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
+#include "../../core/GlassMask.h"	// UNOFFICIAL 2026-10-29 glass reflections (RenderBlendedHook)
 #include "../../core/ShaderWarmUp2.h"
 #include "../../core/IOWorker2.h"	// UNOFFICIAL 2026-10-20: second loading thread (its once-a-minute log line)
 #include "../../core/CpuSplit.h"	// UNOFFICIAL 2026-10-21: game update split (F10 profiling only)
@@ -3240,12 +3241,14 @@ static unsigned ViewModelDepthClearedFrames = 0;
 namespace SandstormGlass {
 	static bool InWorldScene = false;
 	static IDirect3DSurface9* WorldDepth = nullptr;	// the depth surface bound as the world scene starts, while the storm hides glass depth (compared only)
+	static IDirect3DSurface9* GlassDepth = nullptr;	// UNOFFICIAL 2026-10-29 GlassMask: the same, while glass reflections are on (compared only)
 	static bool InBlendedStage = false;
+	static bool HideDepth = false, GlassOn = false;	// this stage: the storm hides glass depth / GlassMask redraws glass into its mask
 	typedef HRESULT (STDMETHODCALLTYPE* DrawIndexedPrimitiveFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
 	static DrawIndexedPrimitiveFn Next = nullptr;
 	static unsigned HiddenDraws = 0;	// see-through draws that wrote no depth (logged)
 
-	static bool IsSeeThroughPass(IDirect3DDevice9* Device) {
+	static bool IsSeeThroughPass(IDirect3DDevice9* Device, bool glassMask = false) {
 		DWORD blend = FALSE, zwrite = FALSE, test = FALSE, reference = 0;
 		Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
 		Device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
@@ -3260,7 +3263,8 @@ namespace SandstormGlass {
 		// GPL-3.0, commit 432ed1e6. Characters and creatures keep their depth, or they get the dust behind them and look
 		// see-through: skinned meshes (hair, blended clothing and armour), and unskinned ones hung on a skeleton's bones (hats,
 		// helmets, goggles). Changed here: behind its own switch, for A/B.
-		if (geometry && sandstorm && sandstorm->Settings.CharactersKeepDepth) {
+		// UNOFFICIAL 2026-10-29 GlassMask: characters are never glass, whatever the storm's switch.
+		if (geometry && (glassMask || (sandstorm && sandstorm->Settings.CharactersKeepDepth))) {
 			if (geometry->skinInstance) return false;
 			NiNode* node = geometry->m_parent;
 			for (int depth = 0; node && depth < 32; ++depth, node = node->m_parent)
@@ -3275,7 +3279,14 @@ namespace SandstormGlass {
 	}
 
 	static HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* Device, D3DPRIMITIVETYPE Type, INT Base, UINT MinIndex, UINT Vertices, UINT Start, UINT Count) {
-		if (InBlendedStage && IsSeeThroughPass(Device)) {
+		// UNOFFICIAL 2026-10-29 GlassMask (core/GlassMask.h): no storm hiding glass depth, glass reflections on: the see-through draw as
+		// the game does it, then once more into the glass mask.
+		if (InBlendedStage && !HideDepth && GlassOn && IsSeeThroughPass(Device, true)) {
+			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+			if (SUCCEEDED(result)) GlassMask::Redraw(Device, [&]() { return Next(Device, Type, Base, MinIndex, Vertices, Start, Count); });
+			return result;
+		}
+		if (InBlendedStage && HideDepth && IsSeeThroughPass(Device)) {
 			HiddenDraws++;
 			Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);   // set back at once: the render state cache never sees it
 			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
@@ -3288,32 +3299,41 @@ namespace SandstormGlass {
 	static void BeginWorld() {
 		InWorldScene = true;
 		WorldDepth = nullptr;
+		GlassDepth = nullptr;
+		GlassMask::BeginWorld();	// UNOFFICIAL 2026-10-29
 		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
-		if (!sandstorm || !sandstorm->HidesBlendedDepth()) return;
+		const bool storm = sandstorm && sandstorm->HidesBlendedDepth(), glass = GlassMask::Wanted();
+		if (!storm && !glass) return;
 		IDirect3DSurface9* depth = nullptr;
 		TheRenderManager->device->GetDepthStencilSurface(&depth);
-		WorldDepth = depth;
+		if (storm) WorldDepth = depth;
+		if (glass) GlassDepth = depth;
 		if (depth) depth->Release();
 	}
 
 	static void EndWorld() {
 		InWorldScene = false;
 		WorldDepth = nullptr;
+		GlassDepth = nullptr;
 	}
 }
 
 void (__thiscall* RenderBlended)(void*, UInt32) = (void (__thiscall*)(void*, UInt32))Hooks::RenderBlended;
 void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
 	using namespace SandstormGlass;
-	bool hide = false;
-	if (InWorldScene && WorldDepth) {
+	bool hide = false, glass = false;
+	if (InWorldScene && (WorldDepth || GlassDepth)) {
 		// The world's own depth surface, not a reflection's or cube map's.
 		IDirect3DSurface9* depth = nullptr;
 		TheRenderManager->device->GetDepthStencilSurface(&depth);
-		hide = depth && depth == WorldDepth;
+		hide = WorldDepth && depth == WorldDepth;
+		// UNOFFICIAL 2026-10-29 GlassMask: glass reflections need the glass depth, so not while the storm hides it.
+		glass = !hide && GlassDepth && depth == GlassDepth && GlassMask::BeforeStage(TheRenderManager->device);
 		if (depth) depth->Release();
 	}
-	if (!hide) { RenderBlended(This, Arg); return; }
+	if (!hide && !glass) { RenderBlended(This, Arg); return; }
+	HideDepth = hide;
+	GlassOn = glass;
 	void** table = *(void***)TheRenderManager->device;
 	bool hooked = false;
 	if (table[82] != (void*)&DrawHook) {
@@ -3329,6 +3349,8 @@ void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
 	InBlendedStage = table[82] == (void*)&DrawHook;
 	RenderBlended(This, Arg);
 	InBlendedStage = false;
+	if (GlassOn) GlassMask::AfterStage(TheRenderManager->device);	// UNOFFICIAL 2026-10-29
+	HideDepth = GlassOn = false;
 	if (hooked && table[82] == (void*)&DrawHook) {
 		DWORD old = 0;
 		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {

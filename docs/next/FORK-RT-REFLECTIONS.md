@@ -133,6 +133,18 @@ shader (SPIR-V replacement territory). The other is a second layer over water pi
 Neither is done in this pass. The water scene stays in the bench list to check that nothing changes on water and to measure the
 shore and docks next to it.
 
+## Glass (`[Shaders.Reflections.Main] GlassReflect`, 0 = off, the default)
+
+FNV draws see-through glass (windows, bottles, shop cases) in the world scene's blended stage, alpha blended WITH depth writes, so
+the depth buffer and the normals rebuilt from it already hold the glass surface; only "this pixel is glass" was missing, and the
+floor guess only takes surfaces facing up. `core/GlassMask.h` adds it: inside that stage each see-through draw (SandstormGlass's
+rules; characters never count) is drawn once more into a screen-sized mask with a one-instruction "return 1" pixel shader (z test
+LESSEQUAL, no blend, no depth write; MSAA like the scene, resolved after the stage). The redraw keeps the game's own z test (NVR
+may run inverted depth). Reflections reads the
+mask: masked pixels reflect as smooth glass (roughness 0.03) at strength GlassReflect x Reflectivity, any orientation, through
+SSR, the cube and (with `[Shaders.Reflections.RT]`) the ray trace; the composite's Fresnel does the rest. Not during a sandstorm
+that hides glass depth. Off: nothing hooked, no target, no draw.
+
 ## Requests to rt-sun-core
 
 Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open points are:
@@ -168,6 +180,31 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
   run toml `bench/deep-roadmap/evidence/rtrefl/rtrefl.toml`.
 
 ## Results
+
+### 2026-10-30 00:20 hit textures (rtrefl-8; 8de4960b, DLL 485F9B82; core rt-sun-2 4d776164, fork-0033, helper protocol 3)
+`[Shaders.Reflections.RT] HitTextures` (true, inside RT Enabled false) with the core's `[Main.Main.RayTracing] HitTextures` (off by
+default; on in the run toml with AlphaTested): a hit the screen cannot show takes its texture's colour at the hit (RtHit.glsl
+`rtHitAlbedo`, the core's 64 x 64 albedo atlas) instead of the draw's average. Skinned actors stay average. Variants
+ReflectionsRTTex / ReflectionsRTAlphaTex (albedo atlas on binding 6 / 7).
+- luxe 20261029-233808-slotA: reflection alone texture vs average 3.78 % of pixels > 2 against 0.02 % noise; full picture 0.87 %
+  vs 0.25 %. The change is in the floor where the out-of-view wall panels and fountain base reflect. GPU "Reflections RT" 8.7 ms
+  either way (no in-launch cost); helper passes 7.8 ms a frame with AlphaTested + HitTextures on (4.7 in earlier runs without them:
+  the core's alpha/albedo atlas work and the alpha pass, not this switch).
+- lucky22 20261030-001029-slotA: 8.49 % vs 0.00 % noise alone; full 0.64 % vs 0.20 %; "Reflections RT" 10.8 / 10.6 ms (tex / avg,
+  pads 10.7-10.8: in noise); helper passes 9.5 ms (3082 instances, 325k triangles).
+
+### 2026-10-29 21:00-23:20 glass reflections (rtrefl-7; 1414c513, DLL ca236309; fixed in c85cdb10, DLL 57543F00)
+- iGPU saloon16: window panes and the mirror reflect. Reflection alone (DebugView 1), glass vs off: 16.2 % of pixels > 2, against
+  0.67 % noise; full picture 7.9 % vs a 6.5 % noise floor (saloon's noise is high). 7500 redraws / 600 stages = ~12.5 a frame.
+  Flaw: a band over the NPC's face in the mask: glass BEHIND her was marked. Cause: the redraw forced ZFUNC LESSEQUAL, and NVR
+  may run inverted depth (larger = nearer), so glass behind nearer surfaces passed. 06f60e05 tried "later opaque draws unmark"
+  (0 such draws: wrong guess); c85cdb10 keeps the game's own z test instead (characters stay never-glass).
+- iGPU saloon16 again with c85cdb10: face clean; the reflection-alone diff is the window panes (cut by the NPC in front), the
+  mirror and the jukebox glass only: 11.3 % > 2 vs 0.27 % noise; full picture 1.08 % vs 0.68 % noise; glass + RT 1.93 %.
+- iGPU luxe: 2.11 % of pixels > 2 against 0.16 % noise, 40 glass redraws a frame, no artefacts seen.
+- GTX 1070 saloon16, cost (CPU PROFILE per shot, 2 samples of 120 frames each): "Rnd world draws (2nd)" 0.32 ms with glass vs
+  0.17-0.23 ms without (alone shots 0.25/0.29 vs 0.24): about +0.05-0.1 ms CPU for ~12.5 redraws. GPU "World scene (game)" 2.03
+  with glass vs 1.83-1.96 without, inside its own spread (warm 2.02 with no glass): no measurable GPU cost.
 
 ### 2026-10-29 19:26 hit-distance-aware blur (rtrefl-6; DLL adbea5a0, f79a0a7b): ContactSharpness 0.3 vs 1 (the old even blur)
 

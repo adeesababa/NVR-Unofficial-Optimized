@@ -33,6 +33,15 @@ layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D shadeImage;
 #ifdef RT_ALPHA
 layout(set = 0, binding = 6, r16f) uniform readonly image2D alphaAtlas;   // RtCore::AlphaAtlasImage()
 #endif
+#ifdef RT_TEX
+// 2026-10-29 hit textures (the core's [Main.Main.RayTracing] HitTextures, RtHit.glsl): the albedo atlas, after the alpha atlas if any
+#ifdef RT_ALPHA
+layout(set = 0, binding = 7, rgba8) uniform readonly image2D albedoAtlas;   // RtCore::AlbedoAtlasImage()
+#else
+layout(set = 0, binding = 6, rgba8) uniform readonly image2D albedoAtlas;   // RtCore::AlbedoAtlasImage()
+#endif
+#define RT_ALBEDO_ATLAS albedoAtlas
+#endif
 
 // Protocol v2 (tools/nvr-rt-helper/NvrRtProtocol.h): a record per instance, and the geometries' positions + triangle lists.
 struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
@@ -62,6 +71,9 @@ const uint RecordLand = 0x01u, RecordGlow = 0x04u, RecordAlbedoKnown = 0x10u;
 #define RT_RAY_FLAGS gl_RayFlagsOpaqueEXT
 #define RT_SHADOW_FLAGS (gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT)
 #endif
+// The hit's colour (rtHitAlbedo: the texture's at the hit with RT_TEX and a textured record, else the record's average)
+#define RT_RECORDS_DECLARED
+#include "RtHit.glsl"
 // Every query's loop (a macro: a ray query cannot be passed to a function): alpha-tested candidates are confirmed where their texel
 // passes; opaque geometry commits by itself.
 #ifdef RT_ALPHA
@@ -196,6 +208,13 @@ void main() {
 		}
 	}
 	vec3 albedo = (flags & 2u) != 0u ? r.albedo.rgb : vec3(0.4);
+#ifdef RT_TEX
+	const uint hitInstance = uint(rayQueryGetIntersectionInstanceIdEXT(q, true));
+	if (rtHitHasTexcoords(hitInstance)) {
+		albedo = rtHitAlbedo(hitInstance, uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true)), rayQueryGetIntersectionBarycentricsEXT(q, true));
+		flags |= 2u;
+	}
+#endif
 	imageStore(hitImage, pixel, vec4(t, float(flags), OctEncode(normal)));
 	imageStore(shadeImage, pixel, vec4(albedo, sun));
 }

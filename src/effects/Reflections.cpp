@@ -9,6 +9,7 @@
 #include "../core/PixelInspector.h"
 #include "../core/RtCoreClient.h"	// UNOFFICIAL 2026-10-28 (RT reflections)
 #include "../core/RtCore.h"
+#include "../core/GlassMask.h"	// UNOFFICIAL 2026-10-29 glass reflections
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -43,6 +44,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
 	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h)
+	Settings.GlassReflect = std::clamp(TheSettingManager->GetSettingF(section, "GlassReflect"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-29 (core/GlassMask.h)
 	// UNOFFICIAL 2026-10-25 Reflectivity: the PBR section's one reflectivity control reaches the floor reflections too (a missing key: 1).
 	SettingManager::Configuration::ConfigNode node;
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
@@ -66,6 +68,8 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtRoughShare = std::clamp(TheSettingManager->GetSettingF(rt, "RoughShare"), 0.0f, 1.0f);	// 0 off
 	Settings.RtContactSharpness = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSharpness"), 0.05f, 1.0f);
 	Settings.RtContactSpread = std::clamp(TheSettingManager->GetSettingF(rt, "ContactSpread"), 0.01f, 4.0f);
+	Settings.RtGlowBrightness = std::clamp(TheSettingManager->GetSettingF(rt, "GlowBrightness"), 0.0f, 16.0f);
+	Settings.RtHitTextures = TheSettingManager->GetSettingI(rt, "HitTextures") != 0;	// UNOFFICIAL 2026-10-29
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -75,6 +79,7 @@ namespace {
 	ReflectionsEffect* RtEffect = nullptr;
 	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
 	int RtShaderAlpha = -1;	// UNOFFICIAL 2026-10-29: Compute\Rt\ReflectionsRTAlpha.spv (with the core's alpha-tested casters)
+	int RtShaderTex = -1, RtShaderAlphaTex = -1;	// UNOFFICIAL 2026-10-29: the same with hit textures (ReflectionsRTTex / ReflectionsRTAlphaTex)
 	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout, lamps[24]; };	// Rt/ReflectionsRT.comp's Pass block (std140, 496 bytes)
 	static_assert(sizeof(RtPassConstants) <= 512, "the RT core's pass constants limit");
 
@@ -132,8 +137,16 @@ namespace {
 		// With the core's alpha-tested casters in the scene, the pass that tests them (their alpha atlas as a fifth image).
 		const int atlas = RtCore::AlphaTested() ? RtCore::AlphaAtlasImage() : -1;
 		const bool alpha = atlas > 0 && RtShaderAlpha >= 0;
-		const int images[5] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas };
-		if (!RtCore::AddPass(alpha ? RtShaderAlpha : RtShader, images, alpha ? 5 : 4, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
+		// With the core's hit textures ([Main.Main.RayTracing] HitTextures) and [Shaders.Reflections.RT] HitTextures: the pass that
+		// shades hits with the texture's colour (the albedo atlas as the next image).
+		const int albedo = RtEffect->Settings.RtHitTextures ? RtCore::AlbedoAtlasImage() : -1;
+		const bool tex = albedo >= 0 && (alpha ? RtShaderAlphaTex : RtShaderTex) >= 0;
+		int images[6] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas, albedo };
+		int count = 4;
+		if (alpha) images[count++] = atlas;
+		if (tex) images[count++] = albedo;
+		const int shader = alpha ? (tex ? RtShaderAlphaTex : RtShaderAlpha) : (tex ? RtShaderTex : RtShader);
+		if (!RtCore::AddPass(shader, images, count, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
 		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface) && RtCore::CopyOut(RtImageShade, rt.ShadeSurface);
 	}
 	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
@@ -144,6 +157,8 @@ void ReflectionsEffect::RtRegister() {
 	RtEffect = this;
 	RtShader = RtCore::AddShader("ReflectionsRT");
 	RtShaderAlpha = RtCore::AddShader("ReflectionsRTAlpha");	// UNOFFICIAL 2026-10-29
+	RtShaderTex = RtCore::AddShader("ReflectionsRTTex");	// UNOFFICIAL 2026-10-29 hit textures
+	RtShaderAlphaTex = RtCore::AddShader("ReflectionsRTAlphaTex");
 	RtCore::AddUser(RtUser);
 }
 
@@ -589,6 +604,7 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,   FALSE, 16 },	// LINEAR, CLAMP
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,   FALSE, 20 },	// POINT, CLAMP
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
+		{ 1, 23, NVR_EXT_BIND_SAMPLED_IMAGE, 22, NVR_EXT_VIEW_2D,   FALSE, 0 },	// UNOFFICIAL 2026-10-29 TESR_GlassMask (index 20: after the samplers)
 	};
 	const UINT ReflTextureCount = 16;
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 1).
@@ -760,6 +776,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	uniforms.grid2 = Constants.Grid2;
 	uniforms.grid3 = Constants.Grid3;
 	uniforms.material = Constants.Material;
+	uniforms.material.w = GlassMask::ThisFrame() ? Settings.GlassReflect * (TheShaderManager->GameState.isExterior ? Settings.ReflectivityExterior : Settings.ReflectivityInterior) : 0.0f;	// UNOFFICIAL 2026-10-29
 	uniforms.depthConstants = *depthConstants;
 	uniforms.cameraData = *cameraData;
 	uniforms.cameraPosition = *cameraPosition;
@@ -781,6 +798,9 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
 	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = point;
 	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	// UNOFFICIAL 2026-10-29 glass reflections: the glass mask (core/GlassMask.h), or the depth as a placeholder (never read: material.w 0).
+	IDirect3DTexture9* glass = GlassMask::ThisFrame();
+	resources[20].Slot = 22; resources[20].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[20].pResource = glass ? (IUnknown*)glass : (IUnknown*)depth;
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
 		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
@@ -797,7 +817,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
-		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, Settings.RtContactSpread, 0.0f);
+		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, Settings.RtContactSpread, Settings.RtGlowBrightness);
 		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {
