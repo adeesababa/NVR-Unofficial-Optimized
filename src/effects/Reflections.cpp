@@ -82,6 +82,7 @@ namespace {
 	int RtImageDir = -1, RtImageRay = -1, RtImageHit = -1, RtImageShade = -1, RtShader = -1;
 	int RtShaderAlpha = -1;	// UNOFFICIAL 2026-10-29: Compute\Rt\ReflectionsRTAlpha.spv (with the core's alpha-tested casters)
 	int RtShaderTex = -1, RtShaderAlphaTex = -1;	// UNOFFICIAL 2026-10-29: the same with hit textures (ReflectionsRTTex / ReflectionsRTAlphaTex)
+	int RtShaderTexGlow = -1, RtShaderAlphaTexGlow = -1;	// UNOFFICIAL 2026-10-30: and the glow maps (ReflectionsRTTexGlow / ReflectionsRTAlphaTexGlow)
 	struct RtPassConstants { D3DXVECTOR4 size, forward, right, up, origin, sun, layout, lamps[24]; };	// Rt/ReflectionsRT.comp's Pass block (std140, 496 bytes)
 	static_assert(sizeof(RtPassConstants) <= 512, "the RT core's pass constants limit");
 
@@ -143,11 +144,15 @@ namespace {
 		// shades hits with the texture's colour (the albedo atlas as the next image).
 		const int albedo = RtEffect->Settings.RtHitTextures ? RtCore::AlbedoAtlasImage() : -1;
 		const bool tex = albedo >= 0 && (alpha ? RtShaderAlphaTex : RtShaderTex) >= 0;
-		int images[6] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas, albedo };
+		// With the core's glow maps too ([Main.Main.RayTracing] GlowTextures): glowing draws glow only where their glow map is lit.
+		const int glowAtlas = tex ? RtCore::GlowAtlasImage() : -1;
+		const bool glow = glowAtlas >= 0 && (alpha ? RtShaderAlphaTexGlow : RtShaderTexGlow) >= 0;
+		int images[7] = { RtImageDir, RtImageRay, RtImageHit, RtImageShade, atlas, albedo, glowAtlas };
 		int count = 4;
 		if (alpha) images[count++] = atlas;
 		if (tex) images[count++] = albedo;
-		const int shader = alpha ? (tex ? RtShaderAlphaTex : RtShaderAlpha) : (tex ? RtShaderTex : RtShader);
+		if (glow) images[count++] = glowAtlas;
+		const int shader = alpha ? (glow ? RtShaderAlphaTexGlow : tex ? RtShaderAlphaTex : RtShaderAlpha) : (glow ? RtShaderTexGlow : tex ? RtShaderTex : RtShader);
 		if (!RtCore::AddPass(shader, images, count, 0xC, &RtPending, sizeof(RtPending), (RtWidth() + 7) / 8, (RtHeight() + 7) / 8)) return;
 		RtRecorded = RtCore::CopyOut(RtImageHit, rt.HitSurface) && RtCore::CopyOut(RtImageShade, rt.ShadeSurface);
 	}
@@ -161,6 +166,8 @@ void ReflectionsEffect::RtRegister() {
 	RtShaderAlpha = RtCore::AddShader("ReflectionsRTAlpha");	// UNOFFICIAL 2026-10-29
 	RtShaderTex = RtCore::AddShader("ReflectionsRTTex");	// UNOFFICIAL 2026-10-29 hit textures
 	RtShaderAlphaTex = RtCore::AddShader("ReflectionsRTAlphaTex");
+	RtShaderTexGlow = RtCore::AddShader("ReflectionsRTTexGlow");	// UNOFFICIAL 2026-10-30 glow maps
+	RtShaderAlphaTexGlow = RtCore::AddShader("ReflectionsRTAlphaTexGlow");
 	RtCore::AddUser(RtUser);
 }
 
