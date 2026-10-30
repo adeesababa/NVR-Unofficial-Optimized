@@ -265,6 +265,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// without Interior (ShaderManager::LoadShader, PBRShaders::LampFalloffInteriorDefine).
 	if (PBRShaders::LampFalloffCompiledIn())
 		AppendDefine("LAMP_FALLOFF_ON", PBRShaders::LampFalloffShapeIn() ? "2" : "1");
+	// UNOFFICIAL 2026-10-29 ShadowContrast (ObjectTemplate.hlsl, effects/PBR.cpp): defined only when on at startup, so that off every
+	// shader is exactly what it was.
+	if (PBRShaders::ShadowContrastCompiledIn()) AppendDefine("SHADOW_CONTRAST_ON", "1");
 
 	// UNOFFICIAL terrain blending (TerrainTemplate.hlsl, from Physically-Based-Reloaded): compiled in only when on at startup,
 	// like LIVE_CUBE, so that otherwise the land shaders are exactly what they were. TextureManager makes its depth copy
