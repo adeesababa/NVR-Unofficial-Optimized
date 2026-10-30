@@ -2507,10 +2507,6 @@ namespace GrassFirst {
 
 	// The game's RenderBatches(1, 0x25B) call: the near grass first, then the main list as the game does it.
 	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
-		// UNOFFICIAL 2026-10-30 ReactiveMask (core/ReactiveMask.h): the colour as the main opaque list leaves it. Declared first so it runs
-		// last, after LinearScene has encoded the target back (its span ends at this function's end too).
-		struct ReactiveSpan { bool on; ReactiveSpan(bool main) : on(main && ShaderSplit::CurrentContext == ShaderSplit::World) {}
-			~ReactiveSpan() { if (on) ReactiveMask::NoteOpaque(TheRenderManager->device); } } reactiveSpan(first == 1 && last == 0x25B && group < 0);
 #if NVR_TEST_TOOLS
 		struct CensusMain { bool was; CensusMain() : was(LinearSceneCensus::InMain) { LinearSceneCensus::InMain = true; } ~CensusMain() { LinearSceneCensus::InMain = was; } } censusMain;	// UNOFFICIAL 2026-10-28, diagnostic
 #endif
@@ -3331,6 +3327,10 @@ namespace SandstormGlass {
 void (__thiscall* RenderBlended)(void*, UInt32) = (void (__thiscall*)(void*, UInt32))Hooks::RenderBlended;
 void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
 	using namespace SandstormGlass;
+	// UNOFFICIAL 2026-10-30 ReactiveMask (core/ReactiveMask.h): the world's colour before and after its blended stage (the main view's
+	// first one a frame; sky, distant land and other passes drawn outside it are left out).
+	struct ReactiveStage { bool on; ReactiveStage(bool world) : on(world && ReactiveMask::NoteOpaque(TheRenderManager->device)) {}
+		~ReactiveStage() { if (on) ReactiveMask::Build(TheRenderManager->device); } } reactiveStage(InWorldScene);
 	bool hide = false, glass = false;
 	if (InWorldScene && (WorldDepth || GlassDepth)) {
 		// The world's own depth surface, not a reflection's or cube map's.
@@ -3407,7 +3407,6 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		// UNOFFICIAL 2026-10-20 MaterialAware reflections (core/ReflMaterial.h): blended passes keep off the scene's alpha.
 		ReflMaterial::BeginWorld(TheRenderManager->renderState, TheRenderManager->device, ReflMaterial::CompiledIn() && TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0);
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
-		if (FrameWorldCalls == 1) ReactiveMask::Build(TheRenderManager->device);	// UNOFFICIAL 2026-10-30 ReactiveMask: the world's alpha draws against its opaque list
 		ReflMaterial::EndWorld(TheRenderManager->renderState, TheRenderManager->device);
 		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);	// UNOFFICIAL ExactPassSums: a run still open at the world's end is folded in here

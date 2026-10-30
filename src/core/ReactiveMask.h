@@ -5,10 +5,11 @@
 // smoke, fire, sparks, glass, decals and every other alpha-blended thing drawn over the world were accumulated like solid walls (they
 // trail and smear as the camera moves). AMD's own recipe (ffxFsr2ContextGenerateReactiveMask): the scene before the alpha draws against
 // the scene after them; where they differ, the pixel is reactive.
-//   - GrassFirst::MainListHook copies the world's colour when the game's main opaque list (RenderBatches(1, 0x25B)) ends, after
-//     LinearScene has encoded it back (NoteOpaque);
-//   - RenderWorldSceneGraphHook, when the game's world scene ends (its alpha lists drawn, no NVR effect yet), copies the colour again and
-//     draws mask = largest channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build);
+//   - RenderBlendedHook, as the world scene's blended stage starts (0xB650C0: BSShaderAccumulator's back-to-front lists, after every
+//     opaque group), copies the world's colour (NoteOpaque);
+//   - as it ends, copies the colour again and draws mask = largest channel change of c / (1 + c) x ReactiveMask, 0 below
+//     ReactiveThreshold, at most ReactiveMax (Build). (First taken from the main opaque list's end to the world scene's end: that also
+//     marked the sky and the distant land, drawn after the main list, run 20261030-182413-slotA.)
 //   - FSRPrep.comp / FSRUpPrep.comp (FSR 2, FSR 3.1, RenderScale v1 and v2) take max(weapon, mask) as the reactive value.
 // Off: nothing is copied or drawn and the readers keep the weapon-only mask, as before.
 // ReactiveDebug (diagnostic): the mask drawn over the world. With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
@@ -96,17 +97,19 @@ namespace ReactiveMask {
 		return rt0;
 	}
 
-	// GrassFirst::MainListHook, after the game's main list (and LinearScene's re-encode), world context only.
-	inline void NoteOpaque(IDirect3DDevice9* d) {
-		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber()) return;
+	// RenderBlendedHook, as the world scene's blended stage starts (the main view's first one a frame). True = Build at its end.
+	inline bool NoteOpaque(IDirect3DDevice9* d) {
+		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber()) return false;
 		D3DSURFACE_DESC t = {};
 		IDirect3DSurface9* rt0 = MainTarget(d, t);
-		if (!rt0) return;
-		if (Ensure(d, t) && SUCCEEDED(d->StretchRect(rt0, NULL, OpaqueSurface, NULL, D3DTEXF_NONE))) OpaqueFrame = FrameNumber();
+		if (!rt0) return false;
+		const bool ok = Ensure(d, t) && SUCCEEDED(d->StretchRect(rt0, NULL, OpaqueSurface, NULL, D3DTEXF_NONE));
+		if (ok) OpaqueFrame = FrameNumber();
 		rt0->Release();
+		return ok;
 	}
 
-	// RenderWorldSceneGraphHook, when the game's world scene is drawn (before any NVR effect and before the upscale).
+	// RenderBlendedHook, as that stage ends (before any NVR effect and before the upscale).
 	inline void Build(IDirect3DDevice9* d) {
 		const float scale = Scale();
 		if (Failed || !(scale > 0.0f) || OpaqueFrame != FrameNumber() || ReadyFrame == FrameNumber()) return;
