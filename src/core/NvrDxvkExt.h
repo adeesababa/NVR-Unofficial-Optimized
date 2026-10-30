@@ -1219,3 +1219,23 @@ ID3D9NvrExtRtSkin : public IUnknown {
 #ifndef _MSC_VER
 __CRT_UUID_DECL(ID3D9NvrExtRtSkin,     0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x33);
 #endif
+
+/**
+ * UNOFFICIAL 2026-10-30 (1.8-rt-seq, patch 0034): FlushStagedGeometry with a sequence number, found with
+ * QueryInterface(__uuidof(ID3D9NvrExtRtSeq)) (a fork without it answers E_NOINTERFACE). Records the queued conversions as
+ * FlushStagedGeometry does and, in the same command stream right after them, writes Sequence (as raw 32 bits) into texel
+ * SequenceTexel of the arena. The helper reads that texel before it builds: a value other than the one NVR handed in means
+ * the arena holds an earlier flush's data (the copy ran before the conversions), and it skips those builds instead of reading
+ * stale indices. SequenceTexel must lie in the arena and outside every staged geometry. Sequence 0 = no sequence texel.
+ */
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d334")
+ID3D9NvrExtRtSeq : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE FlushStagedGeometrySeq(
+          ID3D9NvrExtSharedImage*         pArena,
+          UINT                            Sequence,
+          UINT                            SequenceTexel) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtRtSeq,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x34);
+#endif
