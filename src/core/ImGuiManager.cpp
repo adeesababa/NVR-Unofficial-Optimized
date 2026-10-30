@@ -1918,7 +1918,30 @@ void ImGuiManager::NewFrame() {
 	}
 
 	ImGui_ImplDX9_NewFrame();
-	ImGui_ImplWin32_NewFrame();
+	// UNOFFICIAL 2026-10-30 MenuHiddenLean ([Main.Main.Performance], live; ROOTPLAN round 7 step 18): with the menu closed the Win32
+	// backend still asked Windows for the foreground window, the cursor and its window every frame (ImGui_ImplWin32_UpdateMouseData,
+	// ~0.7-0.9 % of the main thread in the CPU sampler). Closed, only what a hidden frame uses is set here: the display size and the
+	// time step (what's drawn without the menu -- toasts, the screenshot-mode note -- needs nothing else). Open: the backend, as before.
+	static bool backendFrames = true;
+	if (Visible || !TheSettingManager || !TheSettingManager->GetSettingI("Main.Main.Performance", "MenuHiddenLean")) {
+		ImGui_ImplWin32_NewFrame();	// (the first frame back: its time step spans the closed frames)
+		backendFrames = true;
+	}
+	else {
+		static LARGE_INTEGER frequency = {};
+		static INT64 last = 0;
+		if (!frequency.QuadPart) ::QueryPerformanceFrequency(&frequency);
+		LARGE_INTEGER now;
+		::QueryPerformanceCounter(&now);
+		ImGuiIO& io = ImGui::GetIO();
+		RECT rect = { 0, 0, 0, 0 };
+		::GetClientRect(TheRenderManager->m_kWndFocus, &rect);
+		io.DisplaySize = ImVec2((float)(rect.right - rect.left), (float)(rect.bottom - rect.top));
+		io.DeltaTime = (backendFrames || !last) ? 1.0f / 60.0f : (float)((double)(now.QuadPart - last) / (double)frequency.QuadPart);
+		if (io.DeltaTime <= 0.0f) io.DeltaTime = 1.0e-5f;
+		last = now.QuadPart;
+		backendFrames = false;
+	}
 
 	// Override ImGui_ImplWin32_UpdateMouseData's position — it suppresses the
 	// GetCursorPos fallback when MouseTrackedArea==1 (set by WM_MOUSEMOVE, which
