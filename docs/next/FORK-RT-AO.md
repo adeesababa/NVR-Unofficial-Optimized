@@ -354,3 +354,11 @@ helper's own timing).
 - **Default GIReuse 0** for now (029d3d56, DLL 3075BBC6), the reuse path is opt-in until a motion A/B. Next: a bench list that pairs
   GIReuse 0 / 8 at GIInterleave 4 back to back in the drifting shots, and a cheaper GI pass (history-only tiles skip the input
   reprojection maths; check why non-candidate tiles still trace).
+- **rt-gi-11 (20261030-022942-slotA, Lucky 38, 029d3d56): motion A/B PASS for reuse.** GIInterleave 4, GIReuse 0 / 8 alternating.
+  Still pair (m1): the same light. Moving pair (m2): **GIReuse 0 smears** (streaks, vertical stripes, the scene's last bounce light
+  dragged across: GIInterleave's "keep the last value" without reprojection); **GIReuse 8 stays clean** (reprojected, checked
+  history; a little blotchy). So rt-gi-10's stripes were the old interleave's, not reuse's. Cost (helper, per pass, same shots):
+  GIReuse 0 19.3 / 25.6 / 20.1 ms; GIReuse 8 25.7 / 28.7 ms (AO + RtGITrace): ~+6 ms for its own pass. Still GIReuse 8 + GIInterleave
+  4 (~26-29 ms) is cheaper than full-rate GI either way (33-41 ms) and is the one that holds up in motion.
+- **GIReuse default 8** (DLL 69708BDC, commit below). Next: the GI pass's extra cost (the separate pass reads the input and does the
+  reprojection for every texel; a texel without history traces even outside its tile), then spatial reuse.
