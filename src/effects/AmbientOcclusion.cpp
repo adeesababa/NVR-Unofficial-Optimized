@@ -382,7 +382,7 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 // NVR_RTAORaw (AO visibility, sky visibility, covered, DebugView 3's value). RtRaw: that texture if it was traced this frame, else null
 // (the callers keep NVR's own passes).
 namespace {
-	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtShader = -1;
+	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtImageAlbedoStandIn = -1, RtShader = -1;
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -400,6 +400,8 @@ namespace {
 		// (2026-10-29) RtAOTrace.comp binds the core's alpha atlas (binding 5) for the alpha-tested casters; with AlphaTested off there is no
 		// atlas and no such instance (the shader never reads it): this small image stands in so the binding is always an R16F image.
 		if (RtCore::AlphaAtlasImage() < 0) RtImageAlphaStandIn = RtCore::AddImage("NVR RT ao alpha stand-in", 256, 256, NVR_EXT_SHARED_R16F);
+		// (2026-10-29) the same for the albedo atlas (binding 7, [Main.Main.RayTracing] HitTextures; RtHit.glsl falls back to the averages)
+		if (RtCore::AlbedoAtlasImage() < 0) RtImageAlbedoStandIn = RtCore::AddImage("NVR RT ao albedo stand-in", 256, 256, NVR_EXT_SHARED_RGBA8);
 	}
 
 	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
@@ -576,12 +578,13 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	}
 	const int alphaAtlas = RtCore::AlphaAtlasImage() >= 0 ? RtCore::AlphaAtlasImage() : RtImageAlphaStandIn;
 	if (alphaAtlas < 0) return;
-	if (RtImageLight < 0) return;
+	const int albedoAtlas = RtCore::AlbedoAtlasImage() >= 0 ? RtCore::AlbedoAtlasImage() : RtImageAlbedoStandIn;
+	if (RtImageLight < 0 || albedoAtlas < 0) return;
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
 	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, 0.0f, 0.0f, 0.0f);
-	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
+	const int images[6] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		!RtCore::AddPass(RtShader, images, 6, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
 	RtGITraced = gi;
