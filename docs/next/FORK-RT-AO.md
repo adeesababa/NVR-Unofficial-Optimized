@@ -211,7 +211,51 @@ accumulate (below): both are temporal + edge-aware spatial already.
   warm near the lit railing, the counter and the lamps, not a wash. Final picture natural. Flaw: sparse orange fireflies where a bounce
   ray lands on a lamp's glow on screen (the per-sample cap is 4.0: too high) -> next: a luminance clamp per sample. Cost unchanged:
   core line 21.3 ms avg, 11.0 ms min (AO 4 + GI 1 + its shadow rays) on the iGPU in Lucky 38.
-- rt-ao-6 (og-goodsprings, AlphaTested on, foliage really in now) running.
+- **rt-ao-6 (10-29 18:51 og-goodsprings slot C, AlphaTested on, DLL 8F014ACC):** foliage IS in the scene now: 54513 alpha-tested
+  meshes taken in 60 exchanges, 46 atlas slots (rt-sun-core dc1a5dd4); the scene 1597 instances / 406 geometries / 1.36 M triangles /
+  211 MB. RT AO (4 rays) core line 15-17 ms p50 (6 ms without the foliage, rt-ao-5): the alpha-tested candidates (any-hit tests per
+  leaf card) roughly triple the AO cost on the iGPU. Visible occlusion from the (thin) Joshua trees in this view: not noticeable.
+- **GIClamp + Interleave (commit after 7e8f80e7, DLL DE2DDFFB):** a bounce sample's luminance is capped at GIClamp (1.0 = the frame's
+  white; keeps the hue) against the fireflies; Interleave 1 / 2 / 4 traces every / every 2nd (checkerboard) / every 4th texel (one of
+  each 2 x 2, in turn) a frame, the rest keep their last result (the shared images persist) for AmbientLight's history to blend: the
+  ray cost / 2 or / 4.
+- **rt-gi-2 (10-29 19:41 lucky22 slot B, DLL DE2DDFFB):** same spot (al vs al-end 0.5 %). RT AO + GI vs AmbientLight +4.3/255
+  (RT AO +2.2, GI +2.1 as before); Interleave 2 and 4 give the SAME picture as 1 (-0.05/255, 2 % of pixels differ): the history fills
+  the untraced texels with no visible loss on a still camera. Fireflies (pixels > 12 levels above their 5x5 neighbourhood in the
+  bounce-light view): 0.015 % -> 0.005 % with GIClamp 1 (0.009 % with Interleave 4). Cost per interleave NOT separable from this run:
+  60-frame shots against 120-frame profile windows (two lines: 25.6 / 20.0 ms avg): next run uses 120-frame shots.
+- **Shared denoiser wired (merged claude/rt-sun-2 88159b51; DLL 52A01349):** [Shaders.AmbientOcclusion.RT] Denoise (on): the AO
+  visibility goes through RtDenoise (temporal 16 frames + 3 a-trous passes, depth / normal / variance weights) at the screen's size
+  (it samples the half-resolution raw by uv) into NVR_RTAODenoised (R16F); AmbientLight's and AmbientOcclusion's RT estimates read it
+  instead of the raw rays. Not used for DebugView 3 (it shows another channel). The GI bounce (RGB) keeps ComputeGI's accumulate
+  until RtDenoise has a 3-channel mode (asked); a half-resolution mode would cut its cost by 4 on the iGPU (asked).
+- **rt-gi-3 (10-29 20:03 lucky22 slot A, DLL 52A01349):** RtDenoise on the AO WORKS: AmbientLight's occlusion view with the denoiser
+  is clean (the raw rays' grain at the railing base, the counter and the floor seams gone, contacts kept sharp). COST: "AO RT denoise"
+  23.6 ms a frame on the iGPU at 1280x720 (temporal + 3 a-trous at the screen's size): more than the rays (core line 11.1-11.5 ms,
+  AO 4 rays). Needs RtDenoise's half-resolution mode (asked; ~4x less) before it is usable on this GPU; Denoise stays the default
+  (the RT AO itself is off by default). Interleave's cost is NOT readable here: with the denoiser saturating the iGPU the core's
+  "Ray tracing" line (which includes the waits) read 13.4 / 27.3 / 21.4 ms for Interleave 1 / 2 / 4 = contention, not rays.
+- **rt-gi-4 (10-29 20:29 lucky22, denoise off):** the same pattern without the denoiser (AO 11.7-14.9 ms, AO + GI at Interleave 1 / 2 / 4:
+  13.9 / 25.9 / 21.8 ms): the core's line includes waiting for GPU work queued before the RT point and its 120-frame windows straddle
+  shot changes, so it is NOT a per-pass cost. Per-pass GPU time of the helper pass is needed (asked of rt-sun-core); until then
+  Interleave's saving is unmeasured (it does trace 1/2, 1/4 of the texels).
+- **RtDenoise half resolution + RGB (merged claude/rt-sun-2 82976a88; DLL 3FFB0E01):** the AO denoise now runs at the trace grid
+  (Downscale 2: ~4x cheaper than the 23.6 ms screen-size run), and the GI bounce light goes through its RGB mode (Channels 3, Downscale 2)
+  into NVR_RTGIDenoised, which AmbientLight's RT estimate takes instead of the raw bounce (then ComputeGI's accumulate as before). First
+  use of the RGB mode anywhere. (The first rt-gi-5 was cancelled before it ran: rt-sun-core's RGB mode overran a binding array and
+  crashed on first use; its fix 02222b6d merged, DLL 413E9634.)
+- **rt-gi-5 (10-29 21:21 lucky22 slot A, DLL 413E9634, helper rtsun/extra-p3 with per-pass times): PASS.** No crash; both denoise
+  modes ran. COSTS on the iGPU (720p, trace grid 640x360), the helper's per-pass GPU times (the pass alone, no waits):
+  RtAOTrace with AO 4 rays 9.5-9.9 ms; AO 4 + GI 1 (+ its sun / lamp shadow rays): 23.8 ms (GI adds ~14 ms indoors); with
+  Interleave 2: 19.7 ms (only -17 %). NVR side: "AO RT denoise" (half) 6.3 ms (screen size was 23.6), "GI RT denoise (half, rgb)"
+  8.6 ms. Look: the denoised bounce light (DebugView 6) is smooth and clean; the raw one is full of specks (and in this run the
+  camera moved for the later shots, so raw vs denoised GI is not the same view; AO denoised vs raw as in rt-gi-3).
+- Interleave v2 (next build): the dispatch is cut to the traced texels (W/2, or W/2 x H/2 threads, each mapped to its texel): v1 let
+  the skipped threads exit inside full 8x8 groups, which then ran as long as their slowest traced texel.
+- **rt-gi-6 (10-29 22:00 lucky22 slot A, DLL 1AE30268, helper extra-p3): Interleave v2 PASS.** RtAOTrace's own GPU time (AO 4 rays +
+  GI, the helper's per-pass timer): Interleave 1 26.3 ms, 2 14.8 ms (-44 %), 4 8.0 ms (-70 %) on the iGPU at 720p. Pictures with
+  Interleave 2 / 4 vs 1: 0.2 / 0.3 % of pixels differ by more than 4 levels (still camera; the denoisers and AmbientLight's history fill
+  the untraced texels). Recommended: Interleave 2 or 4 on slow GPUs (default stays 1).
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 

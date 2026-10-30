@@ -54,6 +54,8 @@ public:
 	void RtRecord(IDirect3DDevice9* Device);
 	IDirect3DTexture9* RtRaw();
 	IDirect3DTexture9* RtGI();	// (rt-ao-gi) this frame's traced bounce light, or null
+	IDirect3DTexture9* RtDenoised(IDirect3DDevice9* Device);
+	IDirect3DTexture9* RtDenoisedGI(IDirect3DDevice9* Device);	// (2026-10-29) the bounce light through RtDenoise's RGB mode (half), or null	// (2026-10-29) this frame's AO visibility through RtDenoise (.r, screen size), or null
 	static bool SkyHostedByAmbientLight();
 	static D3DXVECTOR2 SkyTakeComposite();	// LightCap for VolumetricFog's composites (Includes/SkyTake.hlsl): x the cap's scale, y no limit
 
@@ -100,6 +102,10 @@ private:
 	IDirect3DSurface9*	rtGISurface = nullptr;
 	IDirect3DTexture9*	rtLightTexture = nullptr;	// (GI v2) NVR_RTGIFrameLight (half, A16B16G16R16F): the lit frame for on-screen bounce hits
 	IDirect3DSurface9*	rtLightSurface = nullptr;
+	IDirect3DTexture9*	rtDenoisedTexture = nullptr;	// (2026-10-29) NVR_RTAODenoised (screen, R16F): RtDenoise's output
+	IDirect3DSurface9*	rtDenoisedSurface = nullptr;
+	IDirect3DTexture9*	rtDenoisedGITexture = nullptr;	// (2026-10-29) NVR_RTGIDenoised (half, A16B16G16R16F)
+	IDirect3DSurface9*	rtDenoisedGISurface = nullptr;
 	UINT				rtWidth = 0, rtHeight = 0;
 	IDirect3DTexture9*	rtHistoryTexture[2] = {};
 	IDirect3DSurface9*	rtHistorySurface[2] = {};

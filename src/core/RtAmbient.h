@@ -35,7 +35,9 @@ namespace RtAmbient {
 		float	GIStrength = 1.0f;		// [0-4] the bounce light added (x the surface colour), as ComputeGIStrength
 		float	GIOffscreen = 0.1f;		// [0-1] (GI v2) the analytic light's scale for bounce hits the screen did not see
 		float	GIClamp = 1.0f;			// [0.05-4] (2026-10-29) one bounce sample's luminance cap (fireflies from lamp glows)
-		int		Interleave = 1;			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
+		bool	Denoise = true;			// (2026-10-29) the AO visibility through the shared RT denoiser (RtDenoise.h) before AO / AmbientLight use it
+		int		Interleave = 1;
+		int		GIInterleave = 1;		// 1, 2 or 4 (2026-10-29): the GI rays in every / every 2nd / every 4th 8 x 8 tile a frame			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
 	};
 	inline Settings Current;
@@ -56,6 +58,8 @@ namespace RtAmbient {
 		Current.GIOffscreen = std::clamp(TheSettingManager->GetSettingF(s, "GIOffscreen"), 0.0f, 1.0f);
 		Current.GIClamp = std::clamp(TheSettingManager->GetSettingF(s, "GIClamp"), 0.05f, 4.0f);
 		{ const int i = TheSettingManager->GetSettingI(s, "Interleave"); Current.Interleave = i >= 4 ? 4 : i >= 2 ? 2 : 1; }
+		Current.Denoise = TheSettingManager->GetSettingI(s, "Denoise") != 0;
+		{ const int i = TheSettingManager->GetSettingI(s, "GIInterleave"); Current.GIInterleave = i >= 4 ? 4 : i >= 2 ? 2 : 1; }
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -75,6 +79,7 @@ namespace RtAmbient {
 		D3DXVECTOR4	lampPos[GILampsMax];	// xyz scene space, w reach
 		D3DXVECTOR4	lampColor[GILampsMax];	// rgb x dimmer
 		D3DXVECTOR4	gi2;			// (GI v2) x GIOffscreen, y the on-screen depth tolerance (share), z GIClamp, w Interleave
+		D3DXVECTOR4	gi3;			// x GIInterleave
 	};
 	static_assert(sizeof(TraceConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 

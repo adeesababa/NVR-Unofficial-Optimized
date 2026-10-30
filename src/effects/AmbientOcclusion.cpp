@@ -3,7 +3,8 @@
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/RtAmbient.h"
-#include "../core/RtCore.h"	// (the RT core: AddUser / CopyIn / AddPass / CopyOut)	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
+#include "../core/RtCore.h"
+#include "../core/RtDenoise.h"	// (2026-10-29) the shared RT denoiser	// (the RT core: AddUser / CopyIn / AddPass / CopyOut)	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 #include "BounceLightMath.h"	// (the RT AO's temporal pass)
 
 // UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
@@ -440,6 +441,55 @@ IDirect3DTexture9* AmbientOcclusionEffect::RtRaw() {
 	return RtTracedFrame == TheFrameRateManager->FrameNumber && RtAmbient::Ready() ? rtRawTexture : nullptr;
 }
 
+// (2026-10-29) This frame's AO visibility denoised by the shared RT denoiser (RtDenoise.h: temporal + 3 a-trous passes), at the trace
+// grid's half resolution (Downscale 2: the screen-size version cost 23.6 ms on the iGPU at 720p, rt-gi-3), made once a frame by the
+// first caller, or null (Denoise off, a DebugView that shows other channels, or the denoiser could not run: the callers take the raw).
+IDirect3DTexture9* AmbientOcclusionEffect::RtDenoised(IDirect3DDevice9* Device) {
+	static UInt32 frame = 0xFFFFFFFF;
+	static bool result = false;
+	if (frame == TheFrameRateManager->FrameNumber) return result ? rtDenoisedTexture : nullptr;
+	frame = TheFrameRateManager->FrameNumber;
+	result = false;
+	const RtAmbient::Settings& rt = RtAmbient::Current;
+	IDirect3DTexture9* raw = RtRaw();
+	if (!raw || !rt.Denoise || (rt.DebugView != 0 && rt.DebugView != 1)) return nullptr;
+	if (!rtDenoisedTexture) TheTextureManager->InitTexture("NVR_RTAODenoised", &rtDenoisedTexture, &rtDenoisedSurface, rtWidth, rtHeight, D3DFMT_R16F);
+	if (!rtDenoisedTexture || !rtDenoisedSurface) return nullptr;
+	static RtDenoise::Denoiser* denoiser = RtDenoise::Create("RT ambient occlusion");
+	static GpuTimer timer("  AO RT denoise");
+	GpuProfileScope gpu(timer, Device);
+	RtDenoise::Settings s;	// the defaults: 16 frames of history, 3 a-trous passes
+	s.Downscale = 2;
+	result = RtDenoise::Run(denoiser, Device, raw, rtDenoisedSurface, s);
+	static bool logged = false;
+	if (result && !logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: the AO visibility goes through the shared RT denoiser (RtDenoise)."); }
+	return result ? rtDenoisedTexture : nullptr;
+}
+
+// (2026-10-29) This frame's GI bounce light denoised by the shared RT denoiser's RGB mode (Channels 3, Downscale 2: at the trace grid),
+// made once a frame by the first caller, or null (Denoise off, no GI this frame, or not run: the caller takes the raw bounce).
+IDirect3DTexture9* AmbientOcclusionEffect::RtDenoisedGI(IDirect3DDevice9* Device) {
+	static UInt32 frame = 0xFFFFFFFF;
+	static bool result = false;
+	if (frame == TheFrameRateManager->FrameNumber) return result ? rtDenoisedGITexture : nullptr;
+	frame = TheFrameRateManager->FrameNumber;
+	result = false;
+	IDirect3DTexture9* gi = RtGI();
+	if (!gi || !RtAmbient::Current.Denoise) return nullptr;
+	if (!rtDenoisedGITexture) TheTextureManager->InitTexture("NVR_RTGIDenoised", &rtDenoisedGITexture, &rtDenoisedGISurface, rtWidth, rtHeight, D3DFMT_A16B16G16R16F);
+	if (!rtDenoisedGITexture || !rtDenoisedGISurface) return nullptr;
+	static RtDenoise::Denoiser* denoiser = RtDenoise::Create("RT GI");
+	static GpuTimer timer("  GI RT denoise (half, rgb)");
+	GpuProfileScope gpu(timer, Device);
+	RtDenoise::Settings s;
+	s.Channels = 3;
+	s.Downscale = 2;
+	result = RtDenoise::Run(denoiser, Device, gi, rtDenoisedGISurface, s);
+	static bool logged = false;
+	if (result && !logged) { logged = true; Logger::Log("UNOFFICIAL RT AO: the GI bounce light goes through the shared RT denoiser (RGB, half resolution)."); }
+	return result ? rtDenoisedGITexture : nullptr;
+}
+
 // (rt-ao-gi) this frame's traced bounce light (NVR_RTGIRaw: rgb the light arriving, a hit distance / GIDistance), or null.
 IDirect3DTexture9* AmbientOcclusionEffect::RtGI() {
 	return RtGITraced && RtRaw() ? rtGITexture : nullptr;
@@ -528,9 +578,11 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (alphaAtlas < 0) return;
 	if (RtImageLight < 0) return;
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
+	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, 0.0f, 0.0f, 0.0f);
 	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) || (gi && !RtCore::CopyOut(RtImageGI, rtGISurface))) return;
 	RtGITraced = gi;
 	RtTracedFrame = TheFrameRateManager->FrameNumber;
@@ -565,6 +617,7 @@ bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTe
 	if (!rtHistoryTexture[0] || !rtHistoryTexture[1] || !rtHistorySurface[0] || !rtHistorySurface[1]) return false;
 	IDirect3DTexture9* raw = RtRaw();
 	if (!raw) return false;
+	if (IDirect3DTexture9* denoised = RtDenoised(Device)) raw = denoised;	// (2026-10-29) .x the denoised visibility (screen size, read by uv)
 	MakePipelineRT(extEstimateRT, "AmbientOcclusionEstimateRT", 2, 1);
 	MakePipelineRT(extTemporalRT, "AmbientOcclusionTemporalRT", 3, 2);
 	if (!extEstimateRT.Pipeline || !extTemporalRT.Pipeline) return false;
