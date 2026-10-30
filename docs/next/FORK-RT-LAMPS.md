@@ -35,6 +35,15 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Denoise: soft lamp shadows through the shared RtDenoise (rtlamp-18, 2026-10-29 23:03, 20261029-230326-slotA, PASS; 6a2646f2, DLL 9B8F8786)
+- Built as asked: LampRadius 16, 1 jittered ray; the trace's split variant writes ranks 0/1 apart, RtDenoise runs per rank with the
+  cube slot as its id (rt-sun-2 4d776164), RtLampRepack.frag writes the result again for s15. It runs (Denoise toggles live).
+- NO-GO here: it lightens real hard shadows (Lucky 38: 0.70 % of pixels brighter, 0.01 % darker: the rail shadows and the stair base;
+  vs 4 rays: soft1 0.02 %, soft1 + denoise 0.70 %); Vault 21 neutral (0.05-0.08 %). Cost: the iGPU frame +55..90 ms (L38 145 ->
+  199 / 236, V21 155 -> 216 / 247; two full-resolution denoiser runs). And there is nothing to fix: at 16 units 1-ray soft shadows
+  already match 4 rays (0.02-0.09 %). Stays off (needs a restart anyway; its 4 images are only made when it is on at start).
+- Soft lamp shadows: LampRadius + Jitter with 1 ray (TAA averages) is the answer on this hardware; the filter and the denoiser parked.
+
 ### ActorUpdateInterval 1/2/3 (rtlamp-17, 2026-10-29 22:42, 20261029-224156-slotA, PASS; bce83772, DLL CD1CA893, rebuilt helper)
 - Picture: the same at 1, 2 and 3 (L38 0.00 %, V21 0.03-0.07 % = the repeat's 0.07 %): rt-sun-core's default 2 is safe here.
 - Cost: not measurable. The whole frame drifts 20-30 ms within a run (V21 traced 147 -> 157 -> 123 -> 125 -> 121 ms in shot order
