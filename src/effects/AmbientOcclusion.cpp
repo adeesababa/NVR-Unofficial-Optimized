@@ -632,6 +632,9 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		c.sunDir = D3DXVECTOR4(sunDir.x, sunDir.y, sunDir.z, sunUp ? 1.0f : 0.0f);
 		c.sunColor = D3DXVECTOR4(lin(sunColor.x), lin(sunColor.y), lin(sunColor.z), 0.0f);
 		c.ambient = D3DXVECTOR4(lin(ambient.x), lin(ambient.y), lin(ambient.z), rt.GlowGI);	// (w: GlowGI, 2026-10-30)
+		// (2026-10-30) sunColor.w 1: the core's glow atlas is bound ([Main.Main.RayTracing] GlowTextures): GlowGI takes the glow map's colour
+		// at the hit (RtHit.glsl rtHitGlow) instead of the whole mesh's
+		c.sunColor.w = RtCore::GlowAtlasImage() >= 0 && rt.GlowGI > 0.0f ? 1.0f : 0.0f;
 		c.gi = D3DXVECTOR4(rt.GIDistance, 1.0f, (float)RtGILamps(c), rt.GIAmbient);
 		c.gi2 = D3DXVECTOR4(rt.GIOffscreen, 0.05f, rt.GIClamp, (float)rt.Interleave);
 		// (GI v2) The game's lit frame, as it is now (the RT core's point: the world is drawn, NVR's effects are not yet), down to the
@@ -662,7 +665,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// iGPU, rt-gi-10/14), which then binds 10 images (the RT core's passes take up to 12 since rt-sun-core 6b9784c3); interleaved GI keeps
 	// its own pass (its whole-grid dispatch and tiles).
 	const bool reuse = gi && rt.GIReuse > 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
-	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1;
+	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1 && rt.GlowDirect <= 0.0f;	// (GlowDirect's list: the GI pass only)
 	const bool giPass = reuse && !merged && RtGIShader >= 0;
 	RtAmbient::GIConstants g = {};
 	if (reuse && (giPass || merged)) {
@@ -725,18 +728,22 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	}
 	const bool mergedNow = merged && c.gi3.z > 0.5f;
 	const int cur = giParity & 1, prev = cur ^ 1;
+	// (2026-10-30) the glow atlas as image 11 (binding 15): the merged pass's last; the plain AO pass binds 6-10 too then (not used there:
+	// the reservoirs and the GI out, unwritten without gi3.z), so the atlas lands at its binding
+	const bool glowAtlas = gi && c.sunColor.w > 0.5f;
 	const int images[12] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
 		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1],
-		RtImageGIOut, RtImageGlowList };	// (6-11 only when merged)
-	const int giImages[10] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
-		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList };
+		RtImageGIOut, glowAtlas ? RtCore::GlowAtlasImage() : RtImageGIOut };
+	const UINT aoImages = mergedNow ? (glowAtlas ? 12u : 11u) : (glowAtlas && RtImageGIOut >= 0 && RtImageReservoir[1][1] >= 0 ? 12u : 6u);
+	const int giImages[11] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList, glowAtlas ? RtCore::GlowAtlasImage() : RtImageGlowList };
 	const bool glowOk = (giPass || mergedNow) && RtImageGIOut >= 0 && RtImageGlowList >= 0 && RtFillGlowLights(Device, rt.GlowDirect);
 	if ((giPass || mergedNow) && !glowOk) { RtGIHistory = false; return; }
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		(glowOk && !RtCore::CopyIn(RtImageGlowList, RtGlowTexture)) ||
-		!RtCore::AddPass(RtShader, images, mergedNow ? 12 : 6, mergedNow ? 0x706 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		!RtCore::AddPass(RtShader, images, aoImages, mergedNow ? 0x706 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
-		(giPass && !RtCore::AddPass(RtGIShader, giImages, 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
+		(giPass && !RtCore::AddPass(RtGIShader, giImages, glowAtlas ? 11 : 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
 		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageGIOut : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
 	if (giPass || mergedNow) giParity++;
