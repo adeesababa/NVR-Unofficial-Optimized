@@ -1696,6 +1696,29 @@ struct PS_INPUT {
     #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
 #endif
 
+#ifndef SHADOW_CONTRAST_ON
+    #define SHADOW_CONTRAST_ON 0
+#endif
+#if SHADOW_CONTRAST_ON
+// UNOFFICIAL 2026-10-29 ShadowContrast ([Shaders.ShadowsInteriors.Forward] ShadowContrast, effects/PBR.cpp; ROOTPLAN round 5 step 14).
+// A forward lamp shadow takes away only its own lamp's light, so where the other light (the ambient, lamps without a shadow) is a large
+// share of the pixel the shadow comes out grey and specked (cpucheck / ROOTPLAN step 12: the P80 look needed lamps 23-51 % brighter).
+// Here, in the one-pass lamp shader (ManyLampsOnePass, the six-lamp interior pass), every shadowed lamp's light is split into what it
+// keeps and what its shadow takes (Includes/ManyLightsDirect.hlsl SC_SPLIT); the rest of the pixel's light is then darkened by the share
+// of the pixel's would-be light that the shadows took: lighting x (1 - strength x lost / (lit + lost)). Fully lit pixels (lost 0) are
+// untouched, so rooms keep their brightness; a pixel deep in a lamp's shadow loses that share of its fill light too.
+// Compiled in only when ShadowContrast > 0 at startup (ShaderRecord::BuildDefines); then live, x 0 = exactly no change. c207: free in
+// every template.
+float4 TESR_ShadowContrast : register(c207);	// x strength indoors this frame (0 outdoors / off)
+#define SC_SPLIT(TERM, SH) { const float3 scTerm = (TERM); const float3 scShadow = (SH); lighting += scTerm * scShadow; scLost += scTerm * (1.0f - scShadow); }
+float ShadowContrastKeep(float3 lit, float3 lost) {
+    const float3 w = float3(0.2126f, 0.7152f, 0.0722f);
+    const float l = dot(max(lost, 0.0f), w);
+    const float share = l / max(dot(max(lit, 0.0f), w) + l, 1.0e-5f);
+    return saturate(1.0f - TESR_ShadowContrast.x * share);
+}
+#endif
+
 struct PS_OUTPUT {
     float4 color : COLOR0;
 #if CAPTURED_NORMALS_ON
@@ -1895,6 +1918,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // The sun's and the lamps' light (includes/ManyLightsDirect.hlsl), then the ambient.
     float3 lighting;
+    #if SHADOW_CONTRAST_ON
+        float3 scLost = 0.0f;	// UNOFFICIAL ShadowContrast: the light the lamps' shadows take here (SC_SPLIT)
+    #endif
     #ifdef METAL
     [branch] if (metallic > 0.0f) {
         // UNOFFICIAL metal: the metal finish, no diffuse ambient on the metal share, which reflects its surroundings instead
@@ -1917,6 +1943,10 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambNormal,
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
     }
+
+    #if SHADOW_CONTRAST_ON
+        lighting *= ShadowContrastKeep(lighting, scLost);	// UNOFFICIAL ShadowContrast (see its constant); before the glow, which stays as it is
+    #endif
 
     // UNOFFICIAL ManyLampsGlow: self emittance, as the LIGHTS < 4 variant adds it.
     #if defined(SI) && !defined(OPT) && defined(MANY_LAMPS_ON) && MANY_LAMPS_ON

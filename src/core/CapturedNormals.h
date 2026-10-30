@@ -22,6 +22,7 @@
 #include <d3d9.h>
 #include <unordered_set>
 #include "DxvkCompute.h"
+#include "DrawState.h"	// UNOFFICIAL 2026-10-29 SharedDrawState: the tracked state lives there
 #include "PassSums.h"	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
 
 namespace CapturedNormals {
@@ -306,8 +307,8 @@ namespace CapturedNormals {
 	// installed with the setting), read from the device once at the span's start (Resync) and again after a state block's Apply
 	// (PassSums' fold-in, the one place in the list that changes state without them), and the write masks are set only when they change.
 	// The same decisions from the same values: the picture is unchanged. Off: the per-draw device queries as before.
-	struct TrackedState { IDirect3DSurface9* rt[4]; IDirect3DPixelShader9* ps; DWORD colorWrite, blend, src, dst, colorWrite2, colorWrite3; };
-	inline TrackedState T = {};
+	using TrackedState = SharedDrawState::TrackedState;
+	inline TrackedState& T = SharedDrawState::T;
 	inline bool LeanWanted = false, LeanHooked = false, Tracked = false;
 	inline UInt32 LeanFrames = 0, LeanSkippedSets = 0;
 	typedef HRESULT(STDMETHODCALLTYPE* SetRTFn)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
@@ -557,6 +558,7 @@ namespace CapturedNormals {
 		Bound = false;
 		Drawn = false;
 		LastPS = nullptr;
+		SharedDrawState::Valid = Lean();	// UNOFFICIAL SharedDrawState: what LinearScene may read until EndSpan
 	}
 
 	inline void EndSpan(IDirect3DDevice9* d) {
@@ -566,6 +568,7 @@ namespace CapturedNormals {
 		if ((rt3 && rt3 == DrawSurface()) || MaterialBound) Unbind(d);
 		InSpan = false;
 		Tracked = false;	// UNOFFICIAL lean hook: resynced at the next span
+		SharedDrawState::Valid = false;
 		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);	// the game's MSAA: resolved for the readers
 		if (MaterialMsaa && MaterialSurface) d->StretchRect(MaterialMsaa, NULL, MaterialSurface, NULL, D3DTEXF_NONE);	// UNOFFICIAL MaterialBuffer

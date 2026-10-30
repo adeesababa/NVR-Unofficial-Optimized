@@ -11,7 +11,8 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
 	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
-	TheShaderManager->RegisterConstant("TESR_LampFalloff", &Constants.LampFalloff);	// UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl)
+	TheShaderManager->RegisterConstant("TESR_LampFalloff", &Constants.LampFalloff);
+	TheShaderManager->RegisterConstant("TESR_ShadowContrast", &Constants.ShadowContrast);	// UNOFFICIAL 2026-10-29 (ObjectTemplate.hlsl)	// UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl)
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
@@ -251,6 +252,18 @@ void PBRShaders::UpdateConstants() {
 		const bool match = lamp.MatchEverywhere && (!indoors || interiorBuilt || LampFalloffAtStartup(LampFalloffMatch));
 		Constants.LampFalloff = D3DXVECTOR4(shaped ? 1.0f : 0.0f, 1.0f / (lamp.Falloff * lamp.Falloff), lamp.Norm * lamp.Brightness,
 			match ? 1.0f : 0.0f);
+	}
+
+	// UNOFFICIAL 2026-10-29 ShadowContrast (ObjectTemplate.hlsl), live once compiled in: indoors only (the lamp shadows' world).
+	{
+		static bool logged = false;
+		const float strength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "ShadowContrast"), 0.0f, 1.0f);
+		if (!logged) {
+			logged = true;
+			Logger::Log("UNOFFICIAL ShadowContrast: %s", ShadowContrastCompiledIn() ? "compiled into the one-pass lamp shader (ManyLampsOnePass / the six-lamp pass); live" :
+				"off (0 at startup: not compiled in; above 0 needs a restart the first time)");
+		}
+		Constants.ShadowContrast.x = ShadowContrastCompiledIn() && !TheShaderManager->GameState.isExterior ? strength : 0.0f;
 	}
 
 	// UNOFFICIAL TrimLampPasses (ObjectTemplate.hlsl DIFFUSE / POINT passes), live.

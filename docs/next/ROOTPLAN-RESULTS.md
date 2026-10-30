@@ -140,3 +140,59 @@ Switches to try (all off by default): `[Main.Main.Quality] ObjectMotion = true` 
   **PASS** -- one TAA line + one "switched live" line per change, FSR 2 / FSR 3.1 textures remade each time, no crash, the RenderScale 1.0
   case logged as native "-- was upscaled before: each ... has its own RenderScale". The slot has no NvrDlssHelper.exe, so DLSS fell back
   to FSR 2 (logged; one redundant "FSR 2.2.1 -> FSR 2.2.1 (DLSS not running)" line): the helper itself is untested here.
+
+## Round 4 (2026-10-29 21:50), claude/rootplan-round3
+- **11. SharedDrawState** (`[Main.Main.Quality]`, live, NVR DXVK, with the lean hook; f2c92ecd, DLL 80473250): LinearScene's per-draw
+  hook reads the render target / pixel shader / blend states CapturedNormals tracks (core/DrawState.h) instead of up to six device Get
+  calls. ObjectMotion has no per-draw device hook (it notes geometry from the game's pass hooks, 0.03 ms), so there was nothing of its
+  to merge. **PASS**, run 20261029-213536-slotA (Ultra-Luxe, the user's toml, CPU-bound, ABAB x4): 7.13 -> 6.88 ms (-0.25 ms, 4 of 4
+  rounds) on top of the lean hook; the same decisions (970 draws in linear light, 299 in the stored curve, on and off; ~1070 of ~1270
+  draws read the shared state); pictures equal (<=0.03% >16 levels). Default on (toml only).
+- **13.** Asked the RT merge session to take claude/rootplan-round3 (lean hook default on: its A/B was clean).
+- **12. Interior lamp-shadow look (Conor's regression), with the pool on.** Runs (all Lucky 38 floor / Vault 21 lobby / Prospector
+  saloon / bar, cpucheck intshadow-lookback views, toml rootplan\look-pool = the user's toml + PoolLamps 32 + quiet pictures; solid % /
+  holes % from each variant's shadows-off pair as cpucheck intshadow_holes.py): look-1 20261029-214201-slotA, look-2 -220446-slotA,
+  look-3 -221441-slotB, look-4 (exposure ON, brightness only) -222253-slotB. Lists rootplan-look-1..4, stats scratch look_stats.py.
+  - **The user's toml is not the defaults' case:** it has `[Shaders.PBR.LampFalloff] Interior = true` (the physical lamp shape replaces
+    the falloff FalloffMatch decodes) and AmbientLight off. So FalloffMatch, AmbientLight's InteriorBounceShare / GridLamps and
+    ForwardReachMask 0/1 change nothing there (look-1: every variant within 0.2 of today).
+  - **The P80 look comes only with brighter lamps along their reach** (Interior off + FalloffMatch 0 + ForwardReachMask 0), and it is
+    the P80 numbers: holes V21 3.09 -> 1.07 %, saloon 6.28 -> 1.61 %, bar 2.81 -> 1.92 %; solid +6..+94 %. Price: rooms +30..+67 %
+    brighter with exposure off and **still +23..+51 % after the exposure effect settles** (look-4) -- the brightness FalloffMatch fixed.
+  - Turning the ambient down does not buy it back: `[Shaders.PBR.Interiors] AmbientScale` 0.5 -> 0.2 moves the room by ~1 % (indoors
+    nearly all the light is lamps). Lowering the lamps again (LightingScale 0.8) brings the holes back (V21 2.18, bar 3.36): the holes are
+    light the forward shadows cannot take away (lamps without a shadow, the game's own passes); they shrink only as NVR's shadowed lamps
+    carry more of the pixel.
+  - The pool helps on its own: PoolLamps 32 vs 0, V21 solid 4.73 -> 6.07 % (more lamps shadowed), others +2..+4 %, no brightness cost.
+  - **Proposal.** (a) Keep the defaults; ship the pool on (PoolLamps 32) once its own default is decided. (b) Closest settings-only step
+    for this toml: `[Shaders.PBR.LampFalloff] Brightness = 1.5` -- saloon holes 6.3 -> 3.0 %, V21 3.1 -> 2.2 %, solid +5..+36 %, rooms
+    +9..+14 % after exposure (the user's choice, not a default). (c) The real "ShadowContrast" needs code: the lamp passes already know
+    how much of their light each pixel lost to its shadow; write that share into MaterialBuffer's free alpha (the lamp passes, additive),
+    and let a full-screen step after the main list darken the rest of that pixel's light (the unshadowed lamps and the game's passes) by
+    ShadowContrast x that share. P80's solid shadows at today's room brightness; not built (needs MaterialBuffer on and the lamp-pass
+    MRT write: a session of its own).
+
+## Round 5 (2026-10-29 23:15), claude/rootplan-round3 6928662e, DLL 7740ECB0
+- **14. ShadowContrast** (`[Shaders.ShadowsInteriors.Forward] ShadowContrast`, [0-1], default 0; above 0 at startup compiles it in
+  (SHADOW_CONTRAST_ON), then live, indoors only). Built **in the one-pass lamp shader** instead of the planned MaterialBuffer alpha +
+  full-screen step: with ManyLampsOnePass (the user's toml) the six shadowed lamps, the other lamps and the ambient are in one shader,
+  so each shadowed lamp's term is split there into kept and lost light (Includes/ManyLightsDirect.hlsl SC_SPLIT) and the pixel's light
+  is multiplied by 1 - strength x lost / (lit + lost) before the glow. No buffer, no extra pass; off = every shader as before (same
+  instruction counts, checked with template_compile); +80 instruction slots on. Not in the game's multi-pass path (ManyLampsOnePass
+  off, the NVR default): there each lamp pass is added on its own and cannot dim the rest -- that would need the buffer design.
+  Runs (same 4 views, toml look-sc / look-sc-expo = user toml + pool 32 + ShadowContrast compiled in): specks 20261029-225123-slotA,
+  brightness + cost -225549-slotA, bar cost ABAB -230746-slotC; picture rootplan\shadowcontrast-sal-v21.png.
+
+  | view | today solid / holes | 0.5 | 1.0 | P80 look | room after exposure 0.5 / 1.0 / P80 |
+  |---|---|---|---|---|---|
+  | Lucky 38 | 6.40 / 0.98 | 7.08 / 1.02 | 7.94 / 1.30 | 8.71 / 0.90 | -0.9 / -2.4 / +28.6 % |
+  | Vault 21 | 6.18 / 3.11 | 6.49 / 3.32 | 6.94 / 3.69 | 8.17 / 1.06 | -0.5 / -1.3 / +51.1 % |
+  | saloon | 1.17 / 6.32 | 1.59 / 5.66 | 2.49 / 4.15 | 2.16 / 1.42 | -0.6 / -1.3 / +22.7 % |
+  | bar | 9.16 / 2.92 | 9.75 / 2.73 | 10.58 / 2.72 | 9.93 / 1.92 | -0.7 / -1.7 / +29.1 % |
+
+  Cost: GPU frame equal to today within noise (Lucky 38 / Vault 21 / saloon +-0.05 ms; bar ABAB x4 -0.10 ms mean, pairs +0.08..-0.29):
+  under 0.1 ms. **Verdict:** the solid-shadow part of the P80 look at today's room brightness (solid +8..+113 %, rooms -1..-2 %), at no
+  measurable cost; the lit specks only partly (saloon -34 %, bar -7 %, but Lucky 38 / Vault 21 +33 % / +19 %: there the specks are lit
+  texels in the shadow lookup itself, which a deeper shadow shows more). **Proposed:** default stays 0 (a look change, and the specks
+  are their own fix: the lookup's filter, not the light balance); 0.5 as the suggested value for players who want deeper lamp shadows
+  (specks no worse than today except Vault 21 +0.2 points). Handed to the RT merge train.

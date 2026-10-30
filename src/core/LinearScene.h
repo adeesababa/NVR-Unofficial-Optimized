@@ -20,6 +20,7 @@
 // Off (default; compiled in only when on at startup, ShaderRecord LINEAR_SCENE_ON): nothing hooked, the shaders as before.
 #include <d3dx9.h>
 #include "LinearSceneShaders.h"
+#include "DrawState.h"	// UNOFFICIAL 2026-10-29 SharedDrawState: CapturedNormals' tracked device state
 
 namespace LinearScene {
 
@@ -35,6 +36,13 @@ namespace LinearScene {
 	inline IDirect3DPixelShader9* ConvertPS = nullptr;
 	inline IDirect3DPixelShader9* LastPS = nullptr;  inline bool LastCapable = false;
 	inline UInt32 Frames = 0, Conversions = 0, LinearDraws = 0, StoredDraws = 0, OtherTarget = 0;
+	// UNOFFICIAL 2026-10-29 SharedDrawState ([Main.Main.Quality], live, NVR DXVK; ROOTPLAN round 4 step 11): CapturedNormals' lean hook
+	// already keeps the render targets, pixel shader and blend states from the device's own Set calls inside the main list (the same span
+	// as this one, opened inside it). On, this hook takes them from there instead of asking the device again (up to six Get calls a draw,
+	// each through DXVK's device lock). Same values, same decisions: the picture is unchanged. Outside CapturedNormals' tracking (it off,
+	// native D3D9, or a draw outside its span) the device is asked as before. Off: as before.
+	inline bool SharedWanted = false;
+	inline UInt32 SharedDraws = 0;
 
 	typedef HRESULT(STDMETHODCALLTYPE* DIPFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
 	typedef HRESULT(STDMETHODCALLTYPE* DPFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, UINT, UINT);
@@ -138,19 +146,24 @@ namespace LinearScene {
 
 	inline void BeforeDraw(IDirect3DDevice9* d) {
 		if (!Live || !InSpan) return;
+		const bool shared = SharedWanted && SharedDrawState::Valid;
+		if (shared) SharedDraws++;
 		IDirect3DPixelShader9* ps = nullptr;
-		d->GetPixelShader(&ps);
-		if (ps) ps->Release();	// a key only
+		if (shared) ps = SharedDrawState::T.ps;
+		else { d->GetPixelShader(&ps); if (ps) ps->Release(); }	// a key only
 		if (ps != LastPS) { LastPS = ps; LastCapable = ps && Capable.count(ps) != 0; }
 		IDirect3DSurface9* rt0 = nullptr;
-		d->GetRenderTarget(0, &rt0);
-		if (rt0) rt0->Release();
+		if (shared) rt0 = SharedDrawState::T.rt[0];
+		else { d->GetRenderTarget(0, &rt0); if (rt0) rt0->Release(); }
 		if (rt0 != SpanTarget) { OtherTarget++; if (LastCapable) SetFlag(d, false); return; }	// a copy, a shadow map, a mask: as before
 		DWORD write = 0xF, blend = FALSE, src = D3DBLEND_ONE, dst = D3DBLEND_ZERO;
-		d->GetRenderState(D3DRS_COLORWRITEENABLE, &write);
+		if (shared) write = SharedDrawState::T.colorWrite; else d->GetRenderState(D3DRS_COLORWRITEENABLE, &write);
 		if (!(write & 7)) { if (LastCapable) SetFlag(d, false); return; }	// depth only
-		d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
-		if (blend) { d->GetRenderState(D3DRS_SRCBLEND, &src); d->GetRenderState(D3DRS_DESTBLEND, &dst); }
+		if (shared) { blend = SharedDrawState::T.blend; if (blend) { src = SharedDrawState::T.src; dst = SharedDrawState::T.dst; } }
+		else {
+			d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+			if (blend) { d->GetRenderState(D3DRS_SRCBLEND, &src); d->GetRenderState(D3DRS_DESTBLEND, &dst); }
+		}
 		const bool additive = blend && dst == D3DBLEND_ONE && (src == D3DBLEND_ONE || src == D3DBLEND_SRCALPHA);
 		const bool wantLinear = LastCapable && (!blend || additive);
 		if (wantLinear != Linear && !Convert(d, rt0, wantLinear)) { Live = false; if (LastCapable) SetFlag(d, false); return; }
@@ -208,11 +221,12 @@ namespace LinearScene {
 		const D3DXVECTOR4& l = TheShaderManager->Shaders.PBR->Constants.Linear;
 		Gamma = l.x;
 		Live = Compiled && !Failed && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "LinearScene") != 0;
+		SharedWanted = TheSettingManager->GetSettingI("Main.Main.Quality", "SharedDrawState") != 0;
 		if (Live && !Hooked) Hook(d);
 		if (Live && ++Frames >= 600) {
-			Logger::Log("UNOFFICIAL LinearScene: per frame %.2f conversions, %.1f draws in linear light, %.1f in the stored curve, %.1f into other targets",
-				Conversions / (double)Frames, LinearDraws / (double)Frames, StoredDraws / (double)Frames, OtherTarget / (double)Frames);
-			Frames = Conversions = LinearDraws = StoredDraws = OtherTarget = 0;
+			Logger::Log("UNOFFICIAL LinearScene: per frame %.2f conversions, %.1f draws in linear light, %.1f in the stored curve, %.1f into other targets; %.1f draws read the state CapturedNormals tracks (SharedDrawState)",
+				Conversions / (double)Frames, LinearDraws / (double)Frames, StoredDraws / (double)Frames, OtherTarget / (double)Frames, SharedDraws / (double)Frames);
+			Frames = Conversions = LinearDraws = StoredDraws = OtherTarget = SharedDraws = 0;
 		}
 	}
 

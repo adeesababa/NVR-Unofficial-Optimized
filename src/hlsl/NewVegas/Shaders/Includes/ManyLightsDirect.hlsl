@@ -3,6 +3,8 @@
 // "lightRoughness, metallic"). The copy without metal is the old code exactly, and pixels without metal take it, so metal
 // costs nothing where there is none. Uses main()'s locals: IN, viewDir, normal, baseColor, att, lighting, sunShadow
 // (without OPT) and the forward point shadows (SHADOWED).
+// UNOFFICIAL 2026-10-29 ShadowContrast (SHADOW_CONTRAST_ON, ObjectTemplate.hlsl): each shadowed lamp's term is worked out unshadowed and
+// split (SC_SPLIT) into the light kept (added to lighting) and the light its shadow takes (added to scLost). Off: the lines as before.
 
 #ifdef MANY_LAMPS
 // UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS; after Conor (mrfury97)'s fork, see ManyLamps.h): every lamp of the object from c37-c63,
@@ -33,6 +35,16 @@
             [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
                 lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
         }
+    #if SHADOW_CONTRAST_ON	// UNOFFICIAL 2026-10-29 ShadowContrast: a shadowed lamp's term unshadowed, split into kept and lost light
+    #define ML_LAMP_AT_SC(COND, POSITION, COLOR, SH) [branch] if (COND) { \
+            const float4 mlP = POSITION; \
+            const float3 mlD = mlP.xyz - mlWorldPos; \
+            const float3 mlL = ML_TS(mlD); \
+            att = vanillaAtt(mlD, max(mlP.w, 1.0e-3f)); \
+            [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
+                SC_SPLIT(getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), SH) \
+        }
+    #endif
     #define ML_TABLE_LAMP(j, COLOR) [branch] if ((j) < mlCount) { \
             const float mlI = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], (float)(j)); \
             float4 mlTP; float3 mlTC; \
@@ -41,6 +53,33 @@
                 ML_LAMP_AT(true, mlTP, COLOR) \
             } \
         }
+    #if SHADOW_CONTRAST_ON
+    #define ML_TABLE_LAMP_SC(j, SH) [branch] if ((j) < mlCount) { \
+            const float mlI = LightCommonIndex(NVR_ManyLamps[5], NVR_ManyLamps[6], NVR_ManyLamps[7], (float)(j)); \
+            float4 mlTP; float3 mlTC; \
+            [branch] if (mlI < LIGHT_COMMON_NONE) { \
+                LightCommonLamp(mlI, NVR_ManyLamps[1], NVR_ManyLamps[2], NVR_ManyLamps[3], NVR_ManyLamps[4], NVR_ManyLamps[0].y, mlTP, mlTC); \
+                ML_LAMP_AT_SC(true, mlTP, mlTC, SH) \
+            } \
+        }
+    #endif
+    #if SHADOW_CONTRAST_ON
+    #ifdef OPT
+        ML_TABLE_LAMP_SC(0, POINT_SHADOW(0, att))
+        ML_TABLE_LAMP_SC(1, POINT_SHADOW(1, att))
+        ML_TABLE_LAMP_SC(2, POINT_SHADOW(2, att))
+        ML_TABLE_LAMP_SC(3, POINT_SHADOW(3, att))
+        ML_TABLE_LAMP_SC(4, POINT_SHADOW(4, att))
+        ML_TABLE_LAMP_SC(5, POINT_SHADOW(5, att))
+    #else
+        ML_TABLE_LAMP_SC(0, POINT_SHADOW(1, att))
+        ML_TABLE_LAMP_SC(1, POINT_SHADOW(2, att))
+        ML_TABLE_LAMP_SC(2, POINT_SHADOW(3, att))
+        ML_TABLE_LAMP_SC(3, POINT_SHADOW(4, att))
+        ML_TABLE_LAMP_SC(4, POINT_SHADOW(5, att))
+        ML_TABLE_LAMP(5, mlTC)
+    #endif
+    #else
     #ifdef OPT
         ML_TABLE_LAMP(0, SHADOWED(mlTC, 0, att))
         ML_TABLE_LAMP(1, SHADOWED(mlTC, 1, att))
@@ -56,12 +95,19 @@
         ML_TABLE_LAMP(4, SHADOWED(mlTC, 5, att))
         ML_TABLE_LAMP(5, mlTC)
     #endif
+    #endif
     [loop] for (int mlIndex = 6; mlIndex < 24; mlIndex++) {
         [branch] if (mlIndex >= mlCount) break;
         ML_TABLE_LAMP(mlIndex, mlTC)
     }
     #undef ML_TABLE_LAMP
+    #ifdef ML_TABLE_LAMP_SC
+    #undef ML_TABLE_LAMP_SC
+    #endif
     #undef ML_LAMP_AT
+    #ifdef ML_LAMP_AT_SC
+    #undef ML_LAMP_AT_SC
+    #endif
     #undef ML_TS
 }
 #else
@@ -78,7 +124,37 @@
             [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
                 lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
         }
+    #if SHADOW_CONTRAST_ON	// UNOFFICIAL 2026-10-29 ShadowContrast: a shadowed lamp's term unshadowed, split into kept and lost light
+    #define ML_LAMP_AT_SC(COND, POSITION, COLOR, SH) [branch] if (COND) { \
+            const float4 mlP = POSITION; \
+            const float3 mlD = mlP.xyz - mlWorldPos; \
+            const float3 mlL = ML_TS(mlD); \
+            att = vanillaAtt(mlD, max(mlP.w, 1.0e-3f)); \
+            [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
+                SC_SPLIT(getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), SH) \
+        }
+    #endif
     #define ML_LAMP(j, COLOR) ML_LAMP_AT((j) < mlCount, NVR_ManyLamps[1 + 2 * (j)], COLOR)
+    #if SHADOW_CONTRAST_ON
+    #define ML_LAMP_SC(j, COLOR, SH) ML_LAMP_AT_SC((j) < mlCount, NVR_ManyLamps[1 + 2 * (j)], COLOR, SH)
+    #endif
+    #if SHADOW_CONTRAST_ON
+    #ifdef OPT
+        ML_LAMP_SC(0, NVR_ManyLamps[2].rgb, POINT_SHADOW(0, att))
+        ML_LAMP_SC(1, NVR_ManyLamps[4].rgb, POINT_SHADOW(1, att))
+        ML_LAMP_SC(2, NVR_ManyLamps[6].rgb, POINT_SHADOW(2, att))
+        ML_LAMP_SC(3, NVR_ManyLamps[8].rgb, POINT_SHADOW(3, att))
+        ML_LAMP_SC(4, NVR_ManyLamps[10].rgb, POINT_SHADOW(4, att))
+        ML_LAMP_SC(5, NVR_ManyLamps[12].rgb, POINT_SHADOW(5, att))
+    #else
+        ML_LAMP_SC(0, NVR_ManyLamps[2].rgb, POINT_SHADOW(1, att))
+        ML_LAMP_SC(1, NVR_ManyLamps[4].rgb, POINT_SHADOW(2, att))
+        ML_LAMP_SC(2, NVR_ManyLamps[6].rgb, POINT_SHADOW(3, att))
+        ML_LAMP_SC(3, NVR_ManyLamps[8].rgb, POINT_SHADOW(4, att))
+        ML_LAMP_SC(4, NVR_ManyLamps[10].rgb, POINT_SHADOW(5, att))
+        ML_LAMP(5, NVR_ManyLamps[12].rgb)
+    #endif
+    #else
     #ifdef OPT
         ML_LAMP(0, SHADOWED(NVR_ManyLamps[2].rgb, 0, att))
         ML_LAMP(1, SHADOWED(NVR_ManyLamps[4].rgb, 1, att))
@@ -93,6 +169,7 @@
         ML_LAMP(3, SHADOWED(NVR_ManyLamps[8].rgb, 4, att))
         ML_LAMP(4, SHADOWED(NVR_ManyLamps[10].rgb, 5, att))
         ML_LAMP(5, NVR_ManyLamps[12].rgb)
+    #endif
     #endif
     [loop] for (int mlIndex = 6; mlIndex < MANY_LAMPS_MAX; mlIndex++) {
         [branch] if (mlIndex >= mlCount) break;
@@ -110,7 +187,13 @@
         }
     }
     #undef ML_LAMP
+    #ifdef ML_LAMP_SC
+    #undef ML_LAMP_SC
+    #endif
     #undef ML_LAMP_AT
+    #ifdef ML_LAMP_AT_SC
+    #undef ML_LAMP_AT_SC
+    #endif
     #undef ML_TS
 }
 #endif // MANY_LAMPS_ON == 2
@@ -121,7 +204,11 @@
     att = vanillaAtt(PSLightPosition[0].xyz - IN.lPosition.xyz, PSLightPosition[0].w);
     lighting = 0.0f;
     LAMP_IFK(0, att)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+        SC_SPLIT((0 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.lightDir.xyz, att, PSLightColor[0].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(0, att))
+#else
         lighting = (0 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.lightDir.xyz, att, SHADOWED(PSLightColor[0].rgb, 0, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 #endif
 
 // UNOFFICIAL: SHADOWED(colour, k, att) -- light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT).
@@ -131,16 +218,28 @@
 // went with the draw order (floor pieces lighting up and going dark with hard edges as the camera moved, PBR only).
 att = vanillaAtt(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 0].w);
 LAMP_IFK(1, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
+#if SHADOW_CONTRAST_ON
+    SC_SPLIT((1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, PSLightColor[1].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(1, att))
+#else
     lighting += (1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, SHADOWED(PSLightColor[1].rgb, 1, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 
 att = vanillaAtt(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 1].w);
 LAMP_IFK(2, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
+#if SHADOW_CONTRAST_ON
+    SC_SPLIT((2 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light3.xyz, att, PSLightColor[2].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(2, att))
+#else
     lighting += (2 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light3.xyz, att, SHADOWED(PSLightColor[2].rgb, 2, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 
 #if MAX_LIGHTS > 3
     att = vanillaAtt(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 2].w);
     LAMP_IFK(3, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
+#if SHADOW_CONTRAST_ON
+        SC_SPLIT((3 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light4.xyz, att, PSLightColor[3].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(3, att))
+#else
         lighting += (3 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light4.xyz, att, SHADOWED(PSLightColor[3].rgb, 3, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 #endif
 
 #if MAX_LIGHTS > 4
@@ -148,10 +247,18 @@ LAMP_IFK(2, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl):
     // lamp's position for their falloff).
     att = vanillaAtt(PSLightPosition[lightOffset + 3].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 3].w);
     LAMP_IFK(4, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
+#if SHADOW_CONTRAST_ON
+        SC_SPLIT((4 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light5.xyz, att, PSLightColor[4].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(4, att))
+#else
         lighting += (4 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light5.xyz, att, SHADOWED(PSLightColor[4].rgb, 4, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 
     att = vanillaAtt(PSLightPosition[lightOffset + 4].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 4].w);
     LAMP_IFK(5, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
+#if SHADOW_CONTRAST_ON
+        SC_SPLIT((5 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, PSLightColor[5].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH), POINT_SHADOW(5, att))
+#else
         lighting += (5 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, SHADOWED(PSLightColor[5].rgb, 5, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#endif
 #endif
 #endif // MANY_LAMPS

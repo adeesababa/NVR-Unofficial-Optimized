@@ -153,6 +153,7 @@ public:
 		D3DXVECTOR4		SharpSky;	// UNOFFICIAL TESR_SharpSky (SkyAmbient.hlsl): x [Shaders.PBR.Metal] SharpSky, 0 = the plain sky
 		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_EnvCube (Includes/LiveCube.hlsl): x metal's, y the env-map pass's share of the live cube (0 while it is not kept up), z its last mip
 		D3DXVECTOR4		Linear = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_LinearLighting (Includes/LinearLight.hlsl): x gamma (1 = off), y 1 / x
+		D3DXVECTOR4		ShadowContrast = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-29 TESR_ShadowContrast (ObjectTemplate.hlsl, c207): x strength indoors
 		D3DXVECTOR4		LampFalloff = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-21 TESR_LampFalloff (Includes/LampFalloff.hlsl, c205): x shape on, y 1 / Falloff^2, z strength, w MatchEverywhere
 	};
 	PBRStruct	Constants;
@@ -257,6 +258,13 @@ public:
 	static const char* LampFalloffInteriorDefine() {
 		if (!LampFalloffShapeIn() || LampFalloffAtStartup(LampFalloffInterior)) return nullptr;
 		return LampFalloffAtStartup(LampFalloffMatch) ? "1" : "0";
+	}
+
+	// UNOFFICIAL 2026-10-29 ShadowContrast (ObjectTemplate.hlsl, [Shaders.ShadowsInteriors.Forward] ShadowContrast): compiled into the
+	// one-pass lamp shader only when above 0 at startup (as ShaderRecord::BuildDefines read it); then live.
+	static bool	ShadowContrastCompiledIn() {
+		static const bool on = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "ShadowContrast") > 0.0f;
+		return on;
 	}
 
 	void	UpdateConstants();
