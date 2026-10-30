@@ -35,6 +35,17 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
+- [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
+  flashlight's reach toward it (people included, lamp glass not), stopping FlashlightStop 40 short (the player's body and weapon);
+  Flashlight's shadow pass reads it (FlashlightShadowsRT.frag) instead of its shadow map, the shadowed technique runs with it whatever
+  RenderShadows says (TechniqueThisFrame), and the shadow map is not drawn. Toggles live (its image is made at start).
+- Lucky 38 + Vault 21, flashlight forced on (TestForceOn), Actors on: it works: chair backs and the table's side darken where the
+  flashlight (a little off the eye) is blocked; repeats 0.00-0.01 %; vs no flashlight shadows L38 0.06 %, V21 0.27 % of pixels (small:
+  a light near the eye hides most of its own shadows behind the objects). Trace 3.7-5.8 ms on the iGPU (helper); frame +2..6 ms (noisy).
+- Live RenderShadows changes did not take (map shots = none), so the shadow map was not compared; with Flashlight off nothing changes.
+- Known: if the NVR DXVK path failed in a frame, the D3D9 technique would read the undrawn shadow map (not seen).
+
 ### Exteriors: night lamp shadows outdoors (39a1ec02 + b7c071ef, DLL 51D6B134; runs rtlamp-19..22, 2026-10-30)
 - Built (off, needs a restart + [Shaders.ShadowsExteriors.Main] UsePointShadowsNight): outdoors there are no per-draw lamp records,
   the lamp shadows are the screen-space lamp mask (PointShadows.fx) in the shadow buffer's green. RtLampTraceExterior.spv writes that
