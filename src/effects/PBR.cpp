@@ -1,5 +1,6 @@
 #include "PBR.h"
 #include "../core/PassSums.h"
+#include "../core/CapturedNormals.h"	// UNOFFICIAL 2026-10-29 ShadowContrast (the game's lamp passes)
 #include "../core/LinearPreDecode.h"
 #include "GrassCollision.h"	// UNOFFICIAL 2026-10-19 (TESR_Translucency.w)
 
@@ -264,6 +265,7 @@ void PBRShaders::UpdateConstants() {
 				"off (0 at startup: not compiled in; above 0 needs a restart the first time)");
 		}
 		Constants.ShadowContrast.x = ShadowContrastCompiledIn() && !TheShaderManager->GameState.isExterior ? strength : 0.0f;
+		CapturedNormals::ContrastStrength = Constants.ShadowContrast.x;	// the game's added lamp passes: MaterialBuffer + a step after the list
 	}
 
 	// UNOFFICIAL TrimLampPasses (ObjectTemplate.hlsl DIFFUSE / POINT passes), live.
