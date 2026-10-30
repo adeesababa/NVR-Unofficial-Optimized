@@ -72,6 +72,7 @@ namespace {
 		bool	sent = false;		// a BUILD op went to the helper
 		bool	refused = false;	// the fork refused it (logged once): never again
 		bool	textured = false;	// skinned: its last build carried texcoords (hit textures)
+		bool	skinned = false;	// an actor's partition (dropped at once when the player changes cell)
 	};
 
 	// A diffuse texture's average colour (linear rgb), from its smallest mip, once per texture (protocol v2's instance records).
@@ -783,6 +784,7 @@ namespace {
 			GeometryEntry& entry = geometries[key];
 			if (entry.refused) continue;
 			entry.lastSeen = sceneFrame;
+			entry.skinned = true;
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
 			// ActorUpdateInterval: a posed partition is re-posed only every Nth frame (staggered by id), the frames between keep the
 			// last pose (a frame or two late: unseen in shadows; rt-lamp: actors were most of the RT cost indoors, ~60 partitions a frame)
@@ -1025,6 +1027,24 @@ namespace {
 
 	void Core::Gather() {
 		sceneFrame++;
+		// A cell change (a door, a jump, a load): every actor partition goes at once (its buffers and bones may be unloaded and the
+		// addresses reused by new ones); the actors still there are posed again from scratch this frame
+		static const void* lastCell = nullptr;
+		const void* cell = Player ? (const void*)Player->parentCell : nullptr;
+		if (cell != lastCell) {
+			for (auto it = geometries.begin(); it != geometries.end(); ) {
+				if (!it->second.skinned) { ++it; continue; }
+				if (it->second.sent && record->opCount < NVR_RT_MAX_OPS) {
+					NvrRtGeometryOp& op = record->ops[record->opCount++];
+					op = NvrRtGeometryOp();
+					op.op = NVR_RT_OP_RELEASE;
+					op.id = it->second.id;
+					released++;
+				}
+				it = geometries.erase(it);
+			}
+			lastCell = cell;
+		}
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
