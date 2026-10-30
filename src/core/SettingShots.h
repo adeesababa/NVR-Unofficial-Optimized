@@ -418,8 +418,10 @@ namespace SettingShots {
 	// The shot's console commands. 2026-10-19: taken out of the list BEFORE running. A 'coc' draws loading-screen frames inside
 	// RunScriptLine, which come back to BeginFrame; with the list still full every one of them ran the coc again (117 nested coc calls,
 	// then a crash).
+	inline int WalkPause = 0;	// 'walk' waits this many main-loop ticks after the list's own commands (a moveto / setpos it would undo)
 	inline void RunCommands() {
 		if (Commands.empty()) return;
+		WalkPause = 30;
 		std::vector<std::string> lines;
 		lines.swap(Commands);
 		for (const std::string& line : lines) {
@@ -449,7 +451,8 @@ namespace SettingShots {
 		// 'walk' (2026-10-30): forward along the facing, back the same way after WalkPeriod seconds (stays in the same place over a run)
 		static ULONGLONG lastWalk = 0;
 		static float walkClock = 0.0f;
-		if (Running && WalkRate != 0.0f && g_ConsoleInterface && Player) {
+		if (WalkPause > 0) { WalkPause--; lastWalk = 0; }
+		else if (Running && WalkRate != 0.0f && g_ConsoleInterface && Player) {
 			const ULONGLONG now = GetTickCount64();
 			const float dt = lastWalk ? (float)min(now - lastWalk, 100ULL) / 1000.0f : 0.0f;
 			lastWalk = now;
