@@ -42,6 +42,8 @@ namespace RtAmbient {
 		int		GIInterleave = 1;		// 1, 2 or 4 (2026-10-29): the GI rays in every / every 2nd / every 4th 8 x 8 tile a frame			// 1, 2 or 4 (2026-10-29): trace every, every 2nd or every 4th texel a frame (cost / 1, 2, 4)
 		float	GIAmbient = 0.0f;		// [0-1] the ambient's share in what lights a hit (0: sun and lamps only; the game's ambient is already its indirect light)
 		float	GlowGI = 0.0f;			// [0-4] (2026-10-30) glow-mapped surfaces (neon, lit windows, screens) light the bounce: their colour x this; 0 = off
+		float	GlowDirect = 0.0f;		// [0-8] (2026-10-30) glow-mapped instances as sphere lights on the bounce light (one picked per texel, a
+										// shadow ray): neon pools on floors and walls; 0 = off. Needs GIReuse > 0 (its passes carry the list)
 		int		GISpatial = 0;			// [0-4] (2026-10-30) ReSTIR GI's spatial step: neighbours' reservoirs merged (GIReuse > 0)
 		int		GIReuse = 8;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
 										// texel, at most this many frames of samples behind it; 0 = the bounce inside the AO pass as before
@@ -71,6 +73,7 @@ namespace RtAmbient {
 		Current.GIReuse = std::clamp(TheSettingManager->GetSettingI(s, "GIReuse"), 0, 32);
 		Current.GISpatial = std::clamp(TheSettingManager->GetSettingI(s, "GISpatial"), 0, 4);
 		Current.GlowGI = std::clamp(TheSettingManager->GetSettingF(s, "GlowGI"), 0.0f, 4.0f);
+		Current.GlowDirect = std::clamp(TheSettingManager->GetSettingF(s, "GlowDirect"), 0.0f, 8.0f);
 	}
 
 	inline constexpr int GILampsMax = 8;

@@ -74,6 +74,9 @@ layout(set = 0, binding = 3, rgba16f) uniform readonly image2D prevA;
 layout(set = 0, binding = 4, rgba16f) uniform readonly image2D prevB;
 layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D curA;
 layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D curB;
+// (2026-10-30) the bounce light out (the reservoir's estimate + GlowDirect: what AmbientLight takes, NVR_RTGIRaw) and the glow lights
+layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D giOut;
+layout(set = 0, binding = 13, rgba16f) uniform readonly image2D glowList;
 #else
 // (2026-10-30) GIReuse inside this pass at full rate (gi3.z 1): last frame's reservoirs at 8 / 9, this frame's at 12 / 13 (the helper's
 // images 8-11 bind at 12-15; 10 / 11 stay the records and the geometry). Bound only then (the helper's descriptors are partially bound).
@@ -81,6 +84,8 @@ layout(set = 0, binding = 8, rgba16f) uniform readonly image2D prevA;
 layout(set = 0, binding = 9, rgba16f) uniform readonly image2D prevB;
 layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D curA;
 layout(set = 0, binding = 13, rgba16f) uniform writeonly image2D curB;
+layout(set = 0, binding = 14, rgba16f) uniform writeonly image2D giOut;      // (2026-10-30) as the GI pass's 12 / 13
+layout(set = 0, binding = 15, rgba16f) uniform readonly image2D glowList;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D giImage;   // (rt-ao-gi) rgb the bounce light arriving, a hit distance / GI distance
 #endif
@@ -267,6 +272,47 @@ vec2 OctEncode(vec3 n) {
 }
 float Luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
+// (2026-10-30) GlowDirect: the glow-mapped instances (neon, lit signs, lamp globes, screens) light the texel directly, as sphere lights
+// (glowList, filled by NVR from RtCore::GlowLights(): row 0 the centre in scene space + the bound's radius, row 1 the colour; texel
+// (0, 2) x the count, y the strength). One light picked per texel in proportion to what it would give unshadowed (its colour x
+// strength x radius^2 / distance^2 x the cosine: resampled importance sampling over the whole list, ReSTIR DI's first step), one
+// shadow ray to a point on it; light / its chance. Inside a light's bound (or closer than its radius) no shadow ray. GIClamp caps it.
+vec3 GlowDirect(ivec2 texel, vec3 p, vec3 n, float bias) {
+    vec4 head = imageLoad(glowList, ivec2(0, 2));
+    int count = min(int(head.x + 0.5), 32);
+    if (count <= 0 || !(head.y > 0.0)) return vec3(0.0);
+    vec3 start = p + n * bias;
+    float total = 0.0;
+    for (int k = 0; k < count; k++) {
+        vec4 s = imageLoad(glowList, ivec2(k, 0));
+        vec3 l = s.xyz - start;
+        float d2 = max(dot(l, l), s.w * s.w), c = dot(n, l) * inversesqrt(max(dot(l, l), 1.0e-4));
+        if (c > 0.0) total += Luma(imageLoad(glowList, ivec2(k, 1)).rgb) * s.w * s.w / d2 * c;
+    }
+    if (!(total > 0.0)) return vec3(0.0);
+    float frame = cb.origin.w;
+    float pick = fract(Ign(vec2(texel) + 307.0) + frame * 0.618034) * total;
+    for (int k = 0; k < count; k++) {
+        vec4 s = imageLoad(glowList, ivec2(k, 0));
+        vec3 col = imageLoad(glowList, ivec2(k, 1)).rgb;
+        vec3 l = s.xyz - start;
+        float dist = length(l), d2 = max(dist * dist, s.w * s.w), c = dot(n, l) / max(dist, 1.0e-2);
+        if (!(c > 0.0)) continue;
+        vec3 e = col * (head.y * s.w * s.w / d2 * c);
+        float w = Luma(e);
+        if (pick >= w && k < count - 1) { pick -= w; continue; }
+        if (!(w > 0.0)) return vec3(0.0);
+        // a point on the sphere's inner half (soft shadows), the ray stopping at its surface
+        vec2 u = fract(vec2(Ign(vec2(texel) + 331.0), Ign(vec2(texel) + 359.0)) + frame * vec2(0.754878, 0.569840));
+        vec3 target = s.xyz + CosineDirection(-l / max(dist, 1.0e-2), u) * (0.5 * s.w);
+        vec3 toT = target - start;
+        float t = length(toT);
+        bool lit = dist <= s.w || Visible(start, toT / max(t, 1.0e-3), max(t - 0.5 * s.w, 0.0));
+        return lit ? Clamped(e * (total / w)) : vec3(0.0);
+    }
+    return vec3(0.0);
+}
+
 void ReuseGI(ivec2 texel, vec3 p, vec3 n, float viewZ, float bias, bool giTile, vec3 v, float reuse) {
     // Last frame's reservoir of this surface. (2026-10-30, v2) Outside the frame's tiles a texel without its own history (a
     // disocclusion, a screen edge) borrows a neighbour's last frame (2 texels round the reprojected point, depth within 15 %) instead
@@ -337,6 +383,7 @@ void ReuseGI(ivec2 texel, vec3 p, vec3 n, float viewZ, float bias, bool giTile, 
     float W = m > 0.0 && target > 0.0 ? weightSum / (m * target) : 0.0;
     imageStore(curA, texel, vec4(chosen * W, W));
     imageStore(curB, texel, vec4(m, viewZ, OctEncode(n)));
+    imageStore(giOut, texel, vec4(chosen * W + GlowDirect(texel, p, n, bias), 1.0));
 }
 
 #ifndef RT_GI_PASS
@@ -357,7 +404,7 @@ void main() {
     if (!(viewZ > 0.0)) {
         imageStore(outputImage, texel, vec4(cb.ao.w > 3.5 ? 0.0 : 1.0, 1.0, 0.0, 1.0));
         imageStore(giImage, texel, vec4(0.0, 0.0, 0.0, 1.0));
-        if (cb.gi3.z > 0.5) { imageStore(curA, texel, vec4(0.0)); imageStore(curB, texel, vec4(0.0)); }
+        if (cb.gi3.z > 0.5) { imageStore(curA, texel, vec4(0.0)); imageStore(curB, texel, vec4(0.0)); imageStore(giOut, texel, vec4(0.0)); }
         return;
     }
     vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
@@ -464,6 +511,7 @@ void main() {
     if (!(viewZ > 0.0)) {
         imageStore(curA, texel, vec4(0.0));
         imageStore(curB, texel, vec4(0.0));
+        imageStore(giOut, texel, vec4(0.0));
         return;
     }
     vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;

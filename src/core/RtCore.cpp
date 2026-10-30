@@ -195,6 +195,7 @@ namespace {
 		UInt32		gatheredFrame = 0;			// TheFrameRateManager->FrameNumber of the last Gather (+1, 0 = never)
 		std::vector<NvrRtInstance> frameInstances;
 		std::vector<NvrRtInstanceRecord> frameRecords;	// (protocol v2) the instances' records, resent with them
+		std::vector<RtCore::GlowLight> glows, frameGlows;	// (2026-10-30) the glow-mapped instances, gathering / this frame's
 
 		// the scene
 		std::unordered_map<GeometryKey, GeometryEntry, GeometryKeyHash> geometries;
@@ -980,6 +981,11 @@ namespace {
 		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u) | (HasGlowMap(shaderProperty) ? NVR_RT_RECORD_GLOW : 0u);
 		if (alphaTested) extra.flags |= NVR_RT_RECORD_ALPHA_TESTED | ((UInt32)alpha->alphaTestRef << 8) | ((UInt32)alphaSlot << 16);
 		else if (textured) extra.flags |= NVR_RT_RECORD_TEXTURED | ((UInt32)alphaSlot << 16);
+		if ((extra.flags & NVR_RT_RECORD_GLOW) && geo->m_kWorldBound && glows.size() < 4096) {	// (2026-10-30) GlowLights()
+			const NiBound* b = geo->m_kWorldBound;
+			glows.push_back({ { b->Center.x - TheRenderManager->CameraPosition.x, b->Center.y - TheRenderManager->CameraPosition.y,
+				b->Center.z - TheRenderManager->CameraPosition.z }, b->Radius, { albedo.rgb[0], albedo.rgb[1], albedo.rgb[2] } });
+		}
 		extra.geometryId = entry.id;
 		extra.vertexOffset = extra.indexOffset = 0;	// the helper's
 		NvrRtInstance& instance = record->instances[record->instanceCount++];
@@ -1235,7 +1241,9 @@ namespace {
 
 		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
 		if (c.gatheredFrame != now) {
+			c.glows.clear();
 			c.Gather();
+			c.frameGlows = c.glows;
 			// 2026-10-30: with fork 0034 the texel after this frame's geometry gets the frame's sequence number, written after the
 			// conversions; the helper checks it before building (a reordered copy = an earlier flush's data: built empty, logged once)
 			if (c.rtSeq && f.arenaTexels && f.arenaTexels < c.arenaCapacity &&
@@ -1340,6 +1348,7 @@ bool RtCore::Running() { return TheCore.state == Core::Running; }
 const char* RtCore::StatusText() { return TheCore.status; }
 const NvrRtShared* RtCore::Helper() { return TheCore.state == Core::Running ? TheCore.shared : nullptr; }
 UInt32 RtCore::Instances() { return TheCore.instances; }
+const std::vector<RtCore::GlowLight>& RtCore::GlowLights() { return TheCore.frameGlows; }
 UInt32 RtCore::Geometries() { return (UInt32)TheCore.geometries.size(); }
 UInt32 RtCore::Waiting() { return TheCore.waiting; }
 UInt32 RtCore::Released() { return TheCore.released; }

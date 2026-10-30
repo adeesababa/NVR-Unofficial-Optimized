@@ -384,7 +384,10 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 namespace {
 	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtImageAlbedoStandIn = -1, RtShader = -1;
 	int RtGIShader = -1, RtImageReservoir[2][2] = { { -1, -1 }, { -1, -1 } };	// (2026-10-30) GIReuse: RtGITrace and its two reservoir pairs (A, B)
-	bool RtGIHistory = false;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
+	bool RtGIHistory = false;
+	int RtImageGIOut = -1, RtImageGlowList = -1;	// (2026-10-30) the reuse passes' bounce light out (estimate + GlowDirect) and the glow lights
+	IDirect3DTexture9* RtGlowTexture = nullptr;	// the glow lights' source (32 x 3, dynamic: filled each frame from RtCore::GlowLights())
+	constexpr UINT GlowLightsMax = 32;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
 	bool RtGITraced = false;	// (rt-ao-gi) this frame's trace had GI rays
 	UInt32 RtTracedFrame = 0xFFFFFFFF;
 	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
@@ -411,6 +414,43 @@ namespace {
 			RtImageReservoir[set][1] = RtCore::AddImage(set ? "NVR RT gi reservoir B1" : "NVR RT gi reservoir B0", w, h, NVR_EXT_SHARED_RGBA16F);
 		}
 		RtGIHistory = false;
+		RtImageGIOut = RtCore::AddImage("NVR RT gi out", w, h, NVR_EXT_SHARED_RGBA16F);
+		RtImageGlowList = RtCore::AddImage("NVR RT glow lights", GlowLightsMax, 3, NVR_EXT_SHARED_RGBA16F);
+	}
+
+	// (2026-10-30) GlowDirect: the strongest glow-mapped instances as seen from the eye (colour x radius^2 / distance^2), at most 32, into
+	// RtGlowTexture (row 0 centre + radius, row 1 colour, texel (0, 2) count + strength; RtAOTrace.comp GlowDirect). False: no texture.
+	bool RtFillGlowLights(IDirect3DDevice9* Device, float Strength) {
+		if (!RtGlowTexture && FAILED(Device->CreateTexture(GlowLightsMax, 3, 1, D3DUSAGE_DYNAMIC, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &RtGlowTexture, nullptr)))
+			return false;
+		struct Pick { const RtCore::GlowLight* light; float weight; };
+		std::vector<Pick> picks;
+		if (Strength > 0.0f) {
+			for (const RtCore::GlowLight& g : RtCore::GlowLights()) {
+				const float d2 = (std::max)(g.center[0] * g.center[0] + g.center[1] * g.center[1] + g.center[2] * g.center[2], g.radius * g.radius);
+				const float w = (0.2126f * g.rgb[0] + 0.7152f * g.rgb[1] + 0.0722f * g.rgb[2]) * g.radius * g.radius / (std::max)(d2, 1.0f);
+				if (w > 0.0f && g.radius > 0.0f) picks.push_back({ &g, w });
+			}
+			const size_t keep = (std::min)(picks.size(), (size_t)GlowLightsMax);
+			std::partial_sort(picks.begin(), picks.begin() + keep, picks.end(), [](const Pick& a, const Pick& b) { return a.weight > b.weight; });
+			picks.resize(keep);
+		}
+		D3DLOCKED_RECT r;
+		if (FAILED(RtGlowTexture->LockRect(0, &r, nullptr, D3DLOCK_DISCARD))) return false;
+		float row[3][GlowLightsMax * 4] = {};
+		for (size_t i = 0; i < picks.size(); i++) {
+			const RtCore::GlowLight& g = *picks[i].light;
+			memcpy(&row[0][i * 4], g.center, sizeof(g.center));
+			row[0][i * 4 + 3] = g.radius;
+			memcpy(&row[1][i * 4], g.rgb, sizeof(g.rgb));
+		}
+		row[2][0] = (float)picks.size();
+		row[2][1] = Strength;
+		for (int y = 0; y < 3; y++) D3DXFloat32To16Array((D3DXFLOAT16*)((BYTE*)r.pBits + y * r.Pitch), row[y], GlowLightsMax * 4);
+		RtGlowTexture->UnlockRect(0);
+		static bool logged = false;
+		if (!logged && !picks.empty()) { logged = true; Logger::Log("UNOFFICIAL RT AO: GlowDirect lights the bounce from %u glow-mapped instances (of %u this frame).", (UInt32)picks.size(), (UInt32)RtCore::GlowLights().size()); }
+		return true;
 	}
 
 	// (rt-ao-gi) The lamps that can light what the GI rays hit: the shadow slots' lamps and the tracked ones (as ShaderManager listed them
@@ -671,16 +711,20 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	}
 	const bool mergedNow = merged && c.gi3.z > 0.5f;
 	const int cur = giParity & 1, prev = cur ^ 1;
-	const int images[10] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
-		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1] };	// (8, 9 only when merged)
-	const int giImages[8] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
-		RtImageReservoir[cur][0], RtImageReservoir[cur][1] };
+	const int images[12] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1],
+		RtImageGIOut, RtImageGlowList };	// (6-11 only when merged)
+	const int giImages[10] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList };
+	const bool glowOk = (giPass || mergedNow) && RtImageGIOut >= 0 && RtImageGlowList >= 0 && RtFillGlowLights(Device, rt.GlowDirect);
+	if ((giPass || mergedNow) && !glowOk) { RtGIHistory = false; return; }
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
-		!RtCore::AddPass(RtShader, images, mergedNow ? 10 : 6, mergedNow ? 0x306 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		(glowOk && !RtCore::CopyIn(RtImageGlowList, RtGlowTexture)) ||
+		!RtCore::AddPass(RtShader, images, mergedNow ? 12 : 6, mergedNow ? 0x706 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
-		(giPass && !RtCore::AddPass(RtGIShader, giImages, 8, 0xC0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
+		(giPass && !RtCore::AddPass(RtGIShader, giImages, 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
-		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageReservoir[cur][0] : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
+		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageGIOut : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
 	if (giPass || mergedNow) giParity++;
 	RtGIHistory = giPass || mergedNow;
 	RtGITraced = gi;
