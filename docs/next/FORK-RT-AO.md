@@ -367,3 +367,8 @@ helper's own timing).
   RtGITrace at GIInterleave 4, in motion: 8.5 / 10.8 / 9.2 / 8.5 / 9.1 ms (v1, rtgi15: 12.4 / 14.4). AO + GI 20.7-27 ms (v1 25.7-28.7).
   The moving bounce-light views show no holes, blocks or stripes (a faint double outline round the player at most). Note: the
   list's "r0" shots ran with reuse too (the DLL's default is now 8 and the list does not set 0), so all shots of this run are v2.
+- **GISpatial (fe57c778, DLL E67772D7; rt-gi-12, 20261030-030412-slotA): small gain, stays opt-in (default 0).** The only still
+  pair is the raw one (shots 1-2): bounce-light mean 19.60 / 19.62 (same), neighbour-to-neighbour luma difference 0.95 -> 0.90
+  (-5 %), sd 9.02 -> 8.79. Lucky 38 drifts from the 4th shot on, so the denoised and moving pairs are different views (their -6 % /
+  lower sd are not comparable). Cost: RtGITrace full rate 32.3 / 34.0 (s0 / s4 raw), 30.7 / 29.7 (denoised); GIInterleave 4: 9.2 ->
+  10.4 ms. Worth a try where noise shows (outdoors at night?), not as a default on this evidence.
