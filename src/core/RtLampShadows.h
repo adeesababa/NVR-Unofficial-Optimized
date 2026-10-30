@@ -442,6 +442,7 @@ namespace RtLampShadows {
 		c.params[0] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "Rays"), 1), 8);
 		c.params[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffset"), 0.0f);
 		c.mask[3] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffsetPerUnit"), 0.0f);	// 2026-10-30: x the view depth
+		c.mask[2] = (float)TheSettingManager->GetSettingI(kSection, "RankBy");	// 2026-10-30 (the mask variant sets its ExteriorDebug there)
 		c.params[2] = (std::max)(TheSettingManager->GetSettingF(kSection, "LampStop"), 0.0f);
 		c.params[3] = TheSettingManager->GetSettingI(kSection, "Jitter") ? fmodf((float)frame * 0.61803399f, 1.0f) : 0.0f;
 		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
