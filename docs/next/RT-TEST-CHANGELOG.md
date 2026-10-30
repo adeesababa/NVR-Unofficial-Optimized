@@ -38,3 +38,23 @@ nothing here is pushed, released or installed unless the user says so.
 - Bench PASS: 1070 RT off (20261029-182620-slotC) vs round 0 = 7/7 at noise level; iGPU Goodsprings (183737-slotC): helper
   "found by adapter LUID", sun / reflections / AO trace, core timer p50 3.4 ms.
 - DLL CRC32 BABE6FD4, NvrRtHelper E09D0B71, fork d3d9 8FC9AE11. Package `H:\_NVR-pkg\rt-test-6aa00dd4\`.
+
+## Round 3 (2026-10-29 ~21:20): 36b99651
+- In: claude/rt-sun-2 88159b51 (skinned actors in the RT scene via fork patch 0033 GPU skinning, mask 0x20, [Main.Main.RayTracing]
+  Actors off + ActorRadius; alpha atlas on the GPU, AlphaTested works (~900 alpha meshes a frame, still off by default); soft
+  sun shadows [Shaders.ShadowsExteriors.RT] SunAngle 0 = hard + Denoise; shared denoiser RtDenoise.h; RtCore::Actors());
+  claude/rt-lamps-2 d6d71721 (per-pixel lamp selection over every shadowed lamp, MaxLamps 63, LampsPerPixel 2; people in the
+  lamp rays via RtCore::Actors; traced lamps keep their cube maps incl. partial ones: cube cost ~0 while traced; Filter off);
+  claude/rt-ao-gi efe6839f (RT AO eye fix, RT sky 4x4, alpha casters, one-bounce RT GI v2 [Shaders.AmbientOcclusion.RT] GI
+  off + GIDistance / GIStrength / GIOffscreen / GIClamp / GIAmbient, Interleave); claude/rt-refl-2 e7db92c5 (lamps at the hit,
+  VNDF glossy rays, reach + 1 ray per 2x2 by roughness, land self-hit skip, alpha casters via ReflectionsRTAlpha, hit-distance
+  blur).
+- Train fixes: PointShadowForward.hlsl back to CRLF (the lamp branch made it LF again); 36b99651 RT protocol 3 with
+  NVR_RT_MAX_IMAGES 32: with all four effects merged the core registered ~20 shared images and switched itself off for the
+  session ("more shared images than the protocol holds"; first iGPU run 20261029-203413-slotA had no RT at all). Told rt-sun.
+- Merges clean; toml parses; every new switch off; includers of the changed headers touched and rebuilt; helper rebuilt.
+- Bench PASS (rerun "3b"): 1070 RT off (20261029-205024-slotC) vs round 0 = 7/7 at noise level; iGPU interior with fork-0033
+  (210851-slotA, list rtm-igpu-int3): lamp RT core p50 23.4 ms (Vault 21 frame 116 -> 136 ms), Actors on +0.05 % px, GI on
+  visible bounce (28 % px), reflections + AO trace, all on 157 ms; cube A/B 0.04 %.
+- DLL CRC32 3B5D85BB, NvrRtHelper 3B01C4F1 (protocol 3), fork d3d9 rtsun\fork-0033 B8CF2308 (0001-0029 + 0033).
+  Package `H:\_NVR-pkg\rt-test-36b99651\`.
