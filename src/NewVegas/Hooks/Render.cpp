@@ -2981,7 +2981,65 @@ namespace LampCountStats {
 	struct Seen { const void* light; float x, y, z, radius; unsigned draws; };
 	static Seen Lamps[128] = {};
 	static int LampCount = 0;
+	// UNOFFICIAL 2026-10-30 LAMP CAPS (F10 profile, world scene; ROOT-ASSUMPTIONS-PLAN C: which shader family loses lamps): per pass type
+	// (named by the first pixel shader seen drawing it), its objects a frame, and against each object's own active lamps (its lighting
+	// property's list +0x60, filtered as GetNumberOfActiveNonShadowLights, as ManyLamps reads it) the lamps none of its passes this frame
+	// carried: objects short of lamps and the lamps left out.
+	struct Obj { UInt8 type; int own; std::vector<const void*> seen; };
+	struct Cap { unsigned long long objects = 0, draws = 0, own = 0, short_ = 0, leftOut = 0; char shader[16] = ""; };
+	static Cap Caps[256];
+	static std::unordered_map<const NiGeometry*, Obj> Objects;
+	static unsigned CapFrames = 0;
+	static UInt32 CapFrame = 0;
+	static int OwnLamps(const NiGeometry* geometry, std::vector<const void*>* list) {
+		const UInt8* property = (const UInt8*)geometry->propertyState.m_spShadeProperty;
+		int n = 0;
+		for (const UInt32* node = property ? *(const UInt32* const*)(property + 0x60) : nullptr; node; node = (const UInt32*)node[0]) {
+			const UInt8* light = (const UInt8*)node[2];
+			if (!light || *(const UInt16*)(light + 0x110) == 0xFF) continue;
+			const UInt8* niLight = *(const UInt8* const*)(light + 0xF8);
+			if (!niLight || (niLight[0x30] & 1) || light[0xEC]) continue;
+			n++;
+			if (list) list->push_back(light);
+		}
+		return n;
+	}
+	static void EndCapFrame() {
+		for (auto& e : Objects) {
+			Cap& cap = Caps[e.second.type];
+			cap.objects++;
+			cap.own += e.second.own;
+			std::vector<const void*> own;
+			OwnLamps(e.first, &own);
+			int missing = 0;
+			for (const void* l : own) if (std::find(e.second.seen.begin(), e.second.seen.end(), l) == e.second.seen.end()) missing++;
+			if (missing) { cap.short_++; cap.leftOut += missing; }
+		}
+		Objects.clear();
+		if (++CapFrames < 240) return;
+		const double f = 1.0 / CapFrames;
+		for (unsigned t = 0; t < 256; t++) {
+			Cap& k = Caps[t];
+			if (k.objects) Logger::Log("LAMP CAPS pass 0x%02X (%s): %.1f objects a frame (%.1f draws), %.2f own lamps each; %.1f objects a frame short of lamps, %.1f lamps left out",
+				t, k.shader[0] ? k.shader : "?", k.objects * f, k.draws * f, (double)k.own / k.objects, k.short_ * f, k.leftOut * f);
+			k = Cap();
+		}
+		CapFrames = 0;
+	}
+	static void CountCaps(const PointShadowForward::RenderPassView* pass) {
+		if (!GpuTimer::Enabled || !pass || !pass->geometry || ShaderSplit::CurrentContext != ShaderSplit::World) return;
+		const UInt32 frame = TheFrameRateManager ? TheFrameRateManager->FrameNumber : 0;
+		if (frame != CapFrame) { if (CapFrame) EndCapFrame(); CapFrame = frame; }
+		const UInt8 type = pass->passEnum & 0xFF;
+		Cap& cap = Caps[type];
+		cap.draws++;
+		if (!cap.shader[0] && PointShadowForward::LastPixelShaderName) strncpy_s(cap.shader, PointShadowForward::LastPixelShaderName, _TRUNCATE);
+		auto found = Objects.find(pass->geometry);
+		if (found == Objects.end()) found = Objects.emplace(pass->geometry, Obj{ type, OwnLamps(pass->geometry, nullptr), {} }).first;
+		for (int k = 0; pass->lights && k < pass->numLights; k++) if (pass->lights[k]) found->second.seen.push_back(pass->lights[k]);
+	}
 	static void Count(const PointShadowForward::RenderPassView* pass) {
+		CountCaps(pass);
 		if (!PointShadowForward::LogObjectLamps || !pass) return;
 		const unsigned type = pass->passEnum & 0xFF;
 		Draws[type][(std::min)((unsigned)pass->numLights, 15u)]++;
