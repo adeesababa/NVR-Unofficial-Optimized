@@ -86,6 +86,15 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   filtered cube lookups add ~400-900 more. The fallback would also need the outdoor cube maps drawn again (14-16 ms iGPU in Freeside)
   only for the pixels the trace misses (off its screen, disoccluded, a lamp not among a pixel's 2 strongest), where outdoor lamps were
   unshadowed before anyway. So outdoors a lamp not traced at a pixel stays lit; without RT the switch does nothing (auto-off).
+- rtlamp-30 (be70de35, DLL 8CAF4FD7; 1st attempt timed out compiling the outdoor records on a cold cache, 13/17 shots; the retry
+  20261030-051602-slotA PASS): SKIN2011 loads at the 2-lamp level; Freeside again 36 % traced, 0.23 % darker. Novac and the Strip missed.
+- a888f059 (DLL 73448002): outdoors with ExteriorForward the shadow lamps are LightPoints (24), not the screen pass's 12 (UsesAllSlots),
+  no outdoor cube maps meanwhile; the fallback records' cache folders fixed (ExteriorLamps\Fit1, a lost backslash).
+- rtlamp-31 (20261030-061451-slotA, PASS): still no visible change at Novac (0.09 % = repeat noise; coverage yellow: each pixel's two
+  strongest traced lamps are not the draw's own) and the Strip spot lands in the Wasteland from the slim slot's lucky22 save (moveto
+  0013B3FD or the Strip-world flag 0013B6BC, then setpos: desert rocks, 1 lamp traced). Open: a Strip spot needs a save inside
+  TheStripWorldNew (the full slots' strip20 save; the slim slots have none); Novac needs its walkway lamps to rank first at the
+  pixels they light (LampsPerPixel 3, or ranking by the draws' own lamps).
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
