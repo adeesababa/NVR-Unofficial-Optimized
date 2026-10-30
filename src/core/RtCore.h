@@ -81,6 +81,9 @@ public:
 	// UNOFFICIAL 2026-10-29 hit textures ([Main.Main.RayTracing] HitTextures): the albedo atlas' image index (RGBA8; -1: none). A pass
 	// that shades its hits adds it to its images and uses Compute\Rt\RtHit.glsl (rtHitAlbedo: the texture's colour, else the average).
 	static int			AlbedoAtlasImage();
+	// UNOFFICIAL 2026-10-30 glow textures ([Main.Main.RayTracing] GlowTextures, needs HitTextures): the glow atlas' image index (RGBA8,
+	// same slots and texcoords as the albedo atlas; -1: none). A pass adds it to its images, #define RT_GLOW_ATLAS and calls rtHitGlow.
+	static int			GlowAtlasImage();
 	// UNOFFICIAL 2026-10-29 (rt-lamp-shadows): true while the scene holds the posed skinned actors ([Main.Main.RayTracing] Actors +
 	// fork patch 0033; instance mask NVR_RT_MASK_ACTOR = 0x20), so a pass can stop taking people's shadows from elsewhere
 	static bool			Actors();

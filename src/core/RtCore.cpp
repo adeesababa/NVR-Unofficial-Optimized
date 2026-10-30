@@ -139,6 +139,9 @@ namespace {
 		NiSourceTexture** glow = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2];
 		return glow && *glow && (*glow)->rendererData && (*glow)->rendererData->dTexture;
 	}
+	IDirect3DBaseTexture9* GlowTextureOf(BSShaderProperty* shaderProperty) {
+		return HasGlowMap(shaderProperty) ? (*((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[2])->rendererData->dTexture : nullptr;
+	}
 
 	// Where a vertex declaration keeps the position (cached per declaration).
 	struct PositionElement {
@@ -215,13 +218,17 @@ namespace {
 		UInt32		alphaFate[8] = {};
 		int			atlasImage = -1;
 		UInt32		atlasUsed = 0, atlasThisFrame = 0;
-		std::unordered_map<const void*, int> alphaSlots;		// texture -> slot (-1: unreadable)
+		std::unordered_map<UInt64, int> alphaSlots;			// diffuse texture | glow texture << 32 -> slot (-1: unreadable)
 		IDirect3DTexture9* alphaUpload = nullptr;			// 64 x 64 R16F, dynamic: one slot's alpha on its way to the atlas
 		IDirect3DTexture9* albedoUpload = nullptr;			// 64 x 64 A8R8G8B8: one slot's colour on its way to the albedo atlas
 		bool		hitTextures = false;				// [Main.Main.RayTracing] HitTextures (read at each helper start)
 		int			albedoAtlasImage = -1;
+		// UNOFFICIAL 2026-10-30 glow textures ([Main.Main.RayTracing] GlowTextures, with HitTextures; rt-ao-sky GlowGI / rt-reflections
+		// GlowBrightness): a slot is a (diffuse, glow map) pair; the glow map goes into the glow atlas (RGBA8) at the same slot and texcoords
+		IDirect3DTexture9* glowUpload = nullptr;
+		int			glowAtlasImage = -1;
 		PositionElement lastElement;						// Describe's: where the texcoords are
-		int			AlphaSlotOf(IDirect3DBaseTexture9* texture);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
+		int			AlphaSlotOf(IDirect3DBaseTexture9* texture, IDirect3DBaseTexture9* glow = nullptr);		// land subtree: objects popped, APP_CULLED, nodes, faded fade nodes (alpha <= 0, walked anyway), switch nodes
 		UInt32		instances = 0, waiting = 0, released = 0;
 		float		radius = 8192.0f;
 		// UNOFFICIAL 2026-10-30 scene cost (the main session's soak list, item 2), all [Main.Main.RayTracing], live:
@@ -258,8 +265,10 @@ namespace {
 	// A texture's slot in the alpha atlas: >= 0, -1 not possible (never again), -2 not this frame (8 a frame at most). On the GPU: the
 	// fork pass RtAlphaToAtlas draws the texture's alpha into a 64 x 64 R16F target (the texture's mips downsample; any pool and format),
 	// then that goes into the atlas slot. Both are recorded before this exchange's signal, so the helper sees them this frame.
-	int Core::AlphaSlotOf(IDirect3DBaseTexture9* texture) {
-		auto found = alphaSlots.find(texture);
+	int Core::AlphaSlotOf(IDirect3DBaseTexture9* texture, IDirect3DBaseTexture9* glow) {
+		if (glowAtlasImage < 0) glow = nullptr;
+		const UInt64 key = (UInt64)(uintptr_t)texture | ((UInt64)(uintptr_t)glow << 32);	// a 32-bit process
+		auto found = alphaSlots.find(key);
 		if (found != alphaSlots.end()) return found->second;
 		const UInt32 capacity = NVR_RT_ALPHA_ATLAS_SLOTS * NVR_RT_ALPHA_ATLAS_SLOTS;
 		if (atlasImage < 0 || atlasUsed >= capacity) return -1;
@@ -299,6 +308,7 @@ namespace {
 		int slot = -1;
 		if (!alphaUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &alphaUpload, nullptr);
 		if (which && !albedoUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &albedoUpload, nullptr);
+		if (glow && !glowUpload) TheRenderManager->device->CreateTexture(S, S, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &glowUpload, nullptr);
 		ID3D9NvrExtSampler* sampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
 		IDirect3DSurface9* target = nullptr;
 		IDirect3DSurface9* target2 = nullptr;
@@ -323,12 +333,22 @@ namespace {
 			if (SUCCEEDED(DxvkCompute::Extension()->Draw(&draw)) && SUCCEEDED(share->CopyToShared(images[atlasImage], x, y, alphaUpload, &all)) &&
 				(!which || SUCCEEDED(share->CopyToShared(images[albedoAtlasImage], x, y, albedoUpload, &all)))) {
 				slot = (int)at;
-				atlasUsed++;
+				if (glow) {	// the same pass on the glow map: its alpha into the alpha upload (already copied, in stream order: a scratch now)
+					IDirect3DSurface9* glowTarget = nullptr;
+					bindings[0].pResource = glow;
+					if (!glowUpload || FAILED(glowUpload->GetSurfaceLevel(0, &glowTarget))) slot = -1;
+					else {
+						draw.Targets[1].pResource = glowTarget;
+						if (FAILED(DxvkCompute::Extension()->Draw(&draw)) || FAILED(share->CopyToShared(images[glowAtlasImage], x, y, glowUpload, &all))) slot = -1;
+						glowTarget->Release();
+					}
+				}
+				if (slot >= 0) atlasUsed++;
 			}
 			target->Release();
 		}
 		if (target2) target2->Release();
-		alphaSlots.emplace(texture, slot);
+		alphaSlots.emplace(key, slot);
 		return slot;
 	}
 	UInt32 (*MaskHook)(NiGeometry*, bool) = nullptr;
@@ -419,6 +439,7 @@ namespace {
 		hitTextures = TheSettingManager->GetSettingI("Main.Main.RayTracing", "HitTextures") != 0;
 		atlasImage = -1;
 		albedoAtlasImage = -1;
+		glowAtlasImage = -1;
 		atlasUsed = 0;
 		alphaSlots.clear();
 		if (alphaOn || hitTextures) {	// the slots are shared: hit textures keep the alpha atlas too
@@ -434,6 +455,12 @@ namespace {
 			const UINT side = NVR_RT_ALPHA_SLOT_SIZE * NVR_RT_ALPHA_ATLAS_SLOTS;
 			imageDescs.push_back({ side, side, NVR_EXT_SHARED_RGBA8, nullptr });
 			imageSizes.push_back({ side, side });
+			if (TheSettingManager->GetSettingI("Main.Main.RayTracing", "GlowTextures") != 0) {
+				glowAtlasImage = (int)imageDescs.size();
+				imageNames.push_back("NVR RT glow atlas");
+				imageDescs.push_back({ side, side, NVR_EXT_SHARED_RGBA8, nullptr });
+				imageSizes.push_back({ side, side });
+			}
 		}
 		inSetup = true;
 		for (const RtCore::User& user : users) if (user.Setup) user.Setup();
@@ -591,6 +618,7 @@ namespace {
 		alphaSlots.clear();
 		if (alphaUpload) { alphaUpload->Release(); alphaUpload = nullptr; }
 		if (albedoUpload) { albedoUpload->Release(); albedoUpload = nullptr; }
+		if (glowUpload) { glowUpload->Release(); glowUpload = nullptr; }
 	}
 
 	void Core::Poll() {
@@ -903,7 +931,7 @@ namespace {
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
 			if (!texture || !texture->rendererData || !texture->rendererData->dTexture) { skip[kAlpha]++; alphaFate[4]++; return; }
-			alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
+			alphaSlot = AlphaSlotOf(texture->rendererData->dTexture, GlowTextureOf(shaderProperty));
 			if (alphaSlot == -2) { waiting++; alphaFate[6]++; return; }	// this frame's uploads are used up: next frame
 			if (alphaSlot < 0) { skip[kAlpha]++; alphaFate[5]++; return; }
 			desc.Flags = NVR_EXT_RT_TEXCOORD_FLAGS((int)lastElement.uvOffset - (int)lastElement.offset, lastElement.uvHalf);
@@ -915,7 +943,7 @@ namespace {
 			NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
 			NiTexture* texture = textures ? *textures : nullptr;
 			if (texture && texture->rendererData && texture->rendererData->dTexture) {
-				alphaSlot = AlphaSlotOf(texture->rendererData->dTexture);
+				alphaSlot = AlphaSlotOf(texture->rendererData->dTexture, GlowTextureOf(shaderProperty));
 				if (alphaSlot == -2) { waiting++; return; }
 				if (alphaSlot >= 0) {
 					textured = true;
@@ -1346,4 +1374,5 @@ UInt32 RtCore::Released() { return TheCore.released; }
 bool RtCore::AlphaTested() { return TheCore.state == Core::Running && TheCore.alphaOn && TheCore.atlasImage >= 0; }
 int RtCore::AlphaAtlasImage() { return TheCore.alphaOn || TheCore.hitTextures ? TheCore.atlasImage : -1; }	// shared slots
 int RtCore::AlbedoAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.albedoAtlasImage : -1; }
+int RtCore::GlowAtlasImage() { return TheCore.state == Core::Running && TheCore.hitTextures ? TheCore.glowAtlasImage : -1; }
 bool RtCore::Actors() { return TheCore.state == Core::Running && TheCore.actorsOn && TheCore.rtSkin; }

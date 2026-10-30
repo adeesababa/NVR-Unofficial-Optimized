@@ -127,9 +127,11 @@ namespace {
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
 		const int atlas = RtCore::AlphaAtlasImage();
 		const int albedoAtlas = RtCore::AlbedoAtlasImage();
-		if (S.debugView == 7 && albedoAtlas >= 0 && atlas >= 0 && hitDebugShader >= 0) {	// the hit textures check (RtHitDebug.comp)
-			const int images[3] = { imageVisibility, atlas, albedoAtlas };
-			if (!RtCore::AddPass(hitDebugShader, images, 3, 0x1, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		const int glowAtlas = RtCore::GlowAtlasImage();
+		if ((S.debugView == 7 || (S.debugView == 8 && glowAtlas >= 0)) && albedoAtlas >= 0 && atlas >= 0 && hitDebugShader >= 0) {	// the hit textures check (RtHitDebug.comp)
+			if (S.debugView == 8) c.range[3] = 4.0f;	// 2026-10-30: the glow atlas (GlowTextures)
+			const int images[4] = { imageVisibility, atlas, albedoAtlas, glowAtlas >= 0 ? glowAtlas : albedoAtlas };
+			if (!RtCore::AddPass(hitDebugShader, images, 4, 0x1, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 		}
 		else {
 			const int images[4] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility };	// [3]: binding 5
