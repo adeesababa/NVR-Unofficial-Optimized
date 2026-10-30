@@ -35,6 +35,14 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### ActorUpdateInterval 1/2/3 (rtlamp-17, 2026-10-29 22:42, 20261029-224156-slotA, PASS; bce83772, DLL CD1CA893, rebuilt helper)
+- Picture: the same at 1, 2 and 3 (L38 0.00 %, V21 0.03-0.07 % = the repeat's 0.07 %): rt-sun-core's default 2 is safe here.
+- Cost: not measurable. The whole frame drifts 20-30 ms within a run (V21 traced 147 -> 157 -> 123 -> 125 -> 121 ms in shot order
+  a1, a2, a3, a1-b, a2-b); the helper's new per-pass timer says RtLampTrace 22-43 ms and builds 1-4.5 ms, but that timer did not
+  move with Interleave 4 either (rtlamp-13): on this 2-CU iGPU the game and the helper share the GPU, so a pass's time is mostly
+  its wait for the GPU. Correction to "the actors are most of the cost" (rtlamp-15): within this noise neither the actors nor the
+  trace can be told apart; a real split needs an RT GPU that is not the game's (or a quiet one).
+
 ### People cast traced lamp shadows: PROVEN (rtlamp-16, 2026-10-29 22:29, 20261029-222901-slotA, PASS; DLL 86893D44, fork-0033, Actors on)
 - Vault 21, AI frozen, DebugView 3 per lamp (white lit / black blocked / magenta = that lamp not traced there): lamp 15 (overhead,
   z 8028, ~590 units over the floor) traces the floor round the standing NPCs: black leg/dress shadows on the floor behind them and
