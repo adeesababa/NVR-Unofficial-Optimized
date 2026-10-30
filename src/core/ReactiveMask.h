@@ -11,7 +11,7 @@
 //     draws mask = largest channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build);
 //   - FSRPrep.comp / FSRUpPrep.comp (FSR 2, FSR 3.1, RenderScale v1 and v2) take max(weapon, mask) as the reactive value.
 // Off: nothing is copied or drawn and the readers keep the weapon-only mask, as before.
-// With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
+// ReactiveDebug (diagnostic): the mask drawn over the world. With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
 
 #include "GpuProfiler.h"
 
@@ -168,6 +168,8 @@ namespace ReactiveMask {
 		for (DWORD s = 0; s < 2; s++) for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], savedS[s][i]);
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], savedRS[i]);
 		d->SetPixelShaderConstantF(0, savedPS, 1);
+		// [Shaders.TAA.FSR] ReactiveDebug (diagnostic): the mask shown in place of the world (white = reactive), to see what it marks
+		if (TheSettingManager->GetSettingI("Shaders.TAA.FSR", "ReactiveDebug") != 0) d->StretchRect(Surface, NULL, rt0, NULL, D3DTEXF_POINT);
 		d->SetRenderTarget(0, rt0); rt0->Release();
 		d->SetDepthStencilSurface(zs); if (zs) zs->Release();
 		d->SetViewport(&vp);
