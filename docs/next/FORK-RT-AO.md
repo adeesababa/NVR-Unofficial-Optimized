@@ -376,3 +376,7 @@ helper's own timing).
   move), so judged one by one: GIReuse 0 + GIInterleave 4 smears (cloudy blobs over the ground and the shack); GIReuse 8 +
   GIInterleave 4 is crisp (rocks, truck, windmill, the player keep their shape), no holes. Helper times: full rate GIReuse 0 21.0 ms
   vs GIReuse 8 9.5 + 15.6 = 25.1 ms; GIInterleave 4: 17.7 vs 12.6 + 7.3 = 19.9 ms. The final picture with reuse looks normal.
+- **Light-change cut (564c3e09, DLL 04EAFF52; rtgi19 = rt-gi-11 again, 20261030-033306-slotA): PASS.** When the lamps' total or
+  brightest luminance, their count or the sun change by > 10 %, the history counts as 1 frame and grows back by one a frame (the
+  kept samples are not re-traced: a light switched off lingered up to GIReuse frames). Lucky 38 in motion: 3 cuts in 600 frames (no
+  churn from the lamp list's distance order); RtGITrace 8.9-11.7 ms at GIInterleave 4 (rtgi16: 8.5-10.8), the same look.
