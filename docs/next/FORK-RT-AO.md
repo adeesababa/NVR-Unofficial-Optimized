@@ -316,3 +316,20 @@ helper's own timing).
   the textures, is the bill** — AO's 4 short rays went 9.5 -> 28 ms indoors because every leaf/fence/sign candidate runs
   rtAlphaPass. Next: AO rays treat alpha-tested meshes as opaque by default (AOAlpha 0 skip / 1 opaque / 2 test), GI keeps the test.
   rt-sun-core's RtDenoise Kernel = 3 (1f5d987e: half res 3x3 ~3.9 ms) to merge for both denoisers.
+
+### rt-gi-9 (568b3e17, DLL D7E6F506): AOAlpha + DenoiseKernel 3
+- **Lucky 38 (20261030-004006-slotA):** RtAOTrace helper time, AO alone: AOAlpha 1 (solid) 17.4 ms, 2 (tested) 19.0 ms, 0 (left
+  out) 14.1 ms; the same AOAlpha 1 trace again in the Kernel 5 shot read 23.5 ms, so the shot-to-shot spread (~±5 ms) is as large
+  as the AOAlpha differences. rt-gi-8's 28 ms for tested AO was that spread too, not the test: **indoors the alpha test is not the
+  bill; the extra geometry AlphaTested brings is** (AOAlpha 0 = 14 ms vs 9.5 ms with AlphaTested off in rt-gi-7). AO + GI 27.8 ms
+  (rt-gi-8: 50-67). Occlusion pictures (AL DebugView 1) for AOAlpha 1 and 2 cannot be told apart.
+  **Kernel 3 is a clear win:** AO denoise 7.9 -> 4.6 ms, GI denoise 10.1 -> 5.0 ms, no visible loss in the occlusion view
+  (Kernel 5 in the same run: 5.6 ms avg, p50 6.5).
+- **Goodsprings (20261030-010429-slotC):** AO alone AOAlpha 1 9.7 ms, 2 21.6 ms, 0 8.4 ms, AOAlpha 1 again (Kernel 5 shot) 13.3 ms;
+  AO + GI 29.2 ms (rt-gi-8: 38-42). Denoisers: AO 3.9 ms with Kernel 3 vs 6.2 ms with 5; GI 5.4 ms (rt-gi-8: 8.6). The camera
+  moves to a different view every Goodsprings shot (ao1 by the windmill, ao2 down the street by the truck), so the 2.2x for the
+  alpha test outdoors is suggestive, not proven; the occlusion pictures look clean in both (foliage gives soft contact darkening).
+- **Verdict rt-gi-9: PASS.** Kernel 3 halves both denoisers at no visible cost (both scenes). AOAlpha 1 (solid) is the default:
+  no loss in the pictures, never slower, maybe 2x cheaper among foliage. AO + GI full rate now 28-29 ms in both scenes
+  (from 38-67), GIInterleave 4 + Interleave 2 ~16-18 ms (rt-gi-8). Open: a still-camera outdoor spot for clean A/Bs (og-* spots
+  drift); next step for GI quality per ray = ReSTIR GI temporal reuse.
