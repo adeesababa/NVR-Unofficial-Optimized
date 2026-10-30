@@ -28,7 +28,7 @@ namespace ShadowHold {
 	};
 	inline std::unordered_map<const void*, State> Map;
 	inline UInt32 Frame = 1;		// counts AfterPublish calls
-	inline UInt32 StatFrames = 0, StatGained = 0, StatLost = 0, StatLiveGained = 0, StatLiveLost = 0, StatShadowed = 0, StatHeld = 0, StatStale = 0, StatNear = 0;
+	inline UInt32 StatFrames = 0, StatGained = 0, StatLost = 0, StatLiveGained = 0, StatLiveLost = 0, StatShadowed = 0, StatHeld = 0, StatStale = 0, StatNear = 0, StatCulled = 0, StatDimmed = 0, StatLiveHeld = 0;
 	inline double StatStart = 0.0;
 	inline std::vector<const void*> Prev, PrevLive;
 
@@ -69,10 +69,12 @@ namespace ShadowHold {
 				const double seconds = (std::max)(t - StatStart, 1e-3);
 				const float shadowed = StatShadowed / (float)StatFrames;
 				Logger::Log("SHADOW FLIPS ShadowHold %.2f: %.1f lamps with a shadow per frame; per second %.2f gained / %.2f lost (%.3f flips per lamp per second), "
-					"live slots %.2f gained / %.2f lost; held in the pool by ShadowHold %.1f, stale pool maps used %.2f, near-current maps not redrawn %.2f per frame",
+					"live slots %.2f gained / %.2f lost; held in the pool by ShadowHold %.1f, stale pool maps used %.2f, near-current maps not redrawn %.2f per frame; "
+					"per second lamps with a shadow that the game culled %.2f / switched off or dimmed %.2f; live slots kept by ShadowHold (VisibleRanking) %.2f per frame",
 					Seconds(), shadowed, StatGained / seconds, StatLost / seconds, shadowed > 0.0f ? (StatGained + StatLost) / seconds / shadowed : 0.0,
-					StatLiveGained / seconds, StatLiveLost / seconds, StatHeld / (float)StatFrames, StatStale / (float)StatFrames, StatNear / (float)StatFrames);
-				StatFrames = StatGained = StatLost = StatLiveGained = StatLiveLost = StatShadowed = StatHeld = StatStale = StatNear = 0;
+					StatLiveGained / seconds, StatLiveLost / seconds, StatHeld / (float)StatFrames, StatStale / (float)StatFrames, StatNear / (float)StatFrames,
+					StatCulled / seconds, StatDimmed / seconds, StatLiveHeld / (float)StatFrames);
+				StatFrames = StatGained = StatLost = StatLiveGained = StatLiveLost = StatShadowed = StatHeld = StatStale = StatNear = StatCulled = StatDimmed = StatLiveHeld = 0;
 			}
 		}
 		Prev.swap(now); PrevLive.swap(live);

@@ -1,6 +1,7 @@
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
 #include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals (TESR_CapturedNormalsData)
 #include "ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion (TESR_ObjectMotionData)
+#include "LampVisibility.h"	// UNOFFICIAL 2026-10-30 VisibleRanking
 #include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
 #include "HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
@@ -1047,6 +1048,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		bool lightCulled = Light->m_flags & NiAVObject::NiFlags::APP_CULLED;
 		bool lightOn = (Light->Diff.r + Light->Diff.g + Light->Diff.b) * Light->Dimmer > 5.0 / 255.0; // Check for low values in case of human error
 		if (lightCulled || !lightOn) {
+			if (GpuTimer::Enabled && ShadowHold::Continuous(Entry->data)) (lightCulled ? ShadowHold::StatCulled : ShadowHold::StatDimmed)++;	// UNOFFICIAL 2026-10-30
 			note(Entry->data, lightCulled ? 1 : 2, Light->GetDistance(&Player->pos), 0.0f, Light);
 			Entry = Entry->next;
 			continue;
@@ -1077,6 +1079,50 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		else note(Entry->data, inFront ? 4 : 3, Distance, 0.0f, Light);
 
 		Entry = Entry->next;
+	}
+
+	// UNOFFICIAL 2026-10-30 VisibleRanking ([Shaders.ShadowsInteriors.Forward] VisibleRanking, core/LampVisibility.h): indoors with forward
+	// shadows, the lamps ranked by brightness x how much of the VISIBLE picture they light (walls hide what is behind them), measured a few
+	// frames back; lamps not measured yet follow in the old order, lamps that light nothing visible go last. LampSwitchMargin favours the
+	// slot holders as before; ShadowHold above 0 keeps a slot holder first for that many seconds after it last ranked inside the slots, while
+	// it still lights something visible. Off: the ranking above, unchanged.
+	LampVisibility::On = indoorsForward && !LampVisibility::Failed && LampVisibility::Setting();
+	if (LampVisibility::On) {
+		std::vector<LampVisibility::Want> wants;
+		wants.reserve(SceneLights.size());
+		for (const auto& e : SceneLights) {
+			NiPointLight* L = e.second->sourceLight;
+			if (L) wants.push_back({ e.second, D3DXVECTOR3(L->m_worldTransform.pos.x, L->m_worldTransform.pos.y, L->m_worldTransform.pos.z), L->Spec.r * Settings->LightRadiusMult });
+		}
+		LampVisibility::Request(wants);
+		auto inSlots = [&](const void* light) { for (int s = 0; s < ShadowCubeMapsMax; s++) if (previousSlots[s] == light) return true; return false; };
+		std::vector<std::pair<float, ShadowSceneLight*>> keyed;
+		keyed.reserve(SceneLights.size());
+		for (const auto& e : SceneLights) {
+			NiPointLight* L = e.second->sourceLight;
+			const int pixels = LampVisibility::Pixels(e.second);
+			const float brightness = L ? (std::max)(0.0f, (L->Diff.r + L->Diff.g + L->Diff.b) / 3.0f * L->Dimmer) : 0.0f;
+			float key;
+			if (pixels > 0) key = -brightness * (float)pixels * (switchMargin > 0.0f && inSlots(e.second) ? 1.0f + switchMargin : 1.0f);
+			else if (pixels < 0) key = 1.0e6f + e.first;	// not measured yet: after every lamp lighting something visible, in the old order
+			else key = 2.0e6f + e.first;					// lights nothing visible
+			keyed.push_back({ key, e.second });
+		}
+		std::stable_sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+		const float hold = ShadowHold::Seconds();
+		if (hold > 0.0f) {
+			const double now = ShadowHold::Now();
+			const int inside = (std::max)(1, Settings->LightPoints);
+			for (size_t k = 0; k < keyed.size() && (int)k < inside; k++) LampVisibility::Lamps[keyed[k].second].lastInside = now;
+			for (auto& k : keyed)
+				if (inSlots(k.second) && LampVisibility::Pixels(k.second) != 0 && now - LampVisibility::Lamps[k.second].lastInside <= hold) {
+					if (GpuTimer::Enabled && k.first > -1.0e7f) ShadowHold::StatLiveHeld++;
+					k.first -= 1.0e7f;
+				}
+			std::stable_sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+		}
+		SceneLights.clear();
+		for (const auto& k : keyed) SceneLights.insert(SceneLights.end(), { k.first, k.second });
 	}
 
 	// save only the n first lights (based on #define TrackedLightsMax)
@@ -1784,6 +1830,15 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		static GpuTimer objectMotionTimer("Object motion");
 		GpuProfileScope gpu(objectMotionTimer, Device);
 		ObjectMotion::Render(Device, Effects.CombineDepth->Textures.CombinedDepthTexture);
+		Device->SetRenderTarget(0, RenderTarget);
+		Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
+		Device->SetFVF(FrameFVF);
+	}
+	// UNOFFICIAL 2026-10-30 VisibleRanking (core/LampVisibility.h): how much of the visible picture each candidate lamp lights.
+	if (LampVisibility::On) {
+		static GpuTimer lampVisibilityTimer("Lamp visibility (VisibleRanking)");
+		GpuProfileScope gpu(lampVisibilityTimer, Device);
+		LampVisibility::Render(Device, Effects.CombineDepth->Textures.CombinedDepthTexture);
 		Device->SetRenderTarget(0, RenderTarget);
 		Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
 		Device->SetFVF(FrameFVF);
