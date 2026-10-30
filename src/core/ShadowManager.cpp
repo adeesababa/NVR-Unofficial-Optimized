@@ -119,6 +119,27 @@ struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool k
 static std::unordered_map<NiGeometry*, CasterMotion> CasterMotions;
 static const UInt32 MovingSettleFrames = 60;
 
+// UNOFFICIAL 2026-10-30 CasterListCache ([Main.Main.Performance], live, with FastCasterHash; ROOTPLAN round 7 step 18): the lamps' caster
+// check looked every caster up in CasterMotions once per lamp, every frame (the map lookup alone ~0.7 % of the main thread in the
+// Ultra-Luxe, the whole check ~3 %). Each lamp now keeps its list's (geometry, entry) pairs and only looks up a caster that is new at
+// that place in its list; a caster's hash takes its transform's hash from the motion check instead of hashing the matrix again.
+// Same answers (redraw or keep): the entries are the same ones. CasterMotionsGeneration drops the kept lists when entries are erased.
+struct LampCasterList { std::vector<std::pair<NiGeometry*, CasterMotion*>> casters; UInt32 generation = 0; UInt32 seen = 0; };
+static std::unordered_map<ShadowSceneLight*, LampCasterList> LampCasterLists;
+static UInt32 CasterMotionsGeneration = 1;
+static bool CasterListCacheOn() { return TheSettingManager->SettingsMain.Main.CasterListCache && TheSettingManager->SettingsMain.Main.FastCasterHash; }
+
+static bool RecentlyMovedAt(NiGeometry* geo, CasterMotion& motion) {
+	if (motion.seen != SkinnedBoundFrame || !motion.known) {
+		const UInt64 transform = HashCasterBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (motion.known && transform != motion.transform) motion.changed = SkinnedBoundFrame;
+		motion.transform = transform;
+		motion.known = true;
+		motion.seen = SkinnedBoundFrame;
+	}
+	return motion.changed && SkinnedBoundFrame - motion.changed < MovingSettleFrames;
+}
+
 static bool RecentlyMoved(NiGeometry* geo, CasterMotion** out = nullptr) {
 	CasterMotion& motion = CasterMotions[geo];
 	if (out) *out = &motion;
@@ -163,7 +184,18 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	// (counts as still) instead of looking moved for MovingSettleFrames; each lamp's set hash changes once (one redraw).
 	const bool fast = FastCasterHashOn();
 	static bool fastBefore = false;
-	if (fast != fastBefore) { fastBefore = fast; CasterMotions.clear(); }
+	if (fast != fastBefore) { fastBefore = fast; CasterMotions.clear(); CasterMotionsGeneration++; }
+	// CasterListCache switched (live): its hashes take the transform's hash, so each lamp's set hash changes once (one redraw)
+	const bool listCache = fast && CasterListCacheOn();
+	static bool listCacheBefore = false;
+	if (listCache != listCacheBefore) { listCacheBefore = listCache; LampCasterLists.clear(); }
+	LampCasterList* kept = nullptr;
+	size_t keptAt = 0;
+	if (listCache) {
+		kept = &LampCasterLists[light];
+		if (kept->generation != CasterMotionsGeneration) { kept->casters.clear(); kept->generation = CasterMotionsGeneration; }
+		kept->seen = SkinnedBoundFrame;
+	}
 
 	// The hash covers only the casters that never move, so with moving ones it describes what RedrawActorsOnly keeps in
 	// the static cube map.
@@ -171,7 +203,22 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 		NiGeometry* geo = entry->data;
 		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
 		CasterMotion* motion = nullptr;
-		if (IsMovingCaster(geo, shade, &motion)) {
+		bool moving;
+		if (kept && geo) {	// CasterListCache: this lamp's entry for the caster at this place in its list, looked up only when it changed
+			const bool alwaysMoving = geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf);	// as IsMovingCaster: no entry
+			if (keptAt < kept->casters.size() && kept->casters[keptAt].first == geo) motion = kept->casters[keptAt].second;
+			else {
+				motion = alwaysMoving ? nullptr : &CasterMotions[geo];
+				if (keptAt < kept->casters.size()) kept->casters[keptAt] = { geo, motion };
+				else kept->casters.push_back({ geo, motion });
+			}
+			keptAt++;
+			moving = alwaysMoving || !motion || RecentlyMovedAt(geo, *motion);
+			if (alwaysMoving) motion = nullptr;
+		}
+		else
+			moving = IsMovingCaster(geo, shade, &motion);
+		if (moving) {
 			staticCasters = false;
 			continue;
 		}
@@ -183,7 +230,8 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 		casterHash = HashCasterBytes(casterHash, &geo, sizeof(geo));
 		if (!geo) continue;
 		casterHash = HashCasterBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
-		casterHash = HashCasterBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (kept && motion && motion->seen == SkinnedBoundFrame) casterHash = HashCasterBytes(casterHash, &motion->transform, sizeof(motion->transform));	// CasterListCache: hashed this frame already
+		else casterHash = HashCasterBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
 		if (geo->m_kWorldBound) casterHash = HashCasterBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
 
 		NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
@@ -195,6 +243,7 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 		if (fast && motion) { motion->casterHash = casterHash; motion->hashFrame = SkinnedBoundFrame; motion->hashKnown = true; }
 		hash = PointShadowAddCasterHash(hash, casterHash);
 	}
+	if (kept && kept->casters.size() > keptAt) kept->casters.resize(keptAt);
 }
 
 // UNOFFICIAL RedrawActorsOnly needs a min blend into the R32F cube maps (and a face copy, checked as it happens); asked
@@ -1809,8 +1858,12 @@ void ShadowManager::RenderShadowMaps() {
 	if ((++SkinnedBoundFrame & 1023) == 0) {
 		SkinnedBounds.clear();
 		// UNOFFICIAL RedrawActorsOnly: forget geometry not seen for a while (keeping the rest's motion history).
+		const size_t motionsBefore = CasterMotions.size();
 		for (auto it = CasterMotions.begin(); it != CasterMotions.end();)
 			it = SkinnedBoundFrame - it->second.seen > 1024 ? CasterMotions.erase(it) : std::next(it);
+		if (CasterMotions.size() != motionsBefore) CasterMotionsGeneration++;	// CasterListCache: the lamps' kept entries may be gone
+		for (auto it = LampCasterLists.begin(); it != LampCasterLists.end();)	// and lamps not seen for a while
+			it = SkinnedBoundFrame - it->second.seen > 1024 ? LampCasterLists.erase(it) : std::next(it);
 	}
 
 	// track point lights for interiors and exteriors

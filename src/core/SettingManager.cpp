@@ -797,6 +797,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
 	SettingsMain.Main.PreDecodeCache = boolSetting(performance, "PreDecodeCache", false);	// UNOFFICIAL 2026-10-21 cpulimits
 	SettingsMain.Main.FastCasterHash = boolSetting(performance, "FastCasterHash", false);
+	SettingsMain.Main.CasterListCache = boolSetting(performance, "CasterListCache", false);	// UNOFFICIAL 2026-10-30 ROOTPLAN round 7 step 18
 	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
 	{
 		Configuration::ConfigNode node;
