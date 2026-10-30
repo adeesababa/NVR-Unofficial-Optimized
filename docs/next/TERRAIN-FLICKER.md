@@ -105,7 +105,44 @@ in Parallax.hlsl. Those are the 6-layer land shaders built with terrain blending
   costs about 5%.
 - To check the mechanism: the test-only switch `[Main.Develop.Main] FailShaders` makes named shaders fail as the old
   build did. A/B list tflick-5, tomls blend-on and blend-on-fail6.
+- **Confirmed (tflick-6, native D3D9 + MSAA 4x on the GTX 1070, Terrain Blending on, 2026-10-30).** Run 20261030-162248-slotA
+  (shaders as built) against 20261030-165356-slotA (FailShaders SLS2132-2138, log "UNOFFICIAL TEST FailShaders ... not
+  loaded"). Looking steeply down at the noon spot, the 6-layer quadrant the player stands on draws with the game's own
+  shader: a bright patch with straight edges along the quadrant lines (33% of the picture's pixels differ by more than 16
+  levels). This is macintroll's look. It is a fixed look, not flicker (frame-to-frame std 0.31 in both runs). Over cell
+  (23,22) the two runs are the same (mean difference 0.6 levels), so those quads did not pick SLS2132-2138 there.
+- The fix (9eb91a64, PREFER_FLOW_CONTROL retry) is in every build after P84 v4. A log with `X4505` on SLS2132/2134/2136/2138 means an older build.
+- Not the cause: the game's MSAA. The large dark patches seen over cell (23,22) from 6000+ units up are the same on native
+  MSAA 4x and on the fork without MSAA. They are shadows.
+
+**Bench notes.**
+- Native D3D9 cannot use the iGPU here: it has no monitor, so it is not in D3D9's adapter list and the game quits at start
+  when sD3DDevice names it. Native runs use the GTX 1070.
+- The settings reader only reads keys listed in the defaults toml. FailShaders had to go into the defaults file, and the
+  same gap made user toml lines silently do nothing. Since 1a8a5e48 the log lists every user toml key this build does not
+  know ("setting X in your toml isn't known to this build: ignored").
+- landflicker pictures on the fork carry pink specks: FSR keeps parts of the one magenta mask frame in its history for
+  several frames (0.4% of the pixels; none with FSR, TAA or jitter off). Use the shots without landflicker for looks.
 
 ## 5. Diagnosis guide for users
 
-(written once the causes are known)
+**First, the log** (`NewVegasReloaded.log` next to the game, or in the Logs folder):
+- `X4505` on `SLS2132`, `SLS2134`, `SLS2136` or `SLS2138`: an old build. The land quadrants with 6 texture layers draw with
+  the game's own shader, which shows as fixed light or dark patches with straight edges along the land grid. Update to
+  a build newer than P84 v4.
+- `WARNING: the game's own anti-aliasing is on (iMultiSample 4)`: turn Antialiasing off in the game's launcher. NVR's TAA /
+  FSR / DLSS smooth the edges instead.
+- `setting ... in your toml isn't known to this build: ignored`: that line in your toml does nothing in this build (a
+  setting from another build, or a typo).
+- `[ERROR]` lines on any `SLS` shader (the land shaders): that land draws with the game's shader. Send the log.
+
+**Then, is it a fixed patch or a flicker?** Stand still and watch for a few seconds.
+- A fixed patch with straight edges: the shader case above.
+- Flicker on a still picture: in our measurements every bit of frame-to-frame change on the land goes through TAA (the
+  picture is exactly still with TAA off). To narrow it down, try one at a time:
+  1. `[Shaders.TAA.Status] Enabled = false` (TAA in the menu) (if the flicker stops, it is in the temporal path);
+  2. DitherBuster off, then film grain 0 (each is a small, wanted dither);
+  3. FSR off, then Jitter off;
+  4. on the DXVK fork: NvrDxvkPasses off (the RTX 5090 case);
+  5. Terrain Displacement off, then Terrain Parallax off.
+  Tell us which step stops it, your graphics card, and whether you use DXVK.
