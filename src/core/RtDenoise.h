@@ -21,6 +21,8 @@ namespace RtDenoise {
 		float	NormalPower = 64.0f;
 		float	ValueSigma = 4.0f;
 		bool	Reset = false;			// drop the history this frame
+		bool	IgnoreRr = false;		// UNOFFICIAL 2026-10-30 (review): run under DLSS Ray Reconstruction too (RT lamp shadows: read by the
+										// next frame's object shaders, so raw they would reach RR late and stay raw a frame after RR stops)
 		int		Channels = 1;			// 1: Noisy .r -> Output .r; 3: Noisy .rgb -> Output .rgb (RGBA16F output; GI / sky colour)
 		int		Downscale = 1;
 		IDirect3DBaseTexture9* Ids = nullptr;

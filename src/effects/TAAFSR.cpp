@@ -259,9 +259,11 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 
 // --- UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction ------------------------------------------------------------------------------------------
 // (docs/next/FORK2-DLSS-RR.md; [Shaders.TAA.DLSS] RayReconstruction, off by default: then RayReconstructionPlanned and RayReconstruct return at
-// their first test and nothing below is made or run.) The RR point of the pre-tonemap chain, right after the Reflections composite and before
-// the froxel grid and the fog (ShaderManager::RenderEffectsPreTonemapping), at native resolution only. There every RT composite is in the
-// picture (sun, AO / GI through AmbientLight, reflections; the lamps inside the object shaders) and nothing after them is yet. Per frame:
+// their first test and nothing below is made or run.) The RR point of the pre-tonemap chain, after the god rays and before the average luma,
+// exposure and bloom (ShaderManager::RenderEffectsPreTonemapping), at native resolution only. There every RT composite is in the picture
+// (sun, AO / GI through AmbientLight, reflections; the lamps inside the object shaders), and so are the fog, the volumetric light, the
+// sandstorm and the god rays: drawn with this frame's jittered depth, they are resolved by RR with the rest (review 2026-10-30: right
+// after the Reflections composite, as first built, they came after RR and nothing resolved their jittered edges). Per frame:
 //   FSRPrep          motion vectors and FSR-style depth, as DLSS SR gets them, from RR's own previous camera (TAA's is only kept after the
 //                    tonemap, later in the frame); the same pipeline and textures as FSRDraw, which does not run in an RR frame
 //   DlssRRGuides     the picture decoded to linear, and the guides: diffuse albedo (a stand-in), specular albedo, normals, roughness
@@ -272,7 +274,7 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 
 // Every check of the RR point except the frame chain's ownership (RayReconstruct asks that itself, Planned only that the chain runs).
 // RR off: false at once, silently. Each other reason is logged once.
-bool TAAEffect::RRFrameChecks() {
+bool TAAEffect::RRFrameChecks(bool frameStart) {
 	if (!Upscaler::DlssRrSettings().Wanted) return false;
 	auto no = [this](UInt32 reason, const char* why) {
 		if (!(rrLogged & reason)) {
@@ -294,7 +296,8 @@ bool TAAEffect::RRFrameChecks() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects || !Player || !Player->parentCell || TheShaderManager->GameState.OverlayIsOn ||
 		InterfaceManager->IsPipBoyOpen())
 		return no(64, "not a world frame (a menu, a terminal, the Pip-Boy): those frames go to DLSS SR");
-	if (!TheShaderManager->Chain.IsActive()) return no(128, "the frame chain is off ([Main.Main.Performance] DisableFrameChain): no Ray Reconstruction");
+	const bool chainOn = frameStart ? !TheSettingManager->SettingsMain.Main.DisableFrameChain : TheShaderManager->Chain.IsActive();
+	if (!chainOn) return no(128, "the frame chain is off ([Main.Main.Performance] FrameChain): no Ray Reconstruction");
 	if (fsrFailed) return no(256, "TAA's FSR / DLSS path is off for this session (see above): no Ray Reconstruction");
 	if (!Upscaler::RayReconstructionReady())
 		return no(512, "the DLSS helper cannot evaluate Ray Reconstruction (yet: starting, or no RR on this card / no nvngx_dlssd.dll: the DLSS lines say why); DLSS SR meanwhile");
@@ -304,7 +307,8 @@ bool TAAEffect::RRFrameChecks() {
 bool TAAEffect::RayReconstructionPlanned() {
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
 	if (!taa) return false;
-	taa->rrPlanned = taa->RRFrameChecks();
+	taa->rrPlanned = taa->RRFrameChecks(true);
+	Upscaler::RayReconstructionPlan(taa->rrPlanned);
 	return taa->rrPlanned;
 }
 
@@ -354,7 +358,7 @@ bool TAAEffect::RRPipelines() {
 		rrGuides = DxvkCompute::CreatePipeline("DlssRRGuides", RRGuidesBindings, _countof(RRGuidesBindings), 4, true);
 		if (!rrGuides) return fail("its compute pipeline could not be made (Compute\\DlssRRGuides.spv refused)");
 		rrComposite.Tried = true;
-		rrComposite.Pipeline = DxvkCompute::CreateGraphicsPipeline("DlssRRComposite", RRCompositeBindings, _countof(RRCompositeBindings), 8, true, 1, NVR_EXT_BLEND_NONE, false);
+		rrComposite.Pipeline = DxvkCompute::CreateGraphicsPipeline("DlssRRComposite", RRCompositeBindings, _countof(RRCompositeBindings), 16, true, 1, NVR_EXT_BLEND_NONE, false);
 		if (!rrComposite.Pipeline) return fail("its composite pass could not be made (Compute\\DlssRRComposite.spv)");
 	}
 	return rrGuides && rrComposite.Pipeline;
@@ -390,12 +394,16 @@ bool TAAEffect::RayReconstruct(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	FrameChain& chain = TheShaderManager->Chain;
 	if (!planned || !RRFrameChecks() || !chain.Owns(RenderTarget, TheTextureManager->RenderedSurface)) {
 		rrHistoryValid = false;
+		// (review 2026-10-30) wanted but not running for 600 frames (the helper stopped, RR failed, the Vulkan passes went off...): the
+		// guide textures (about 34 bytes a pixel) go; made again on RR's next frame. A counter, so a Pip-Boy look does not free and remake them.
+		if (rrWidth && ++rrIdleFrames >= 600) RRReleaseResources();
 		return false;
 	}
 	auto fail = [this](const char* why) {
 		Logger::Log("[ERROR] UNOFFICIAL NVR DXVK: DLSS Ray Reconstruction: %s; RR is off for this session (DLSS SR runs after the tonemap as before)", why);
 		rrFailed = true;
 		rrHistoryValid = false;
+		RRReleaseResources();	// (review 2026-10-30) never used again this session
 		return false;
 	};
 	if (!FSRPipelines() || !RRPipelines()) { rrHistoryValid = false; return false; }	// (each logged its failure)
@@ -407,7 +415,7 @@ bool TAAEffect::RayReconstruct(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
 	const D3DXVECTOR4* toneMapping = Registered("TESR_ToneMapping");
 	const D3DXVECTOR4* materialData = Registered("TESR_MaterialBufferData");
-	IDirect3DBaseTexture9* color = TheTextureManager->RenderedTexture;	// the chain's current image: the frame after the Reflections composite
+	IDirect3DBaseTexture9* color = TheTextureManager->RenderedTexture;	// the chain's current image: the frame after the god rays
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	IDirect3DBaseTexture9* viewModel = SlotTexture("TESR_DepthBufferViewModel");
@@ -528,12 +536,15 @@ bool TAAEffect::RayReconstruct(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	{
 		IDirect3DSurface9* target = chain.Output();
 		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, output), Image(1, color), Image(2, viewModel), Sampler(0, point) };
-		struct { UInt32 pointIndex; float invLinearization; } push = { 0, 1.0f / linearization };
+		// (review 2026-10-30) rawFrame: the RT effects handed RR raw signals this frame, the weapon's too: it takes RR's output then.
+		struct { UInt32 pointIndex; float invLinearization; UInt32 rawFrame, pad; } push = { 0, 1.0f / linearization, Upscaler::RayReconstructionWantsRaw() ? 1u : 0u, 0 };
 		static GpuTimer compositeTimer("  RR composite");
 		GpuProfileScope gpuComposite(compositeTimer, Device);
 		if (!ExtDrawTo(rrComposite.Pipeline, &target, 1, b, _countof(b), &push, sizeof(push))) return fail("the composite pass failed");
 	}
 	chain.Commit();
+	Upscaler::RayReconstructionDelivered();	// (review 2026-10-30) only now: next frame's WantsRaw goes by a delivered RR frame
+	rrIdleFrames = 0;
 
 	rrPrevView = TheRenderManager->viewMatrix;
 	rrPrevProjection = D3DXVECTOR4(TheRenderManager->projMatrix._11, TheRenderManager->projMatrix._22, 0.0f, 0.0f);
@@ -543,7 +554,7 @@ bool TAAEffect::RayReconstruct(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	rrHistoryValid = true;
 	rrRanThisFrame = true;
 	if (++rrFrames == 1)
-		Logger::Log("UNOFFICIAL NVR DXVK: DLSS Ray Reconstruction runs before the fog, %ix%i native (albedo %s, normals in %s space, roughness %s).", width, height,
+		Logger::Log("UNOFFICIAL NVR DXVK: DLSS Ray Reconstruction runs after the god rays, before exposure and bloom, %ix%i native (albedo %s, normals in %s space, roughness %s).", width, height,
 			RRSettings.Albedo == 1 ? "the picture's chroma" : "flat grey", RRSettings.Normals == 1 ? "view" : "world", materialOn ? "from the material buffer" : "constant");
 	return true;
 }

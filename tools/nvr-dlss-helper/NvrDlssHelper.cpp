@@ -43,6 +43,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -274,6 +275,11 @@ namespace {
 	// UNOFFICIAL 2026-10-30 wantRr (with wantNgx): the instance and the device also get the extensions NGX asks for Ray
 	// Reconstruction (the union with DLSS SR's). Only when NVR wants RR, so a helper without it makes the same device as before.
 	bool CreateVulkanDevice(VulkanDevice& vk, const uint8_t* luid, bool luidValid, const uint8_t* uuid, bool wantNgx, bool wantRr = false) {
+		// UNOFFICIAL 2026-10-30 (review): NGX's extension names are copied here before they are listed: with Ray Reconstruction a second
+		// NGX query runs before vkCreateInstance / vkCreateDevice read the list, and NGX does not say how long its returned array stays
+		// valid (the device one comes from the driver). A deque: growing it never moves the strings the list points to.
+		std::deque<std::string> ownedNames;
+		auto owned = [&ownedNames](const char* name) { ownedNames.emplace_back(name); return ownedNames.back().c_str(); };
 		uint32_t loaderVersion = VK_API_VERSION_1_0;
 		PFN_vkEnumerateInstanceVersion enumerateVersion = (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion");
 		if (enumerateVersion) enumerateVersion(&loaderVersion);
@@ -295,7 +301,7 @@ namespace {
 			NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&discovery, &ngxCount, &ngxExts);
 			if (NVSDK_NGX_FAILED(r)) Log("NGX: instance extension query failed: %s", NgxResultString(r).c_str());
 			for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
-				if (HasExtension(instanceExts, ngxExts[i].extensionName)) AddUnique(enabledInstance, ngxExts[i].extensionName);
+				if (HasExtension(instanceExts, ngxExts[i].extensionName)) AddUnique(enabledInstance, owned(ngxExts[i].extensionName));
 				else Log("NGX wants the instance extension %s, which the loader does not have", ngxExts[i].extensionName);
 			}
 		}
@@ -308,7 +314,7 @@ namespace {
 			NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&discovery, &ngxCount, &ngxExts);
 			if (NVSDK_NGX_FAILED(r)) Log("NGX: Ray Reconstruction's instance extension query failed: %s", NgxResultString(r).c_str());
 			for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
-				if (HasExtension(instanceExts, ngxExts[i].extensionName)) AddUnique(enabledInstance, ngxExts[i].extensionName);
+				if (HasExtension(instanceExts, ngxExts[i].extensionName)) AddUnique(enabledInstance, owned(ngxExts[i].extensionName));
 				else Log("NGX wants the instance extension %s for Ray Reconstruction, which the loader does not have", ngxExts[i].extensionName);
 			}
 		}
@@ -401,7 +407,7 @@ namespace {
 			else {
 				vk.ngxExtensions = true;
 				for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
-					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, ngxExts[i].extensionName);
+					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, owned(ngxExts[i].extensionName));
 					else { vk.ngxExtensions = false; Log("NGX wants the device extension %s, which the driver does not have", ngxExts[i].extensionName); }
 				}
 			}
@@ -418,7 +424,7 @@ namespace {
 			if (NVSDK_NGX_FAILED(r)) Log("NGX: Ray Reconstruction's device extension query failed: %s (DLSS SR's extensions are used)", NgxResultString(r).c_str());
 			else {
 				for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
-					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, ngxExts[i].extensionName);
+					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, owned(ngxExts[i].extensionName));
 					else { vk.rrExtensions = false; Log("NGX wants the device extension %s for Ray Reconstruction, which the driver does not have", ngxExts[i].extensionName); }
 				}
 			}

@@ -614,6 +614,7 @@ namespace RtLampShadows {
 		static RtDenoise::Denoiser* denoiser[2] = {};
 		RtDenoise::Settings settings;
 		settings.MaxHistory = (std::max)(TheSettingManager->GetSettingF(kSection, "DenoiseHistory"), 1.0f);
+		settings.IgnoreRr = true;	// UNOFFICIAL 2026-10-30 (DLSS RR review): next frame's object shaders read it; it stays denoised under RR
 		for (int k = 0; k < 2; k++) {
 			if (!denoiser[k]) denoiser[k] = RtDenoise::Create(k ? "RT lamp shadows rank 1" : "RT lamp shadows rank 0");
 			settings.Ids = SplitTexture[2 + k];

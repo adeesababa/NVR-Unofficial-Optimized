@@ -104,7 +104,16 @@ void TAAEffect::UpdateSettings() {
 	// is a real value (a mirror), so only a key that is there at all replaces its default.
 	{
 		Upscaler::RrOptions rr;
-		rr.Wanted = dlss && TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RayReconstruction") != 0;
+		// (review 2026-10-30: only at RenderScale 1, the one size RR runs at for now; below it the helper would make RR's guide images and
+		// set RR up for nothing. Crossing RenderScale 1 with RR on restarts the helper, with or without them.)
+		const bool rrKey = dlss && TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RayReconstruction") != 0;
+		rr.Wanted = rrKey && FSRSettings.RenderScale >= 0.999f;
+		static bool rrScaleLogged = false;
+		if (rrKey && !rr.Wanted && !rrScaleLogged) {
+			rrScaleLogged = true;
+			Logger::Log("UNOFFICIAL DLSS RR: RayReconstruction is on, but DLSS Ray Reconstruction runs at RenderScale 1 only for now (the RT effects "
+				"do not run in rect frames); at RenderScale %.2f DLSS SR upscales as before (logged once).", FSRSettings.RenderScale);
+		}
 		rr.KeepDenoisers = TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRKeepDenoisers") != 0;
 		rr.Preset = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "Preset"), 0, 3);
 		rr.RrPreset = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRPreset"), 0, 2);

@@ -13,6 +13,9 @@ layout(set = 1, binding = 2) uniform texture2D t_viewmodel;   // TESR_DepthBuffe
 layout(push_constant) uniform Push {
     uint pointIndex;            // 0: POINT, CLAMP (the extension writes the heap index)
     float invLinearization;     // 4: 1 / TESR_ToneMapping.w
+    uint rawFrame;              // 8: (review 2026-10-30) this frame's RT effects skipped their own denoisers (WantsRaw): the weapon
+                                //    takes RR's output too (slightly soft, it is not jittered, but not the raw 1-ray noise on it)
+    uint pad;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -23,7 +26,7 @@ layout(location = 0) out vec4 o_color;
 void main() {
     ivec2 pixel = ivec2(floor(gl_FragCoord.xy));
     vec4 source = texelFetch(sampler2D(t_source, POINT_S), pixel, 0);
-    bool weapon = texelFetch(sampler2D(t_viewmodel, POINT_S), pixel, 0).x > 0.0;
+    bool weapon = pc.rawFrame == 0u && texelFetch(sampler2D(t_viewmodel, POINT_S), pixel, 0).x > 0.0;
     vec3 color = weapon ? source.rgb : pow(max(texelFetch(sampler2D(t_rr, POINT_S), pixel, 0).rgb, vec3(0.0)), vec3(pc.invLinearization));
     o_color = vec4(color, source.a);
 }

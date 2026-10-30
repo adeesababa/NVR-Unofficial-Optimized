@@ -82,8 +82,11 @@ namespace {
 	// runs (no F10), a few microseconds a frame:
 	//  - the game's frame interval (from one exchange to the next; gaps over a second, menus and loading, left out): average, p99, max,
 	//    and how many frames took over 33 / 50 ms;
-	//  - the exchange's GPU time on the game's queue (the copies in, the wait for the helper, its work, the copy back): two timestamp
-	//    queries around it, read back frames later without waiting (DXVK reports nanoseconds; TIMESTAMPFREQ when it answers);
+	//  - the exchange on the game's queue, with timestamp queries read back frames later without waiting (DXVK reports nanoseconds;
+	//    TIMESTAMPFREQ when it answers): the copies in (start to "inputs ready": one command list, the copies' own GPU time), and the span
+	//    to the helper's output copied back (review 2026-10-30: this one crosses the flush that "inputs ready" makes, so in a CPU-bound
+	//    frame it also holds the CPU time until the frame's next submit; the helper's own share is its GPU time and response, from the
+	//    helper itself);
 	//  - the game process's video memory against its budget (DXGI 1.4 QueryVideoMemoryInfo on the GPU DXVK uses, from the fork's LUID):
 	//    over budget, Windows pages memory in and out, a classic cause of drops while turning (new textures stream in).
 	// A frame over 50 ms that is also 3x the typical one gets its own "DLSS SLOW FRAME" line (30 a session at most, one a second).
@@ -96,6 +99,8 @@ namespace {
 		}
 
 		void Reset() { intervals.clear(); lastQpc.QuadPart = 0; typicalMs = 0.0; ResetGpuWindow(); }
+		// (review 2026-10-30) frames went by without an exchange (FSR 2 ran, the effects did not run): the next interval is not a frame's
+		void Gap() { lastQpc.QuadPart = 0; }
 
 		void BeginGpu(IDirect3DDevice9* Device) {
 			active = nullptr;
@@ -112,6 +117,11 @@ namespace {
 				active = &slot;
 				return;
 			}
+		}
+		// Right before "inputs ready" (the flush): the copies' end, in the same command list as the start.
+		void MidGpu() {
+			if (!active) return;
+			if (FAILED(active->mid->Issue(D3DISSUE_END))) { broken = true; ReleaseQueries(); }
 		}
 		void EndGpu(bool keep) {
 			Slot* slot = active;
@@ -140,9 +150,10 @@ namespace {
 						lastSlowQpc = now;
 						char vram[128];
 						VideoMemory(vram, sizeof(vram));
-						Logger::Log("DLSS SLOW FRAME %.1f ms (typical %.1f ms) with %s: the exchange's GPU time lately %.2f ms (max of the last 8 read %.2f ms), "
-							"%llu frames in flight, helper response %.3f ms avg (max %.3f), helper GPU %.3f ms; video memory %s",
-							ms, typicalMs, mode, gpuLastMs, RecentMaxMs(), (unsigned long long)inFlight, shared ? shared->responseUsAvg / 1000.0 : 0.0,
+						Logger::Log("DLSS SLOW FRAME %.1f ms (typical %.1f ms) with %s: the copies in lately %.2f ms; the span to the helper's output lately %.2f ms "
+							"(max of the last 8 read %.2f ms; with CPU time until the next submit when CPU-bound); %llu frames in flight; the helper itself: response "
+							"%.3f ms avg (max %.3f), GPU %.3f ms; video memory %s",
+							ms, typicalMs, mode, copyLastMs, gpuLastMs, RecentMaxMs(), (unsigned long long)inFlight, shared ? shared->responseUsAvg / 1000.0 : 0.0,
 							shared ? shared->responseUsMax / 1000.0 : 0.0, shared ? shared->gpuTimeUsLast / 1000.0 : 0.0, vram);
 					}
 					// The typical frame, not dragged up by the slow ones.
@@ -167,8 +178,9 @@ namespace {
 				sprintf_s(frames, "frame interval %.2f ms avg, p99 %.2f, max %.1f (%u of %u over 33 ms, %u over 50 ms)", sum / n,
 					sorted[(std::min)(n - 1, (n * 99) / 100)], sorted[n - 1], over33, (UInt32)n, over50);
 			}
-			char gpu[160] = "the exchange's GPU time not measured (no timestamp queries)";
-			if (gpuCount) sprintf_s(gpu, "the exchange's GPU time %.2f ms avg, max %.2f (%u of %u over 4 ms)", gpuSumMs / gpuCount, gpuMaxMs, gpuOver4, gpuCount);
+			char gpu[224] = "the exchange not measured (no timestamp queries)";
+			if (gpuCount) sprintf_s(gpu, "the copies in %.2f ms avg; the span to the helper's output %.2f ms avg, max %.2f (%u of %u over 4 ms; with CPU time "
+				"until the next submit when CPU-bound)", copySumMs / gpuCount, gpuSumMs / gpuCount, gpuMaxMs, gpuOver4, gpuCount);
 			char vram[128];
 			VideoMemory(vram, sizeof(vram));
 			sprintf_s(text, size, "; %s; %s; video memory %s", frames, gpu, vram);
@@ -177,7 +189,7 @@ namespace {
 		}
 
 	private:
-		struct Slot { IDirect3DQuery9* start = nullptr; IDirect3DQuery9* end = nullptr; IDirect3DQuery9* frequency = nullptr; bool pending = false; };
+		struct Slot { IDirect3DQuery9* start = nullptr; IDirect3DQuery9* mid = nullptr; IDirect3DQuery9* end = nullptr; IDirect3DQuery9* frequency = nullptr; bool pending = false; };
 		Slot	slots[8];
 		Slot*	active = nullptr;
 		IDirect3DDevice9* device = nullptr;
@@ -186,7 +198,7 @@ namespace {
 		LARGE_INTEGER lastQpc = {}, lastSlowQpc = {};
 		double	typicalMs = 0.0;
 		UInt32	slowLogged = 0;
-		double	gpuSumMs = 0.0, gpuMaxMs = 0.0, gpuLastMs = 0.0;
+		double	gpuSumMs = 0.0, gpuMaxMs = 0.0, gpuLastMs = 0.0, copySumMs = 0.0, copyLastMs = 0.0;
 		UInt32	gpuCount = 0, gpuOver4 = 0;
 		float	recent[8] = {};
 		UInt32	recentCount = 0;
@@ -194,15 +206,16 @@ namespace {
 		bool	luidValid = false, dxgiTried = false;
 		IDXGIAdapter3* adapter = nullptr;
 
-		void ResetGpuWindow() { gpuSumMs = gpuMaxMs = 0.0; gpuCount = gpuOver4 = 0; }
+		void ResetGpuWindow() { gpuSumMs = gpuMaxMs = copySumMs = 0.0; gpuCount = gpuOver4 = 0; }
 		double RecentMaxMs() const {
 			double m = 0.0;
-			for (UInt32 i = 0; i < (std::min)(recentCount, 8u); i++) m = (std::max)(m, (double)recent[i]);
+			for (UInt32 i = 0; i < (std::min)(recentCount, (UInt32)8); i++) m = (std::max)(m, (double)recent[i]);
 			return m;
 		}
 		bool CreateQueries() {
 			for (Slot& slot : slots) {
-				if (FAILED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &slot.start)) || FAILED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &slot.end))) {
+				if (FAILED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &slot.start)) || FAILED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &slot.mid)) ||
+					FAILED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &slot.end))) {
 					broken = true;
 					ReleaseQueries();
 					return false;
@@ -214,7 +227,7 @@ namespace {
 		}
 		void ReleaseQueries() {
 			for (Slot& slot : slots) {
-				IDirect3DQuery9** queries[] = { &slot.start, &slot.end, &slot.frequency };
+				IDirect3DQuery9** queries[] = { &slot.start, &slot.mid, &slot.end, &slot.frequency };
 				for (IDirect3DQuery9** q : queries) if (*q) { (*q)->Release(); *q = nullptr; }
 				slot.pending = false;
 			}
@@ -224,11 +237,15 @@ namespace {
 		void Collect() {
 			for (Slot& slot : slots) {
 				if (!slot.pending) continue;
-				UINT64 start = 0, end = 0, frequency = 1000000000ull;
-				if (slot.start->GetData(&start, sizeof(start), 0) != S_OK || slot.end->GetData(&end, sizeof(end), 0) != S_OK) continue;
+				UINT64 start = 0, mid = 0, end = 0, frequency = 1000000000ull;
+				if (slot.start->GetData(&start, sizeof(start), 0) != S_OK || slot.mid->GetData(&mid, sizeof(mid), 0) != S_OK ||
+					slot.end->GetData(&end, sizeof(end), 0) != S_OK) continue;
 				if (slot.frequency && slot.frequency->GetData(&frequency, sizeof(frequency), 0) != S_OK) continue;
 				slot.pending = false;
-				if (!frequency || end < start) continue;
+				if (!frequency || end < start || mid < start || end < mid) continue;
+				const double copies = (double)(mid - start) * 1000.0 / (double)frequency;
+				copyLastMs = copies;
+				copySumMs += copies;
 				const double ms = (double)(end - start) * 1000.0 / (double)frequency;
 				gpuLastMs = ms;
 				gpuSumMs += ms;
@@ -282,7 +299,8 @@ namespace {
 		void				ReleaseResources() override { Stop("its resources were released"); state = Idle; }
 
 		bool	IsOff() const { return state == Off; }
-		void	MarkUnused() { dlssNeedsReset = true; }	// a frame went to FSR 2 by the setting: DLSS's history is stale
+		// a frame went to FSR 2 by the setting: DLSS's history is stale (and FSR 2's textures are freed again once DLSS has run 600 frames)
+		void	MarkUnused() { dlssNeedsReset = true; runningFrames = 0; fsrFreed = false; watch.Gap(); }
 		void	SetOptions(bool test, int jitterFlip) {
 			if (test != passThrough && state != Idle && state != Off) {
 				// Another mode: the helper is started again (FSR 2 in between).
@@ -312,10 +330,22 @@ namespace {
 		bool				RrReady();
 		bool				EvaluateRr(IDirect3DDevice9* Device, const Upscaler::RrInputs& In);
 		IDirect3DTexture9*	RrOutput() const { return output.Texture; }
-		void				RrFrameBegin() { rrLastRan = rrRanThisFrame; rrRanThisFrame = false; }
-		// (also a live helper with RR available: a frame after the helper died or DLSS-D failed gets the denoisers back at once)
+		// (review 2026-10-30: with RR wanted the helper is polled here too, so a helper that died is seen before the RT point, not halfway
+		// through the frame's effects; nothing more with RR off)
+		void				RrFrameBegin() {
+			if (rr.Wanted && (state == Starting || state == Running)) Poll();
+			frameStamp++;	// (ExchangeWatch: a frame without an exchange in between is a gap)
+			rrLastRan = rrRanThisFrame;
+			rrRanThisFrame = false;
+			rrPlannedThisFrame = false;
+		}
+		void				RrPlan(bool planned) { rrPlannedThisFrame = planned; }
+		void				RrDelivered() { rrRanThisFrame = true; }
+		// (also a live helper with RR available, and this frame planned for RR: a frame after the helper died or DLSS-D failed, or one that
+		// will not go to RR (the Pip-Boy, a menu), gets the denoisers back at once)
 		bool				RrWantsRaw() const {
-			return rrLastRan && rr.Wanted && !rr.KeepDenoisers && state == Running && rrImages && !rrFailed && shared && shared->rrAvailable != 0;
+			return rrLastRan && rrPlannedThisFrame && rr.Wanted && !rr.KeepDenoisers && state == Running && rrImages && !rrFailed && shared &&
+				shared->rrAvailable != 0 && !tripped;
 		}
 
 	private:
@@ -355,6 +385,7 @@ namespace {
 		bool		rrNeedsReset = true;		// the helper's DLSS-D history is stale (a start, or DLSS SR frames went by)
 		bool		rrRanThisFrame = false;		// EvaluateRayReconstruction recorded this frame's exchange
 		bool		rrLastRan = false;			// ... last frame's (RayReconstructionFrameBegin)
+		bool		rrPlannedThisFrame = false;	// RayReconstructionPlan: this frame is meant for RR (review 2026-10-30)
 		bool		rrSkipLogged = false;		// EvaluateRr turned a frame down (missing input / other sizes): logged once a start
 		bool		rrDllReported = false;		// "nvngx_dlssd.dll is not next to the helper" logged
 		int			rrReported = 0;				// readiness logged since this start: 0 nothing, 1 "ready", 2 "not available"
@@ -363,6 +394,7 @@ namespace {
 		ExchangeWatch	watch;
 		UInt64		runningFrames = 0;			// exchanges since this start
 		bool		fsrFreed = false;			// FSR 2's textures were freed after DLSS's first 600 frames (it makes them again if it runs)
+		UInt64		frameStamp = 0, exchangeStamp = 0;	// RayReconstructionFrameBegin's frame count, and the last exchange's (review 2026-10-30)
 
 		bool	TurnOff(const char* why);
 		bool	Start(const Upscaler::Inputs& In);
@@ -680,6 +712,9 @@ namespace {
 
 	bool DlssUpscaler::FallBack(IDirect3DDevice9* Device, const Upscaler::Inputs& In) {
 		usedSelf = false;
+		runningFrames = 0;	// (review 2026-10-30) FSR 2 makes its textures again now; DLSS frees them again after 600 frames of its own
+		fsrFreed = false;
+		watch.Gap();
 		Upscaler::Inputs in = In;
 		if (fsrNeedsReset) in.Reset = true;
 		fsrNeedsReset = false;
@@ -772,6 +807,7 @@ namespace {
 		InterlockedExchange64((volatile LONG64*)&shared->latestFrame, (LONG64)n);
 		SetEvent(frameEvent);
 		InterlockedExchange64(&lastRecorded, (LONG64)n);
+		watch.MidGpu();	// UNOFFICIAL 2026-10-30: the copies' end, before the flush "inputs ready" makes (ExchangeWatch)
 		share->SignalShared(inputsReady, n);
 		share->WaitShared(outputReady, n);
 		share->CopyFromShared(output.Texture, 0, 0, images[NVR_DLSS_IMAGE_OUTPUT], nullptr);
@@ -798,6 +834,8 @@ namespace {
 		{
 			UINT64 back = 0;
 			outputReady->GetCompletedValue(&back);
+			if (frameStamp - exchangeStamp > 1) watch.Gap();	// frames without an exchange went by (the effects did not run)
+			exchangeStamp = frameStamp;
 			watch.Frame(mode, shared, n > back ? n - back : 0);
 		}
 		// FSR 2's own textures (about 190 MB at 1920x1080) were made for the second or so the helper needed to start; while DLSS runs
@@ -899,8 +937,7 @@ namespace {
 		const bool recorded = RecordRr(In);
 		watch.EndGpu(recorded);
 		if (!recorded) return false;
-		rrRanThisFrame = true;
-		return true;
+		return true;	// (rrRanThisFrame: RayReconstructionDelivered, once the RR point's composite is in the frame)
 	}
 }
 
@@ -917,6 +954,8 @@ namespace Upscaler {
 	IDirect3DTexture9* RayReconstructionOutput() { return TheDlss.RrOutput(); }
 	void RayReconstructionFrameBegin() { TheDlss.RrFrameBegin(); }
 	bool RayReconstructionWantsRaw() { return TheDlss.RrWantsRaw(); }
+	void RayReconstructionPlan(bool Planned) { TheDlss.RrPlan(Planned); }
+	void RayReconstructionDelivered() { TheDlss.RrDelivered(); }
 
 	IUpscaler* Choose(int setting) {
 		// UNOFFICIAL 2026-10-28 ([Shaders.TAA.FSR] Version 1): FSR 3.1, or FSR 2 once it has failed (logged by it). A switch to or

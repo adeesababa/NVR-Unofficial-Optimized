@@ -112,7 +112,7 @@ public:
 
 	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction ([Shaders.TAA.DLSS] RayReconstruction, off by default; effects/TAAFSR.cpp,
 	// docs/next/FORK2-DLSS-RR.md): NVIDIA's DLSS-D through the DLSS helper at the RR point of ShaderManager::RenderEffectsPreTonemapping
-	// (after the Reflections composite, before the fog), native resolution only. In such a frame it takes DLSS SR's place (Render skips
+	// (after the god rays, before exposure and bloom), native resolution only. In such a frame it takes DLSS SR's place (Render skips
 	// its resolve) and the RT effects hand it their raw signals from the next frame on (Upscaler::RayReconstructionWantsRaw).
 	struct RRSettingsStruct {
 		int		Albedo = 0;			// RRAlbedo: 0 flat grey 0.5, 1 the picture's own chroma at a fixed luminance
@@ -120,9 +120,10 @@ public:
 		int		Normals = 0;		// RRNormals: 0 camera-relative world space, 1 view space
 	};
 	RRSettingsStruct	RRSettings;
-	// True when this frame's RR point will try: RR wanted and ready, and RayReconstruct's frame checks pass. Asked once a frame by the
-	// fog fold (ShaderManager.cpp), which an RR frame turns off so the shadows and AO are applied before the RR point, not inside the fog
-	// after it; the RR point runs only in a frame this said yes to. False with RayReconstruction off.
+	// True when this frame's RR point will try: RR wanted and ready, and the frame checks known at the start of the pre-tonemap chain pass
+	// (the frame chain by its setting: it begins later). Asked once a frame there, before the RT point (ShaderManager.cpp), and handed to
+	// the upscaler (Upscaler::RayReconstructionPlan) for the RT denoisers' WantsRaw; the RR point runs only in a frame this said yes to.
+	// False with RayReconstruction off.
 	static bool			RayReconstructionPlanned();
 	// The RR point: FSRPrep (motion, depth), DlssRRGuides, Upscaler::EvaluateRayReconstruction, DlssRRComposite into the frame chain.
 	// False: the frame is untouched (RR off, not this frame, or a failure: logged once) and TAA's resolve runs after the tonemap as before.
@@ -195,7 +196,9 @@ private:
 	bool		rrFailed = false;		// RR is off for the session (logged)
 	UInt32		rrLogged = 0;			// the frame checks' reasons already logged (each once)
 	UInt32		rrFrames = 0;
-	bool		RRFrameChecks();		// every check of the RR point but the chain's ownership (logs each reason once)
+	bool		RRFrameChecks(bool frameStart = false);	// every check of the RR point but the chain's ownership (logs each reason once);
+												// frameStart: the chain by its setting (it begins later in the frame)
+	UInt32		rrIdleFrames = 0;		// frames RR stayed wanted but did not run: its guide textures go after 600 (review 2026-10-30)
 	bool		RRPipelines();
 	bool		RREnsureResources();
 	void		RRReleaseResources();

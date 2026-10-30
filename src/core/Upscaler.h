@@ -103,8 +103,15 @@ namespace Upscaler {
 	bool		EvaluateRayReconstruction(IDirect3DDevice9* Device, const RrInputs& In);
 	IDirect3DTexture9*	RayReconstructionOutput();
 	// Once a frame, at the start of the pre-tonemap chain (before the RT point): last frame's RR result becomes this frame's
-	// WantsRaw, and this frame's starts at "not run".
+	// WantsRaw, and this frame's starts at "not run" (and "not planned").
 	void		RayReconstructionFrameBegin();
+	// UNOFFICIAL 2026-10-30 (review): the frame's plan, set once after FrameBegin and before the RT point (TAAEffect::
+	// RayReconstructionPlanned: every frame check that is known then). WantsRaw needs it, so a frame that will not go to RR (the Pip-Boy,
+	// a menu, a RenderScale frame...) keeps every denoiser even right after RR frames.
+	void		RayReconstructionPlan(bool Planned);
+	// The RR point put DLSS-D's result into the frame (after its composite and the chain's Commit): that is what next frame's WantsRaw
+	// goes by (an evaluate whose composite failed does not count).
+	void		RayReconstructionDelivered();
 	// The per-effect RT denoisers hand RR their raw signals this frame: RR ran last frame, Wanted, KeepDenoisers off. False: every
 	// effect runs exactly its old path.
 	bool		RayReconstructionWantsRaw();

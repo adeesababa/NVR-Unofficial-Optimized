@@ -21,7 +21,7 @@ What RR needs each frame, at render resolution:
 
 | input | meaning | NVR source |
 |---|---|---|
-| colour | the noisy lit picture, linear HDR, before tonemapping, jittered | the frame chain's image after the Reflections composite, **decoded** from the stored curve with `pow(c, Linearization)` (TESR_ToneMapping.w, 2.2). The FP16 scene target is gamma-encoded, not linear, at this point. |
+| colour | the noisy lit picture, linear HDR, before tonemapping, jittered | the frame chain's image after the god rays, **decoded** from the stored curve with `pow(c, Linearization)` (TESR_ToneMapping.w, 2.2). The FP16 scene target is gamma-encoded, not linear, at this point. |
 | depth | device depth | FSRPrep's depth (0 near .. 1 far), the same as DLSS SR gets |
 | motion | previous minus current, render pixels | FSRPrep's motion (camera + ObjectMotion; weapon 0), scale = render size |
 | diffuse albedo | surface colour of diffuse light | **none exists in NVR.** v1 uses an approximation (setting RRAlbedo, below). A real one needs the templates' spare COLOR1 output (follow-up). |
@@ -35,15 +35,21 @@ Output: the display-size picture, denoised and anti-aliased. Linear HDR, RGBA16F
 
 ## Where it runs (v1: native resolution only)
 
-The RR point is inside `ShaderManager::RenderEffectsPreTonemapping`, right after the Reflections block and before the froxel
-grid. At that point:
+The RR point is inside `ShaderManager::RenderEffectsPreTonemapping`, after the god rays and before the average luma, exposure
+and bloom. At that point:
 - every RT composite has already been applied (sun, AO/GI through AmbientLight, reflections, and lamps inside the object shaders);
-- nothing has been added after them yet: the fog, the volumetric light, sandstorm, god rays, exposure, bloom, lens and LUT all
-  run after this point;
+- so have the fog, the volumetric light, the sandstorm and the god rays. They are drawn with this frame's jittered depth, so RR
+  has to resolve them with the rest, the way DLSS SR resolves them after the tonemap;
+- exposure, bloom, lens and LUT all run after this point;
 - the camera is unjittered and the Vulkan passes are allowed, because it is not a rect frame.
 
-The one thing to stop is the fog's composite fold. ShaderManager would otherwise apply the sun shadow and AO inside the fog,
-after RR. RR frames therefore turn the fold off, as AmbientLight or Reflections already do.
+**Changed after the review (2026-10-30).** The first build put the point right after the Reflections block, before the fog. That
+was wrong in two ways:
+- every effect after it used jittered depth on RR's unjittered picture, and nothing resolved their edges, which shimmered along
+  silhouettes;
+- the fog's shadow/AO composite fold had to be turned off.
+
+With the point after the god rays, the fold stays as it always was.
 
 **v1 runs RR only at RenderScale 1, so the output is DLAA-quality RR.** With RenderScale below 1, NVR's v2 path draws the
 effects in a rect, and in rect frames the Vulkan passes are off (DxvkCompute::PassesOn). That turns off the RT AO, RT GI and RT
@@ -63,14 +69,22 @@ Each frame at the RR point (NVR DXVK passes, all at native size):
 
 ## Per-effect denoisers while RR runs
 
-They are decided at the start of each frame, from the previous frame's RR result. That result is only known at the RR point,
-which comes after the effects. So the first RR frame is still denoised as before. If RR fails or switches off, the denoisers come
-back the next frame.
+They are decided at the start of each frame, before the RT point. That decision combines two things:
+- **the previous frame's RR result,** which is only known at the RR point, after the effects. So the first RR frame is still
+  denoised as before.
+- **this frame's plan.** `TAAEffect::RayReconstructionPlanned` runs every frame check that is known at that moment. The frame
+  chain is judged by its setting, because the chain begins later in the frame.
 
-`Upscaler::RayReconstructionWantsRaw()` is true only if all three hold:
-- RR ran last frame;
+`Upscaler::RayReconstructionWantsRaw()` is true only if all of these hold:
+- RR delivered last frame, meaning its composite reached the frame;
+- this frame is planned for RR;
 - RR is on;
+- the helper is alive (polled at the frame's start) and RR is available;
 - RRKeepDenoisers is off (the A/B switch).
+
+A frame that will not go to RR therefore keeps every denoiser, even right after RR frames: the Pip-Boy, a menu, a terminal,
+the Vulkan passes switched off, a RenderScale frame. Only an RR failure that nothing could know at the frame's start (DLSS-D
+failing in the helper, a composite that fails) still gives one frame of raw signals.
 
 While it is true:
 - RtDenoise::Run returns false, so every caller uses its noisy signal: RT sun with SunAngle > 0, RT lamps with Denoise on, RT AO
@@ -170,6 +184,21 @@ RR has its own `RRPreset` (0 = default, 1 = D, 2 = E).
 | RRDepthLinear | false | false: hardware depth (`DLSS.Use.HW.Depth` 1); true: send 0 (if RR's depth reads wrong) |
 | RRKeepDenoisers | false | true: NVR's own RT denoisers keep running under RR (A/B) |
 
+**Also from the review:**
+- **With RenderScale below 1, RR counts as not wanted.** No guide images are made and RR is not set up. The log says once
+  that RR runs at RenderScale 1 only. Crossing RenderScale 1 restarts the helper, with or without the guide images.
+- **RR's guide textures (about 34 bytes a pixel) are freed** if RR stays wanted but does not run for 600 frames, or if it fails.
+- **The helper copies NGX's Vulkan extension names before listing them.** With RR on, a second NGX query runs before the
+  instance and device are made.
+- **The decoded colour is capped at 65000 and NaN becomes 0.** The guide is FP16, and a value over about 154 in the stored curve
+  would decode to +Inf.
+- **In a frame whose RT effects skipped their denoisers, the first-person weapon takes RR's output.** It is slightly soft,
+  because the weapon is not jittered, but it no longer carries the raw 1-ray noise.
+- **The RT lamp shadows' denoiser keeps running under RR** (RtDenoise Settings.IgnoreRr). The next frame's object shaders read
+  its result, so a raw one would reach RR late and stay raw for a frame after RR stops.
+- **The DLSS figures count a run of frames without an exchange as a gap,** not as one long frame. That covers FSR 2 frames and
+  frames where the effects did not run.
+
 ## Not in v1 (follow-ups)
 
 1. **RR with upscaling (RenderScale < 1).** The RT passes and their composites need to work in rect frames: rect-aware UVs and
@@ -190,15 +219,25 @@ overwritten. Nothing per frame was logged, so the drops could not be seen. While
 - **the mode first:** DLAA / Quality / Balanced / Performance / Ultra Performance, HDR / LDR / Ray Reconstruction, and the preset;
 - **the game's frame interval over the window**, from one exchange to the next: average, p99 and maximum, and how many frames
   took over 33 ms and over 50 ms;
-- **the exchange's GPU time on the game's queue** (the copies in, the wait for the helper, its work, the copy back): average,
-  maximum, and how many frames were over 4 ms. It is measured with two timestamp queries read back without waiting;
+- **the exchange on the game's queue**, from three timestamp queries read back without waiting:
+  - **the copies in:** start to "inputs ready". This is one command list, so it is the copies' own GPU time.
+  - **the span to the helper's output** being copied back: average, maximum, and how many frames were over 4 ms. This one
+    crosses the flush that "inputs ready" makes (review 2026-10-30). In a CPU-bound frame it also holds the CPU time until the
+    frame's next submit, so on its own it does not blame the helper. The helper's own share is its GPU time and response, which
+    the helper measures itself;
 - **the game process's video memory against its budget** (DXGI 1.4 on the GPU DXVK uses), with "OVER BUDGET" when Windows has
   to page.
 
 A frame over 50 ms that is also 3x the typical one gets its own `DLSS SLOW FRAME` line (at most 30 a session, one a second). It
-gives the exchange's latest GPU time, the frames in flight, the helper's response and the video memory. If a drop shows a normal
-exchange time, the drop is not the helper's.
+gives:
+- the latest copies-in time and span;
+- the frames in flight;
+- the helper's own response and GPU time;
+- the video memory.
 
-**FSR 2's own textures are freed once DLSS has run 600 frames.** They take about 190 MB at 1920x1080 and are only FSR 2's
+If a drop shows a normal span and normal helper figures, the drop is not the helper's.
+
+**FSR 2's own textures are freed once DLSS has run 600 frames.** Since the review, this happens again after every stretch of
+FSR 2 frames, such as a live switch to FSR and back. They take about 190 MB at 1920x1080 and are only FSR 2's
 stand-in for the second the helper needs to start. On an 8 GB card that memory matters. FSR 2 makes them again on its first
 frame if DLSS stops.

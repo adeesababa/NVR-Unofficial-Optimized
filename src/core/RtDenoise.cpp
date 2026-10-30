@@ -111,7 +111,7 @@ namespace RtDenoise {
 		// RayReconstructionWantsRaw: RR ran last frame, RayReconstruction on, RRKeepDenoisers off) no pass runs and the caller takes its
 		// noisy signal, as it does whenever this returns false. Every denoiser's history is dropped then (rawGeneration), so the first
 		// frame denoised again starts afresh instead of reprojecting from a camera of frames ago.
-		if (Upscaler::RayReconstructionWantsRaw()) {
+		if (!S.IgnoreRr && Upscaler::RayReconstructionWantsRaw()) {
 			rawGeneration++;
 			if (d && !d->rawLogged) {
 				d->rawLogged = true;
