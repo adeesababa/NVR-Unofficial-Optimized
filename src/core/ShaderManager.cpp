@@ -1757,6 +1757,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		static bool rtRegistered = false;
 		if (!rtRegistered) { RtSunShadows::Register(); Effects.Reflections->RtRegister(); RtLampShadows::Register(); AmbientOcclusionEffect::RtRegister(); rtRegistered = true; }	// UNOFFICIAL 2026-10-28 RT sun + RT reflections + RT lamp shadows + RT AO/sky
 		RtCore::Frame(Device);
+		RtLampShadows::Denoise(Device);	// UNOFFICIAL 2026-10-29: the traced lamp shadows through the shared denoiser (Denoise, off)
 	}
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {

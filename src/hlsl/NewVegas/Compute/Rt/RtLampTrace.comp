@@ -13,6 +13,8 @@
 // each in two segments: the whole ray with the far mask, the last LampModelDistance next to the lamp with the near mask (lamp models
 // skipped too), stopping max(LampStop, the lamp's own stop) short of the lamp, starting off the surface along its normal.
 // Compile: glslangValidator -V --target-env vulkan1.2 -o RtLampTrace.spv RtLampTrace.comp
+// 2026-10-29 Denoise: the variant RtLampTraceSplit.spv (-DSPLIT) also writes ranks 0 and 1 apart for the shared denoiser (bindings 6-9:
+// visibility 0..1 and the cube slot, 63 = none): glslangValidator -V --target-env vulkan1.2 -DSPLIT -o RtLampTraceSplit.spv RtLampTrace.comp
 #extension GL_EXT_ray_query : require
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -37,6 +39,21 @@ layout(set = 0, binding = 4, rg32f) uniform writeonly image2D resultImage;
 // The lamp table, 4 texels a lamp, lamp = cube slot s at x = 4s: (x, y), (z, reach), (intensity, the game's radius), (stop, disc radius)
 // (scene space; reach 0 = no lamp in that slot)
 layout(set = 0, binding = 5, rg32f) uniform readonly image2D lampTable;
+#ifdef SPLIT
+layout(set = 0, binding = 6, r32f) uniform writeonly image2D vis0Image;
+layout(set = 0, binding = 7, r32f) uniform writeonly image2D vis1Image;
+layout(set = 0, binding = 8, r32f) uniform writeonly image2D id0Image;
+layout(set = 0, binding = 9, r32f) uniform writeonly image2D id1Image;
+void storeSplit(ivec2 pixel, float e0, float e1) {
+	float v0 = floor(e0 / 64.0), v1 = floor(e1 / 64.0);
+	imageStore(vis0Image, pixel, vec4(v0 / 15.0));
+	imageStore(vis1Image, pixel, vec4(v1 / 15.0));
+	imageStore(id0Image, pixel, vec4(e0 - 64.0 * v0));
+	imageStore(id1Image, pixel, vec4(e1 - 64.0 * v1));
+}
+#else
+void storeSplit(ivec2 pixel, float e0, float e1) { }
+#endif
 
 float hash12(vec2 q) {
 	vec3 h = fract(vec3(q.xyx) * 0.1031);
@@ -72,6 +89,7 @@ void main() {
 	float viewZ = linear01 * p.forward.w;
 	if (!(linear01 > 0.0) || linear01 >= 0.9999 || viewZ < 1.0) {
 		imageStore(resultImage, pixel, vec4(none + 1024.0 * none, none, 0.0, 0.0));   // sky / nothing: depth code 0 never matches
+		storeSplit(pixel, none, none);
 		return;
 	}
 
@@ -141,4 +159,5 @@ void main() {
 	}
 	float depthCode = clamp(floor(log2(viewZ) * p.origin.w + 0.5), 1.0, 4095.0);
 	imageStore(resultImage, pixel, vec4(entry[0] + 1024.0 * entry[1], entry[2] + 1024.0 * depthCode, 0.0, 0.0));
+	storeSplit(pixel, entry[0], entry[1]);
 }

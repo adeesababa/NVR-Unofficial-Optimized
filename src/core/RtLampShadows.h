@@ -20,6 +20,7 @@
 #include "LampFixtures.h"
 #include "DxvkCompute.h"
 #include "RtCore.h"
+#include "RtDenoise.h"
 
 namespace RtLampShadows {
 
@@ -80,6 +81,16 @@ namespace RtLampShadows {
 
 	inline int imageDepth = -1, imageNormals = -1, imageResult = -1, imageTable = -1, shader = -1;
 	inline int imageRaw = -1, filterShader = -1;	// Filter: the trace writes imageRaw, RtLampFilter.comp imageResult
+	// UNOFFICIAL 2026-10-29 Denoise: RtLampTraceSplit.spv also writes ranks 0 and 1 apart (visibility, cube slot) for the shared
+	// RtDenoise (run per rank with the slot as its id); RtLampRepack.frag writes the result again with them (RepackTexture -> s15)
+	inline int imageSplit[4] = { -1, -1, -1, -1 }, splitShader = -1;	// vis0, vis1, id0, id1 (R32F)
+	inline IDirect3DTexture9* SplitTexture[4] = {};
+	inline IDirect3DSurface9* SplitSurface[4] = {};
+	inline IDirect3DTexture9* DenoisedTexture[2] = {};
+	inline IDirect3DSurface9* DenoisedSurface[2] = {};
+	inline IDirect3DTexture9* RepackTexture = nullptr;
+	inline IDirect3DSurface9* RepackSurface = nullptr;
+	inline bool SplitThisFrame = false, UseRepacked = false;
 	inline IDirect3DTexture9* TableTexture = nullptr;		// the lamp table as the GPU sees it (copied into imageTable each frame)
 	inline IDirect3DSurface9* TableSurface = nullptr;
 	inline IDirect3DTexture9* TableStaging = nullptr;		// written by the CPU (system memory), UpdateSurface into TableTexture
@@ -214,6 +225,7 @@ namespace RtLampShadows {
 
 	// s15 in POINT_SHADOW_RT shaders: the result, or a 1x1 "nothing traced" (depth code 0 never matches) before there is one
 	inline IDirect3DBaseTexture9* Stage15Texture() {
+		if (Mode > 0.0f && UseRepacked && RepackTexture) return RepackTexture;
 		if (Mode > 0.0f && ResultTexture) return ResultTexture;
 		static IDirect3DTexture9* neutral = nullptr;
 		if (!neutral && SUCCEEDED(TheRenderManager->device->CreateTexture(1, 1, 1, 0, D3DFMT_G32R32F, D3DPOOL_MANAGED, &neutral, NULL))) {
@@ -238,7 +250,11 @@ namespace RtLampShadows {
 		imageNormals = RtCore::AddImage("NVR RT lamps normals", w, h, NVR_EXT_SHARED_RGBA16F);
 		imageResult = RtCore::AddImage("NVR RT lamps", w, h, NVR_EXT_SHARED_RG32F);
 		imageTable = RtCore::AddImage("NVR RT lamp table", TableWidth, 1, NVR_EXT_SHARED_RG32F);
-		imageRaw = RtCore::AddImage("NVR RT lamps unfiltered", w, h, NVR_EXT_SHARED_RG32F);
+		// optional images only when asked for at the helper's start (the core holds 32 shared images for every RT effect)
+		imageRaw = TheSettingManager->GetSettingI(kSection, "Filter") ? RtCore::AddImage("NVR RT lamps unfiltered", w, h, NVR_EXT_SHARED_RG32F) : -1;
+		static const char* splitNames[4] = { "NVR RT lamps vis 0", "NVR RT lamps vis 1", "NVR RT lamps id 0", "NVR RT lamps id 1" };
+		const bool denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
+		for (int i = 0; i < 4; i++) imageSplit[i] = denoise ? RtCore::AddImage(splitNames[i], w, h, NVR_EXT_SHARED_R32F) : -1;
 	}
 
 	// The lamp table into its GPU texture (scene space = world minus CameraPosition), for the copy into imageTable
@@ -333,8 +349,24 @@ namespace RtLampShadows {
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals) || !RtCore::CopyIn(imageTable, TableTexture)) return;
 		// UNOFFICIAL 2026-10-29 Filter: the soft edges' noise (LampRadius, 1 ray) smoothed per lamp (RtLampFilter.comp) before the copy out
 		const bool filter = imageRaw >= 0 && filterShader >= 0 && TheSettingManager->GetSettingI(kSection, "Filter");
-		const int images[4] = { imageDepth, imageNormals, filter ? imageRaw : imageResult, imageTable };
-		if (!RtCore::AddPass(shader, images, 4, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		// Denoise: the split variant also writes ranks 0 and 1 apart (images 6-9), copied out for RtDenoise (Denoise() below)
+		bool split = !filter && splitShader >= 0 && imageSplit[3] >= 0 && TheSettingManager->GetSettingI(kSection, "Denoise");
+		static UINT splitWidth = 0, splitHeight = 0;
+		const bool resized = split && (splitWidth != w || splitHeight != h);
+		if (split) { splitWidth = w; splitHeight = h; }
+		for (int i = 0; split && i < 4; i++) {
+			if (!SplitTexture[i] || resized) {
+				if (SplitSurface[i]) { SplitSurface[i]->Release(); SplitSurface[i] = nullptr; }
+				if (SplitTexture[i]) { SplitTexture[i]->Release(); SplitTexture[i] = nullptr; }
+				TheRenderManager->device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &SplitTexture[i], nullptr);
+				if (SplitTexture[i]) SplitTexture[i]->GetSurfaceLevel(0, &SplitSurface[i]);
+			}
+			split = SplitSurface[i] != nullptr;
+		}
+		const int images[8] = { imageDepth, imageNormals, filter ? imageRaw : imageResult, imageTable, imageSplit[0], imageSplit[1], imageSplit[2], imageSplit[3] };
+		if (!RtCore::AddPass(split ? splitShader : shader, images, split ? 8 : 4, split ? 0xF4 : 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		for (int i = 0; split && i < 4; i++) split = RtCore::CopyOut(imageSplit[i], SplitSurface[i]);
+		SplitThisFrame = split;
 		if (filter) {
 			struct { float size[4], params[4]; } f = {};
 			f.size[0] = (float)w; f.size[1] = (float)h;
@@ -376,11 +408,94 @@ namespace RtLampShadows {
 		return own ? own : 0x02;
 	}
 
+	// UNOFFICIAL 2026-10-29 Denoise: ShaderManager, right after RtCore::Frame (the traced images are copied out by then): ranks 0 and 1
+	// through the shared denoiser with the cube slot as the id (taps of another lamp are not mixed), then RtLampRepack.frag writes the
+	// result again with the denoised visibility; the lamp shaders of the next frame read that (Stage15Texture).
+	inline void Denoise(IDirect3DDevice9* Device) {
+		const bool split = SplitThisFrame;
+		SplitThisFrame = false;
+		if (!split) { UseRepacked = false; return; }
+		const UINT w = TextureWidth, h = TextureHeight;
+		static UINT denoisedWidth = 0, denoisedHeight = 0;
+		if (!RepackTexture || denoisedWidth != w || denoisedHeight != h) {
+			denoisedWidth = w; denoisedHeight = h;
+			for (int k = 0; k < 2; k++) {
+				if (DenoisedSurface[k]) { DenoisedSurface[k]->Release(); DenoisedSurface[k] = nullptr; }
+				if (DenoisedTexture[k]) { DenoisedTexture[k]->Release(); DenoisedTexture[k] = nullptr; }
+				Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &DenoisedTexture[k], nullptr);
+				if (DenoisedTexture[k]) DenoisedTexture[k]->GetSurfaceLevel(0, &DenoisedSurface[k]);
+			}
+			if (RepackSurface) { RepackSurface->Release(); RepackSurface = nullptr; }
+			if (RepackTexture) { RepackTexture->Release(); RepackTexture = nullptr; }
+			Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F, D3DPOOL_DEFAULT, &RepackTexture, nullptr);
+			if (RepackTexture) RepackTexture->GetSurfaceLevel(0, &RepackSurface);
+		}
+		static ID3D9NvrExtPipeline* repack = nullptr;
+		static bool repackTried = false;
+		if (!repackTried) {
+			repackTried = true;
+			std::vector<char> spirv;
+			ID3D9NvrExt* ext = DxvkCompute::Extension();
+			if (ext && DxvkCompute::LoadSpirv("RtLampRepack", spirv)) {
+				NVR_EXT_BINDING_DESC bindings[4] = {
+					{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+					{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
+					{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE, 2, NVR_EXT_VIEW_2D, FALSE, 0 },
+					{ 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+				};
+				NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
+				desc.pFragmentSpirv = spirv.data();
+				desc.FragmentSpirvSize = (UINT)spirv.size();
+				desc.BindingCount = 4;
+				desc.pBindings = bindings;
+				desc.PushConstantSize = 16;
+				desc.UsesSamplerHeap = TRUE;
+				desc.SamplerHeapSet = 0;
+				desc.SamplerHeapBinding = 0;
+				desc.ColorTargetCount = 1;
+				desc.Blend = NVR_EXT_BLEND_NONE;
+				desc.ColorWriteMask = 0x3u;
+				desc.pDebugName = "RtLampRepack";
+				if (FAILED(ext->CreateGraphicsPipeline(&desc, &repack))) repack = nullptr;
+			}
+			if (!repack) Logger::Log("UNOFFICIAL RT lamp shadows: Denoise off: the repack pass could not be made (RtLampRepack.spv / NVR DXVK)");
+		}
+		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+		UseRepacked = false;
+		if (!repack || !point || !RepackSurface || !DenoisedSurface[0] || !DenoisedSurface[1]) return;
+		static RtDenoise::Denoiser* denoiser[2] = {};
+		RtDenoise::Settings settings;
+		settings.MaxHistory = (std::max)(TheSettingManager->GetSettingF(kSection, "DenoiseHistory"), 1.0f);
+		for (int k = 0; k < 2; k++) {
+			if (!denoiser[k]) denoiser[k] = RtDenoise::Create(k ? "RT lamp shadows rank 1" : "RT lamp shadows rank 0");
+			settings.Ids = SplitTexture[2 + k];
+			if (!RtDenoise::Run(denoiser[k], Device, SplitTexture[k], DenoisedSurface[k], settings)) return;
+		}
+		IDirect3DSurface9* current = nullptr;
+		Device->GetRenderTarget(0, &current);	// a pass may not draw into the device's current target (RepackSurface never is)
+		struct { UInt32 samplerIndex, pad[3]; } push = {};
+		NVR_EXT_RESOURCE_BINDING bindings[4] = {};
+		IUnknown* inputs[3] = { ResultTexture, DenoisedTexture[0], DenoisedTexture[1] };
+		for (int i = 0; i < 3; i++) { bindings[i].Slot = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].pResource = inputs[i]; }
+		bindings[3].Slot = 0; bindings[3].Type = NVR_EXT_BIND_SAMPLER; bindings[3].pResource = point;
+		NVR_EXT_DRAW_DESC draw = {};
+		draw.pPipeline = repack;
+		draw.TargetCount = 1;
+		draw.Targets[0].pResource = RepackSurface;
+		draw.BindingCount = 4;
+		draw.pBindings = bindings;
+		draw.pPushData = &push;
+		draw.PushDataSize = sizeof(push);
+		UseRepacked = SUCCEEDED(DxvkCompute::Extension()->Draw(&draw));
+		if (current) current->Release();
+	}
+
 	// ShaderManager, once before the first RtCore::Frame (next to RtSunShadows::Register)
 	inline void Register() {
 		if (!CompiledIn) return;
 		RtCore::SetMaskHook(MaskHook);
 		shader = RtCore::AddShader("RtLampTrace");
+		splitShader = RtCore::AddShader("RtLampTraceSplit");
 		filterShader = RtCore::AddShader("RtLampFilter");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}
