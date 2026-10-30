@@ -400,6 +400,8 @@ iGPU (Radeon 610M-class), 720p, AlphaTested + HitTextures, helper per-pass GPU t
 | (rtgi16/19, Lucky 38 in motion) | AO + GI GIInterleave 4 | 12-17 | 8.5-11.7 | ~4 | ~5.4 | - |
 | Lucky 38 + Actors (rt-gi-15, 20261030-054434-slotA, fork-0033b) | AO + GI full rate | 8.9 | 28.0 | 3.9 | 5.4 | 41.1 |
 | Lucky 38 + Actors (rt-gi-15) | AO + GI GIInterleave 4 | 9.1 | 9.9 | 3.9 | 5.4 | 22.3 |
+| Goodsprings + Actors (rtgi22, 20261030-065451-slotC) | AO + GI full rate | 7.5-9.3 | 19.3-25.7 | - | - | 31.4-38.8 |
+| Goodsprings + Actors (rtgi22) | AO + GI GIInterleave 4 | 12.0 | 10.2 | - | - | 26.7 |
 
 GIInterleave 4's own row in rt-gi-14 is the trailing RT shot, so it has no per-pass print (lists from now on end with a spare RT
 shot). CPU frame intervals on the iGPU are dominated by 300-700 ms "Game render" spikes in these runs (Lucky 38: al 118 / ao 133 /
@@ -410,3 +412,13 @@ GI with GIInterleave 4 (reuse on): ~20-25 ms of helper GPU time at Lucky 38, ~11
   and textured in the hit atlas; the GI costs are as without actors (rows above). The game-side "Ray tracing" p50 at GIInterleave 4:
   22.3 ms for 19.0 ms of helper passes (+ copies and waits ~3 ms). The bounce-light view shows no player or NPC in frame (Lucky 38's
   still spot looks away from the player), so the actors' bounce colour is not judged yet: needs a spot facing an NPC.
+- **rtgi22 (Goodsprings, actors on, fork-0033b):** no crash. The bounce-light view has the player in frame: the body reads warm
+  (skin-toned, as a receiver) and a faint warm patch sits on the ground at the feet, which fits light bounced off the textured body
+  (not grey). Not an A/B (og spots move), so "plausible", not proven.
+
+## Strand status (2026-10-30 07:10)
+Done on claude/rt-ao-gi: every AO ray hits (step 1); the shared RtDenoise for AO and GI, Kernel 3, half res (step 2); one-bounce GI
+with screen-light lookup, hit textures, RIS lamps, ReSTIR GI temporal reuse (+ v2 tiles, light-change cut, opt-in spatial step)
+(step 3); AO RayCount 2, AOAlpha. All off by default, own switches, auto-off without RT; READY lines in RT-TRAIN.md.
+Open, smaller: GIInterleave 1 pays ~6 ms for the GI pass being separate (merge it back into the AO pass when not interleaved);
+game-side copies/waits ~3-6 ms over the helper passes (core side); GISpatial outdoors at night; an NPC-facing A/B for actor bounce colour.
