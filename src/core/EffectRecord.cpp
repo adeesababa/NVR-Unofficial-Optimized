@@ -7,6 +7,7 @@
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 #include "EffectPrecompile.h"	// UNOFFICIAL 2026-10-28 the effects compiled in parallel at startup
 #include "EffectCompiler47.h"	// UNOFFICIAL 2026-10-29 NewEffectCompiler (d3dcompiler_47 for the effects)
+#include "MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
 */
@@ -378,6 +379,7 @@ void EffectRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 */
 void EffectRecord::SetCT() {
 	if (!Enabled || Effect == nullptr) return;
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck: the D3D9 pass the next binds and draws belong to
 
 	ShaderTextureValue* Sampler;
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
@@ -613,6 +615,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	if (!Pipeline || !DxvkCompute::Available()) return false;
 	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9 for effects with their own Render: this frame on D3D9)
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
@@ -621,7 +624,6 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	draw.pBindings = Bindings;
 	draw.pPushData = Push;
 	draw.PushDataSize = PushSize;
-	DxvkCompute::PreLoad(Bindings, BindingCount);	// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU
 
 	FrameChain& chain = TheShaderManager->Chain;
 	HRESULT result;
@@ -630,14 +632,20 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 			Device->StretchRect(TheTextureManager->RenderedSurface, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
 		const bool direct = last && chain.IsDirectFinal(this);
 		draw.Targets[0].pResource = direct ? chain.FinalSurface() : chain.Output();
+		// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU. (2026-10-30: after the SourceBuffer copy above, so
+		// NvrDxvkMixCheck sees the pass read the copy it made.)
+		DxvkCompute::PreLoad(Bindings, BindingCount);
 		result = ext->Draw(&draw);
+		if (SUCCEEDED(result)) MixCheck::NoteWrite(static_cast<IDirect3DResource9*>(static_cast<void*>(draw.Targets[0].pResource)), MixCheck::kVulkan);
 		if (SUCCEEDED(result)) { if (direct) chain.CommitFinal(); else chain.Commit(); }
 	}
 	else {
 		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
 			Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
 		draw.Targets[0].pResource = RenderTarget;
+		DxvkCompute::PreLoad(Bindings, BindingCount);	// (as above)
 		result = ext->Draw(&draw);
+		if (SUCCEEDED(result)) MixCheck::NoteWrite(RenderTarget, MixCheck::kVulkan);
 		if (SUCCEEDED(result) && RenderedSurface && RenderedSurface != RenderTarget)
 			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR);	// the result into the texture, as the legacy path
 	}
@@ -656,6 +664,7 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
 	if (DepthStencil && DxvkCompute::Info().ExtVersionMinor < 6) return false;
 	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9, as ExtFullScreen; idea from the conor-fork-flicker session)
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
 	draw.TargetCount = TargetCount;
@@ -705,6 +714,7 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw into its own target (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);
 		return false;
 	}
+	for (UINT i = 0; MixCheck::On && i < TargetCount; i++) MixCheck::NoteWrite(Targets[i], MixCheck::kVulkan);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 	return true;
 }
 

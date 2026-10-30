@@ -2,6 +2,7 @@
 #include "LinearSceneShaders.h"	// UNOFFICIAL 2026-10-28 LinearScene
 #include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2)
+#include "MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ManyLamps.h"	// UNOFFICIAL 2026-10-27 ManyLampsOnePass
@@ -754,6 +755,7 @@ void ShaderFloatValue::GetValueFromConstantTable() {
 * Sets the Constant Table for the shader
 */
 void ShaderRecord::SetCT() {
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck: the game shader the next binds and draws belong to
 
 	// UNOFFICIAL: the first use of a game shader this session goes on the warm-up list (ShaderWarmUp.h)
 	if (!UsedOnce) { UsedOnce = true; ShaderWarmUp::NoteFirstUse(Name); }

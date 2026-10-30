@@ -1,5 +1,6 @@
 #include "HiZ.h"
 #include "GpuProfiler.h"
+#include "MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 
 // UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz): see HiZ.h.
 
@@ -106,6 +107,7 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 	{
 		static GpuTimer timer("  Hi-Z pyramid");
 		GpuProfileScope gpu(timer, Device);
+		MixCheck::SetPass("HiZ");	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 		DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 		result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	}

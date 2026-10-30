@@ -4,6 +4,7 @@
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
+#include "../core/MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -521,10 +522,12 @@ bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurfac
 	dispatch.GroupsY = (Height + push.tileRows - 1) / push.tileRows;
 	dispatch.GroupsZ = 1;
 
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = Device->SetRenderTarget(0, Target);	// the prep (Prepare's target) must not be the render target while the dispatch reads it
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->CopyBufferToTexture(prepTexture, 0, 0, smoothResult, 0);
+	if (SUCCEEDED(result)) MixCheck::NoteWrite(prepTexture, MixCheck::kVulkan);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck (a buffer copy)
 	if (FAILED(result)) {
 		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing compute dispatch failed (%08lX); the D3D9 passes are used from now on.", result);
 		SmoothComputeRelease();
@@ -694,6 +697,7 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 	dispatch.GroupsX = (width + 15) / 16;
 	dispatch.GroupsY = (height + 15) / 16;
 	dispatch.GroupsZ = 1;
+	MixCheck::SetPass(Name);	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
 	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (FAILED(result)) {
