@@ -324,7 +324,7 @@ namespace RtLampShadows {
 		if (!LampsThisFrame) ExteriorLive = false;
 	}
 	// ShadowManager: skip the outdoor cube maps while the traced mask stands in for them
-	inline bool ExteriorReplacing() { return ExteriorLive && TheShaderManager->GameState.isExterior && RtCore::Running(); }
+	inline bool ExteriorReplacing() { return (ExteriorLive || ExteriorForwardFrame) && TheShaderManager->GameState.isExterior && RtCore::Running(); }
 
 	inline void Setup() {
 		const UINT w = TheRenderManager->width, h = TheRenderManager->height;

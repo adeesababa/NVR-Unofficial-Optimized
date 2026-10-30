@@ -902,7 +902,7 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "2" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "POINT_SHADOW_RT_ONLY", "1" }, { "SKIN_PT_LAMPS", "1" }, { NULL, NULL } } };
-		static const char* const exteriorCache[3] = { "ExteriorLamps\\", "ExteriorLamps\Fit1\\", "ExteriorLamps\Fit2\\" };
+		static const char* const exteriorCache[3] = { "ExteriorLamps\\", "ExteriorLamps\\Fit1\\", "ExteriorLamps\\Fit2\\" };
 		const bool customExterior = PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr;
 		const bool skin = Template.Name && strstr(Template.Name, "SkinTemplate") == Template.Name;
 		ShaderRecordPixel* record = nullptr;

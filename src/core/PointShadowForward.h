@@ -195,7 +195,11 @@ namespace PointShadowForward {
 	// [Shaders.ShadowsInteriors.Main] LightPoints up to ShadowCubeMapsMax (each object binds only its own lamps); otherwise
 	// the screen-space passes read them: LightPoints up to ShadowCubeMapsScreen (11 with a shadow, the 12th lit without).
 	inline bool UsesAllSlots(bool exterior) {
-		return CompiledIn && !Refused && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
+		// UNOFFICIAL 2026-10-30 ExteriorForward: outdoors too while the traced lamp shadows run (no cube maps there: LightPoints lamps,
+		// not the screen pass's 12; rtlamp-30: Novac's walkway lamps were not among the 12)
+		if (exterior) return CompiledIn && !Refused && !ExteriorRecords.empty() && RtLampShadows::ExteriorForwardOn() && RtCore::Running() &&
+			TheSettingManager->GetSettingI(RtLampShadows::kSection, "Live") != 0;
+		return CompiledIn && !Refused && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
 	}
 	// UNOFFICIAL ExteriorLightPoints (2026-10-13): outdoors above 12, every slot up to it has a shadow, the screen-space pass
 	// drawn in batches of 11 (ShaderManager::RenderPointShadowBatches).
