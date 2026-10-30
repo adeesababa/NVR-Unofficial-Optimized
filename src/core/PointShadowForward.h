@@ -4,6 +4,7 @@
 #include "LampFixtures.h"
 #include "RtLampShadows.h"	// UNOFFICIAL 2026-10-28
 #include "ShadowPool.h"	// UNOFFICIAL 2026-10-29 ShadowPool (ShadowPoolMax)
+#include "ShadowHold.h"	// UNOFFICIAL 2026-10-30 ShadowHold (FadeIn across live / pool)
 #include <unordered_set>	// UNOFFICIAL 2026-10-30 TerrainRecords
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
@@ -355,6 +356,7 @@ namespace PointShadowForward {
 		QueryPerformanceCounter(&counter);
 		const double now = (double)counter.QuadPart / (double)frequency.QuadPart;
 		const float fadeIn = forward.FadeIn;
+		const bool hold = ShadowHold::Seconds() > 0.0f;	// UNOFFICIAL 2026-10-30 ShadowHold
 		double start[ShadowCubeMapsMax] = {};
 		const float face = (float)(std::max)(TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ShadowCubeMapSize, 1);
 		Params[0] = (std::min)(strength, 1.0f);
@@ -452,6 +454,7 @@ namespace PointShadowForward {
 			// The radius the cube map stores distances over (256 for carried lights), as RenderShadowCubeMap drew it.
 			double since = now;
 			for (int j = 0; j < lastCount; j++) if (lastLights[j] == lights[i]) { since = lastStart[j]; break; }
+			if (hold) since = ShadowHold::Since(lights[i], now);	// UNOFFICIAL 2026-10-30 ShadowHold: from when it got a shadow, live or pool
 			float fade = fadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / fadeIn) : 1.0f;
 			// UNOFFICIAL FillLightShadowStrength (2026-10-08): a fill light (reach past FillLightRadius) stands for broad room
 			// light; its shadow is that share of a full one (the light it takes away), so a staircase or a table under it shades
@@ -544,9 +547,11 @@ namespace PointShadowForward {
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&counter);
 		const double now = (double)counter.QuadPart / (double)frequency.QuadPart;
+		const bool hold = ShadowHold::Seconds() > 0.0f;	// UNOFFICIAL 2026-10-30 ShadowHold
 		for (int i = 0; i < count && SlotCount < ShadowCubeMapsMax + ShadowPoolMax; i++) {
 			const PoolEntry& e = entries[i];
-			float fade = forward.FadeIn > 0.0f ? (float)(std::min)(1.0, (now - e.since) / forward.FadeIn) : 1.0f;
+			const double since = hold ? ShadowHold::Since(e.light, now) : e.since;	// UNOFFICIAL 2026-10-30 ShadowHold
+			float fade = forward.FadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / forward.FadeIn) : 1.0f;
 			const NiPointLight* source = e.light->sourceLight;
 			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
 			if ((forward.InvisibleLightShadowStrength < 1.0f || InvisibleSize > 0.0f) && source && !TheShaderManager->GameState.isExterior &&
