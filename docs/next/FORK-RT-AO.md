@@ -218,7 +218,17 @@ accumulate (below): both are temporal + edge-aware spatial already.
 - **GIClamp + Interleave (commit after 7e8f80e7, DLL DE2DDFFB):** a bounce sample's luminance is capped at GIClamp (1.0 = the frame's
   white; keeps the hue) against the fireflies; Interleave 1 / 2 / 4 traces every / every 2nd (checkerboard) / every 4th texel (one of
   each 2 x 2, in turn) a frame, the rest keep their last result (the shared images persist) for AmbientLight's history to blend: the
-  ray cost / 2 or / 4. Bench rt-gi-2 (lucky22) queued.
+  ray cost / 2 or / 4.
+- **rt-gi-2 (10-29 19:41 lucky22 slot B, DLL DE2DDFFB):** same spot (al vs al-end 0.5 %). RT AO + GI vs AmbientLight +4.3/255
+  (RT AO +2.2, GI +2.1 as before); Interleave 2 and 4 give the SAME picture as 1 (-0.05/255, 2 % of pixels differ): the history fills
+  the untraced texels with no visible loss on a still camera. Fireflies (pixels > 12 levels above their 5x5 neighbourhood in the
+  bounce-light view): 0.015 % -> 0.005 % with GIClamp 1 (0.009 % with Interleave 4). Cost per interleave NOT separable from this run:
+  60-frame shots against 120-frame profile windows (two lines: 25.6 / 20.0 ms avg): next run uses 120-frame shots.
+- **Shared denoiser wired (merged claude/rt-sun-2 88159b51; DLL 52A01349):** [Shaders.AmbientOcclusion.RT] Denoise (on): the AO
+  visibility goes through RtDenoise (temporal 16 frames + 3 a-trous passes, depth / normal / variance weights) at the screen's size
+  (it samples the half-resolution raw by uv) into NVR_RTAODenoised (R16F); AmbientLight's and AmbientOcclusion's RT estimates read it
+  instead of the raw rays. Not used for DebugView 3 (it shows another channel). The GI bounce (RGB) keeps ComputeGI's accumulate
+  until RtDenoise has a 3-channel mode (asked); a half-resolution mode would cut its cost by 4 on the iGPU (asked).
 - Not yet: alpha-tested foliage and actors are not in the core's scene (no bounce from them); lamp shadows at the hit; ReSTIR GI or a
   probe cache (next, for cost) once the plain version's look and cost are measured.
 
