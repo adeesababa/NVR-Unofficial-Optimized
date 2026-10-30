@@ -1859,6 +1859,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();	// UNOFFICIAL ExteriorLightPoints
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
+			// UNOFFICIAL 2026-10-29 RT lamp shadows Exteriors: the traced lamp mask over what those passes wrote (off: nothing)
+			if (GameState.isExterior && pointShadowsWere > 0.0f) RtLampShadows::ApplyExteriorMask(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
 		}
 		// UNOFFICIAL 2026-10-16 lamp contact shadows ([Shaders.ShadowsInteriors.Main] ContactShadows): PointShadows.fx technique 2

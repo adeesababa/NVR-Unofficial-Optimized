@@ -47,6 +47,7 @@ namespace RtLampShadows {
 	struct PassConstants {
 		float size[4], forward[4], right[4], up[4], origin[4], params[4], params2[4];
 		float flags[4];							// x: OneSided (diagnostic), y: lamps a pixel traces (LampsPerPixel 1-3), z: Interleave, w: its phase
+		float mask[4];							// Exteriors: x EdgeFade, y LampReachMask (TESR_PointShadowNear.y, .z)
 	};
 	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
@@ -91,6 +92,13 @@ namespace RtLampShadows {
 	inline IDirect3DTexture9* RepackTexture = nullptr;
 	inline IDirect3DSurface9* RepackSurface = nullptr;
 	inline bool SplitThisFrame = false, UseRepacked = false;
+	// UNOFFICIAL 2026-10-29 Exteriors ([Shaders.ShadowsInteriors.RT] Exteriors, off): outdoors at night the lamps of the screen-space
+	// lamp mask (ShadowManager's shadow lamps + tracked lamps) go into the table and RtLampTraceExterior.spv writes the mask itself
+	// (traced visibility instead of cube maps); ApplyExteriorMask puts it in the shadow buffer's green (PointShadows.fx's output).
+	inline int imageMask = -1, exteriorShader = -1;
+	inline IDirect3DTexture9* MaskTexture = nullptr;
+	inline IDirect3DSurface9* MaskSurface = nullptr;
+	inline bool ExteriorFrame = false, MaskThisFrame = false, ExteriorLive = false;
 	inline IDirect3DTexture9* TableTexture = nullptr;		// the lamp table as the GPU sees it (copied into imageTable each frame)
 	inline IDirect3DSurface9* TableSurface = nullptr;
 	inline IDirect3DTexture9* TableStaging = nullptr;		// written by the CPU (system memory), UpdateSurface into TableTexture
@@ -241,8 +249,39 @@ namespace RtLampShadows {
 
 	// --- The RT core user -----------------------------------------------------------------------------------------------------------
 	inline bool Wants() {
-		return CompiledIn && LampsThisFrame && LampCount > 0 && !TheShaderManager->GameState.isExterior;
+		return CompiledIn && LampsThisFrame && LampCount > 0 && (!TheShaderManager->GameState.isExterior || ExteriorFrame);
 	}
+
+	// Exteriors: ShadowManager, every frame outdoors right after GetNearbyLights: the mask's lamps (the shadow lamps, then the tracked
+	// ones) into the table, with the mask's own radius (Spec.r x LightRadiusMult) and weight (luma x dimmer)
+	inline void SubmitExterior(ShadowSceneLight* const* shadowLights, int shadowCount, NiPointLight* const* lights, int lightCount) {
+		ExteriorFrame = false;
+		if (!CompiledIn || imageMask < 0 || exteriorShader < 0 || !TheSettingManager->GetSettingI(kSection, "Exteriors")) { ExteriorLive = false; return; }
+		const float mult = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.LightRadiusMult;
+		// outdoors the lamps' own heads are not told apart from other objects (LampFixtures is the interior cell's list): the rays stop
+		// this far short of each light, past a street lamp's or a lantern's own housing
+		const float stop = (std::max)(TheSettingManager->GetSettingF(kSection, "ExteriorLampStop"), 0.0f);
+		SlotLamp list[TableSlots];
+		int n = 0;
+		auto add = [&](NiPointLight* light) {
+			if (!light || n >= TableSlots) return;
+			const D3DXVECTOR3 at(light->m_worldTransform.pos.x, light->m_worldTransform.pos.y, light->m_worldTransform.pos.z);
+			for (int i = 0; i < n; i++) if (list[i].position == at) return;
+			const float reach = light->Spec.r * mult;
+			const float weight = (0.2126f * light->Diff.r + 0.7152f * light->Diff.g + 0.0722f * light->Diff.b) * light->Dimmer;
+			if (!(reach > 1.0f) || !(weight > 0.0f)) return;
+			list[n] = { n, at, reach, 1.0f, stop, weight, reach };
+			n++;
+		};
+		for (int i = 0; i < shadowCount; i++) if (shadowLights[i]) add(shadowLights[i]->sourceLight);
+		for (int i = 0; i < lightCount; i++) add(lights[i]);
+		Submit(list, n);
+		Mode = 0.0f;	// outdoors nothing reads the reprojected result
+		ExteriorFrame = LampsThisFrame && LampCount > 0;
+		if (!LampsThisFrame) ExteriorLive = false;
+	}
+	// ShadowManager: skip the outdoor cube maps while the traced mask stands in for them
+	inline bool ExteriorReplacing() { return ExteriorLive && TheShaderManager->GameState.isExterior && RtCore::Running(); }
 
 	inline void Setup() {
 		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
@@ -255,6 +294,7 @@ namespace RtLampShadows {
 		static const char* splitNames[4] = { "NVR RT lamps vis 0", "NVR RT lamps vis 1", "NVR RT lamps id 0", "NVR RT lamps id 1" };
 		const bool denoise = TheSettingManager->GetSettingI(kSection, "Denoise") != 0;
 		for (int i = 0; i < 4; i++) imageSplit[i] = denoise ? RtCore::AddImage(splitNames[i], w, h, NVR_EXT_SHARED_R32F) : -1;
+		imageMask = TheSettingManager->GetSettingI(kSection, "Exteriors") ? RtCore::AddImage("NVR RT lamps mask", w, h, NVR_EXT_SHARED_R32F) : -1;
 	}
 
 	// The lamp table into its GPU texture (scene space = world minus CameraPosition), for the copy into imageTable
@@ -347,6 +387,24 @@ namespace RtLampShadows {
 		}
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals) || !RtCore::CopyIn(imageTable, TableTexture)) return;
+		// Exteriors: the mask variant, its result copied out for ApplyExteriorMask this frame; nothing is reprojected
+		if (TheShaderManager->GameState.isExterior) {
+			static UINT maskWidth = 0, maskHeight = 0;
+			if (!MaskTexture || maskWidth != w || maskHeight != h) {
+				maskWidth = w; maskHeight = h;
+				if (MaskSurface) { MaskSurface->Release(); MaskSurface = nullptr; }
+				if (MaskTexture) { MaskTexture->Release(); MaskTexture = nullptr; }
+				Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &MaskTexture, nullptr);
+				if (MaskTexture) MaskTexture->GetSurfaceLevel(0, &MaskSurface);
+			}
+			if (!MaskSurface || imageMask < 0 || exteriorShader < 0) return;
+			const D3DXVECTOR4& pointNear = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear;
+			c.mask[0] = pointNear.y; c.mask[1] = pointNear.z;
+			const int exteriorImages[5] = { imageDepth, imageNormals, imageResult, imageTable, imageMask };
+			if (!RtCore::AddPass(exteriorShader, exteriorImages, 5, 0x14, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+			MaskThisFrame = RtCore::CopyOut(imageMask, MaskSurface);
+			return;
+		}
 		// UNOFFICIAL 2026-10-29 Filter: the soft edges' noise (LampRadius, 1 ray) smoothed per lamp (RtLampFilter.comp) before the copy out
 		const bool filter = imageRaw >= 0 && filterShader >= 0 && TheSettingManager->GetSettingI(kSection, "Filter");
 		// Denoise: the split variant also writes ranks 0 and 1 apart (images 6-9), copied out for RtDenoise (Denoise() below)
@@ -490,12 +548,74 @@ namespace RtLampShadows {
 		if (current) current->Release();
 	}
 
+	// Exteriors: ShaderManager, after the screen-space lamp mask passes outdoors (with point shadows on: TESR_ShadowFade.z): the traced
+	// mask into the shadow buffer's green (the lamps' channel; the sun's red untouched), over what PointShadows.fx wrote there
+	inline void ApplyExteriorMask(IDirect3DDevice9* Device, IDirect3DSurface9* target) {
+		const bool mask = MaskThisFrame;
+		MaskThisFrame = false;
+		ExteriorLive = mask && TheSettingManager->GetSettingI(kSection, "Live") != 0;
+		if (!mask || !target || !MaskTexture) return;
+		static ID3D9NvrExtPipeline* combine = nullptr;
+		static bool tried = false;
+		if (!tried) {
+			tried = true;
+			std::vector<char> spirv;
+			ID3D9NvrExt* ext = DxvkCompute::Extension();
+			if (ext && DxvkCompute::LoadSpirv("RtLampMaskCombine", spirv)) {
+				NVR_EXT_BINDING_DESC bindings[2] = {
+					{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+					{ 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+				};
+				NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
+				desc.pFragmentSpirv = spirv.data();
+				desc.FragmentSpirvSize = (UINT)spirv.size();
+				desc.BindingCount = 2;
+				desc.pBindings = bindings;
+				desc.PushConstantSize = 16;
+				desc.UsesSamplerHeap = TRUE;
+				desc.SamplerHeapSet = 0;
+				desc.SamplerHeapBinding = 0;
+				desc.ColorTargetCount = 1;
+				desc.Blend = NVR_EXT_BLEND_NONE;
+				desc.ColorWriteMask = 0x2u;	// green only: the lamps
+				desc.pDebugName = "RtLampMaskCombine";
+				if (FAILED(ext->CreateGraphicsPipeline(&desc, &combine))) combine = nullptr;
+			}
+			if (!combine) Logger::Log("UNOFFICIAL RT lamp shadows: Exteriors off: the mask pass could not be made (RtLampMaskCombine.spv / NVR DXVK)");
+		}
+		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+		if (!combine || !point) { ExteriorLive = false; return; }
+		IDirect3DSurface9* current = nullptr;
+		Device->GetRenderTarget(0, &current);	// a pass may not draw into the device's current target: park it meanwhile
+		IDirect3DSurface9* parking = TheShaderManager->Effects.SunShadows ? TheShaderManager->Effects.SunShadows->scratchSurface[0] : nullptr;
+		const bool park = current == target && parking;
+		if (park) Device->SetRenderTarget(0, parking);
+		struct { UInt32 samplerIndex, pad[3]; } push = {};
+		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = MaskTexture;
+		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
+		NVR_EXT_DRAW_DESC draw = {};
+		draw.pPipeline = combine;
+		draw.TargetCount = 1;
+		draw.Targets[0].pResource = target;
+		draw.BindingCount = 2;
+		draw.pBindings = bindings;
+		draw.pPushData = &push;
+		draw.PushDataSize = sizeof(push);
+		if (FAILED(DxvkCompute::Extension()->Draw(&draw))) ExteriorLive = false;
+		if (park) Device->SetRenderTarget(0, current);
+		if (current) current->Release();
+		static UInt32 applied = 0;
+		if (applied++ == 0) Logger::Log("UNOFFICIAL RT lamp shadows: Exteriors: the traced lamp mask is applied outdoors (%d lamps in the table)", LampCount);
+	}
+
 	// ShaderManager, once before the first RtCore::Frame (next to RtSunShadows::Register)
 	inline void Register() {
 		if (!CompiledIn) return;
 		RtCore::SetMaskHook(MaskHook);
 		shader = RtCore::AddShader("RtLampTrace");
 		splitShader = RtCore::AddShader("RtLampTraceSplit");
+		exteriorShader = RtCore::AddShader("RtLampTraceExterior");
 		filterShader = RtCore::AddShader("RtLampFilter");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}

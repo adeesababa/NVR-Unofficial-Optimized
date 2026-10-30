@@ -1819,6 +1819,8 @@ void ShadowManager::RenderShadowMaps() {
 	NiSpotLight* SpotLights[SpotLightsMax] = { NULL };
 
 	TheShaderManager->GetNearbyLights(ShadowLights, Lights, SpotLights);
+	// UNOFFICIAL 2026-10-29 RT lamp shadows Exteriors (off): outdoors, the lamp mask's lamps go to the trace
+	if (TheShaderManager->GameState.isExterior) RtLampShadows::SubmitExterior(ShadowLights, ShadowCubeMapsMax, Lights, TrackedLightsMax);
 
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	ShadowsExteriorEffect::ExteriorsStruct* ShadowsExteriors = &Shadows->Settings.Exteriors;
@@ -2457,7 +2459,8 @@ void ShadowManager::RenderShadowMaps() {
 	speedTreePass->PixelShader = ShadowCubeMapPixel;
 
 	auto shadowMapTimer = TimeLogger();
-	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
+	// (UNOFFICIAL 2026-10-29: outdoors no cube maps while the traced lamp mask stands in for them: RT lamp shadows Exteriors)
+	if ((isExterior && usePointLights && !RtLampShadows::ExteriorReplacing()) || (!isExterior && InteriorEnabled)) {
 		GpuProfileScope gpu(pointMapsTimer, Device);
 		// Each slot's cubemap stores length(light - point) / radius, which does not depend on the camera,
 		// so with PointShadowInterval > 1 a slot can keep its contents between redraws (see
