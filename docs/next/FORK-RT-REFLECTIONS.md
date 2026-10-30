@@ -219,7 +219,15 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
     the dark room, the windows on its edges.
   - noon .44 Magnum (20261030-160121-slotA): 11.7 % vs 6.0 %, mean +0.87 (the sky on its top faces); Varmint Rifle
     (20261030-161532-slotA): 21.7 % vs 3.0 %, +1.82 (its steel barrel). saloon16 rifle: the be0d161d run had the gun out of view (rerun).
-  - No self-reflection seen (the player is masked out), no smear (screen-locked history).
+  - **Black gun once:** saloon16 rifle 20261030-162450-slotA rendered the rifle and the arm black (53 % of the gun box) in every
+    Weapon-1 shot; the off shot was normal; no other run did. rt-sun-core: the first-person gun and arms are never in the RT scene
+    (no self-hits), and those runs had Actors off. Taken as a non-finite value held by the screen-locked history: guards added
+    (77975038: Resolve output, temporal current / taps / history, composite). saloon16 then would not draw the gun reliably (two
+    reruns: other camera, no gun), so the indoor recheck moved to int23 (Tops floor): rifle 20261030-165459-slotB 13.8 % vs 3.6 %,
+    +0.33; .44 Magnum 20261030-170649-slotA 7.8 % vs 3.5 % (+0.18; alone 9.3 % vs 2.0 %); no black pixels.
+  - With Actors on, the player's held / holstered third-person weapon sits in the RT scene round the camera: rt-sun-core gave it its
+    own mask bit (NVR_RT_MASK_PLAYER 0x40, claude/rt-sun-grass 108cfa5b); gun rays drop 0x20 and 0x40 (f7da3623).
+  - No self-reflection seen, no smear (screen-locked history).
 - **Cost:** Reflections RT exchange +0.3-0.5 ms indoors, +0.4-1.2 ms outdoors; Reflections trace +0.5-0.7 / +1.0-1.6 ms (every gun
   pixel casts; outdoors the rest of the screen casts few).
 
