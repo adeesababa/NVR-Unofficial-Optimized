@@ -76,8 +76,16 @@ game's light list outdoors is larger than ShadowLights + tracked lamps: they sta
   error 1000s of units away). Fix 9c7d2b09 (DLL 63ADFB41): StartOffsetPerUnit 0.002, the offset grows with the view depth (all lamp
   traces). rtlamp-29 (20261030-035748-slotA, PASS): darker pixels vs today 0.64 % (0) -> 0.23 % (0.002) -> 0.20 % (0.005); the facade
   gets its lamp light back; coverage 35-36 %. Default 0.002 (0.005 gains little and leaks more at contacts).
-- Open: SKIN2011's outdoor record (constant table); a Novac spot near its lamps and a Strip spot; the cube fallback (not built: the
-  RT-only records are what fits beside the sun's code); iGPU frame cost (trace 12.5-14 ms in Freeside, the frame noisy).
+- SKIN2011 (be70de35): its outdoor record ran out of ps_3_0's 32 TEMP registers (X4505 in Skin.hlsl's SG irradiance; the skin rewrite's
+  SkinTemplate MANY POINTS 3, sun code + lamp lookups): fallback levels for the skin shaders, SkinTemplate SKIN_PT_LAMPS = the first 2,
+  then 1 lamp of a draw shadowed (logged when used).
+- Why traced-only outdoors (register audit, 2026-10-30, the 67 outdoor records disassembled with fxc /dumpbin): sampler stages in
+  use 0-7, 9 (the sun atlas), 10 (the live cube), 15 (the traced buffer): 8 and 11-14 would be free for five cube maps, and the
+  constants fit (c174-c189, c200-c203, c215-c217). But the instruction slots do not: the largest outdoor records already take 3873
+  (SLS2034 / SLS2036) and 4212 (SKIN2010) slots (accepted here through DXVK; the user's GPU refused ~3600-3870 indoors), and six
+  filtered cube lookups add ~400-900 more. The fallback would also need the outdoor cube maps drawn again (14-16 ms iGPU in Freeside)
+  only for the pixels the trace misses (off its screen, disoccluded, a lamp not among a pixel's 2 strongest), where outdoor lamps were
+  unshadowed before anyway. So outdoors a lamp not traced at a pixel stays lit; without RT the switch does nothing (auto-off).
 
 ### Flashlight: the Pip-Boy light / flashlight's shadow traced (6e60a90e, DLL 48841674; run rtlamp-23 2026-10-30 02:07, 20261030-020649-slotA, PASS)
 - [Shaders.ShadowsInteriors.RT] Flashlight (off, needs a restart; NVR DXVK passes): RtFlashTrace.comp, one ray a pixel in the
