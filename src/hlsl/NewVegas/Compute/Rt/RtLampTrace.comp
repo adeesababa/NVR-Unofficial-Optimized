@@ -13,6 +13,8 @@
 // each in two segments: the whole ray with the far mask, the last LampModelDistance next to the lamp with the near mask (lamp models
 // skipped too), stopping max(LampStop, the lamp's own stop) short of the lamp, starting off the surface along its normal.
 // Compile: glslangValidator -V --target-env vulkan1.2 -o RtLampTrace.spv RtLampTrace.comp
+// 2026-10-29 Denoise: the variant RtLampTraceSplit.spv (-DSPLIT) also writes ranks 0 and 1 apart for the shared denoiser (bindings 6-9:
+// visibility 0..1 and the cube slot, 63 = none): glslangValidator -V --target-env vulkan1.2 -DSPLIT -o RtLampTraceSplit.spv RtLampTrace.comp
 #extension GL_EXT_ray_query : require
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -29,6 +31,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 flags;         // x: 1 = OneSided (diagnostic): only the closest surface counts, and only if it faces the lamp, as the cube
 	                    //    maps draw casters (one-sided, seen from the lamp); 0 = every surface both ways (the scene's own)
 	                    // y: lamps a pixel traces (1-3)
+	                    // z: Interleave (1, 2 or 4): a pixel is traced every z-th frame; w: this frame's phase (0 .. z-1)
 } p;
 layout(set = 0, binding = 2, r32f) uniform readonly image2D depthImage;      // TESR_DepthBuffer's red: view z / farZ
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
@@ -36,6 +39,21 @@ layout(set = 0, binding = 4, rg32f) uniform writeonly image2D resultImage;
 // The lamp table, 4 texels a lamp, lamp = cube slot s at x = 4s: (x, y), (z, reach), (intensity, the game's radius), (stop, disc radius)
 // (scene space; reach 0 = no lamp in that slot)
 layout(set = 0, binding = 5, rg32f) uniform readonly image2D lampTable;
+#ifdef SPLIT
+layout(set = 0, binding = 6, r32f) uniform writeonly image2D vis0Image;
+layout(set = 0, binding = 7, r32f) uniform writeonly image2D vis1Image;
+layout(set = 0, binding = 8, r32f) uniform writeonly image2D id0Image;
+layout(set = 0, binding = 9, r32f) uniform writeonly image2D id1Image;
+void storeSplit(ivec2 pixel, float e0, float e1) {
+	float v0 = floor(e0 / 64.0), v1 = floor(e1 / 64.0);
+	imageStore(vis0Image, pixel, vec4(v0 / 15.0));
+	imageStore(vis1Image, pixel, vec4(v1 / 15.0));
+	imageStore(id0Image, pixel, vec4(e0 - 64.0 * v0));
+	imageStore(id1Image, pixel, vec4(e1 - 64.0 * v1));
+}
+#else
+void storeSplit(ivec2 pixel, float e0, float e1) { }
+#endif
 
 float hash12(vec2 q) {
 	vec3 h = fract(vec3(q.xyx) * 0.1031);
@@ -58,12 +76,20 @@ void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y))
 		return;
+	// Interleave: the other pixels keep the answer of the frame that traced them (the result image persists); the lamp shaders'
+	// depth check sends a pixel whose surface moved since to its cube map
+	int interleave = int(p.flags.z + 0.5);
+	if (interleave >= 2) {
+		int cell = interleave >= 4 ? (pixel.x & 1) + 2 * (pixel.y & 1) : (pixel.x + pixel.y) & 1;
+		if (cell != int(p.flags.w + 0.5)) return;
+	}
 
 	const float none = 1023.0;                // slot 63, visibility 15
 	float linear01 = imageLoad(depthImage, pixel).r;
 	float viewZ = linear01 * p.forward.w;
 	if (!(linear01 > 0.0) || linear01 >= 0.9999 || viewZ < 1.0) {
 		imageStore(resultImage, pixel, vec4(none + 1024.0 * none, none, 0.0, 0.0));   // sky / nothing: depth code 0 never matches
+		storeSplit(pixel, none, none);
 		return;
 	}
 
@@ -133,4 +159,5 @@ void main() {
 	}
 	float depthCode = clamp(floor(log2(viewZ) * p.origin.w + 0.5), 1.0, 4095.0);
 	imageStore(resultImage, pixel, vec4(entry[0] + 1024.0 * entry[1], entry[2] + 1024.0 * depthCode, 0.0, 0.0));
+	storeSplit(pixel, entry[0], entry[1]);
 }

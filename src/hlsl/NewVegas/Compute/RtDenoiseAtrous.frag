@@ -10,10 +10,11 @@
 
 layout(set = 1, binding = 0) uniform texture2D t_in;
 layout(set = 1, binding = 1) uniform texture2D t_normals;   // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
+layout(set = 1, binding = 2) uniform texture2D t_ids;       // Settings.Ids (.r: a source id, e.g. the lamp a pixel's signal is from), or a stand-in
 
 layout(push_constant) uniform Push {
     vec4 params;   // x step (texels), y depth sigma, z normal power, w value sigma
-    vec4 size;     // x 1 / width, y 1 / height
+    vec4 size;     // x 1 / width, y 1 / height, z 1: only taps with the centre's id (t_ids) count
     uint samplerIndex;
     uint pad[3];
 } pc;
@@ -27,6 +28,7 @@ void main() {
     const vec4 center = textureLod(sampler2D(t_in, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0);
     const vec3 n = normalize(textureLod(sampler2D(t_normals, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).xyz * 2.0 - 1.0);
     const float z = center.a;
+    const float id = pc.size.z > 0.5 ? textureLod(sampler2D(t_ids, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).r : 0.0;
     if (z <= 0.0) { o_color = center; return; }
     const float variance = max(center.g - center.r * center.r, 0.0);
     // little history: trust the neighbours more (the variance estimate is not there yet)
@@ -40,6 +42,7 @@ void main() {
             const vec2 tapUv = uv + vec2(x, y) * pc.params.x * pc.size.xy;
             const vec4 tap = textureLod(sampler2D(t_in, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0);
             if (tap.a <= 0.0) continue;
+            if (pc.size.z > 0.5 && abs(textureLod(sampler2D(t_ids, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0).r - id) > 0.5) continue;
             const vec3 tn = normalize(textureLod(sampler2D(t_normals, NVR_SAMPLER(pc.samplerIndex)), tapUv, 0.0).xyz * 2.0 - 1.0);
             float w = kernel[abs(x)] * kernel[abs(y)];
             w *= exp(-abs(tap.a - z) / (pc.params.y * zSlope * length(vec2(x, y)) + 1.0e-3));

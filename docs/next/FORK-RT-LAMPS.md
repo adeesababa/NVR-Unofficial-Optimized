@@ -35,6 +35,47 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### ActorUpdateInterval 1/2/3 (rtlamp-17, 2026-10-29 22:42, 20261029-224156-slotA, PASS; bce83772, DLL CD1CA893, rebuilt helper)
+- Picture: the same at 1, 2 and 3 (L38 0.00 %, V21 0.03-0.07 % = the repeat's 0.07 %): rt-sun-core's default 2 is safe here.
+- Cost: not measurable. The whole frame drifts 20-30 ms within a run (V21 traced 147 -> 157 -> 123 -> 125 -> 121 ms in shot order
+  a1, a2, a3, a1-b, a2-b); the helper's new per-pass timer says RtLampTrace 22-43 ms and builds 1-4.5 ms, but that timer did not
+  move with Interleave 4 either (rtlamp-13): on this 2-CU iGPU the game and the helper share the GPU, so a pass's time is mostly
+  its wait for the GPU. Correction to "the actors are most of the cost" (rtlamp-15): within this noise neither the actors nor the
+  trace can be told apart; a real split needs an RT GPU that is not the game's (or a quiet one).
+
+### People cast traced lamp shadows: PROVEN (rtlamp-16, 2026-10-29 22:29, 20261029-222901-slotA, PASS; DLL 86893D44, fork-0033, Actors on)
+- Vault 21, AI frozen, DebugView 3 per lamp (white lit / black blocked / magenta = that lamp not traced there): lamp 15 (overhead,
+  z 8028, ~590 units over the floor) traces the floor round the standing NPCs: black leg/dress shadows on the floor behind them and
+  black patches on their bodies where another body part blocks the lamp; no speckle (H:\_NVR-rtlamp\people-slot15.png). Lamps 5 and 7
+  (the big ceiling lights) and the floor lamps 3/11/13 are not among those pixels' 3 strongest: magenta there.
+
+### Cost: Interleave + where the frame goes (rtlamp-13/14/15, 2026-10-29 21:14-22:20, all PASS; 7a6d54a2, DLL 86893D44, protocol-3 helper)
+- Interleave (1, 2, 4; 973134db, default 1): works (static camera: 0.02-0.66 % of pixels differ from every-pixel tracing, at edges:
+  the traced frames' TAA jitter), but saves little: whole-frame GPU time with actors on, L38 ~150 / 149 / 151 ms, V21 128 / 127 / 128.
+- The game's whole frame (GPU, iGPU 720p; noisy, the cube baseline itself moves 10 ms between shots):
+  actors ON (rtlamp-13): L38 cube 114 -> traced ~150 (+35), V21 109 -> ~128 (+20);
+  actors OFF (rtlamp-15): L38 cube 91-97 -> traced 102-107 (+8..15), lpp1 106, lpp1 + Interleave 4 103; V21 129-134 -> 135 (+0..6).
+  So most of the +35 / +20 was the posed actors (3600 skinned partitions in 60 exchanges; refit), not the lamp rays; the lamp trace
+  itself is ~5-15 ms on this 2-CU iGPU and Interleave 4 takes ~3 ms off it. Interleave stays 1 by default (edges change for ~3 ms).
+- People's traced lamp shadows: rtlamp-13 (on) vs rtlamp-14 (off), AI frozen: the only differences are on the NPCs' bodies (their
+  pose differs between launches), no shadow shapes on the floor in either: the NPCs stand where no traced lamp's light falls on the
+  floor round them from this camera. rtlamp-16 shows the lamps over them one at a time (DebugView 3).
+
+### Step 5: INTERIOR-SHADOWS-MODERN.md (on claude/rootplan-combo) -- coordinated 2026-10-29 20:25
+- Its layer 4 still names the v3 format (4 bits a lamp, 9 lamps). The v4 interface (3 entries a pixel: cube slot + 16-step
+  visibility, + the depth code; reading code; fallback rules) is written up for the screen-pass author in the shared notes:
+  RT-LAMPS-VISIBILITY-INTERFACE-2026-10-29.md. Writing the same texture from the screen pass keeps one forward read for both paths.
+- Next for this branch: cost. 24-39 ms on the iGPU is too much; try a half-resolution (checkerboard) trace with the depth-aware
+  upsample in the read, and skipping the trace for pixels whose lamps are all unshadowed by distance.
+
+### Run rtlamp-12 (actors + the partial-loop fix d6d71721, DLL 98511EF1), 2026-10-29 20:15, 20261029-201506-slotA, PASS
+- Cube maps with traced shadows on (fork-0033, Actors on): ~0.0 ms GPU in both rooms (profile windows wholly inside traced shots:
+  0.0002 ms; windows straddling a cube shot 1.2-2.5 ms) -- Vault 21 was 8.1 ms, Lucky 38 1.5 ms. People-only refreshes: 0.0-0.1 a
+  frame while traced (the cube shots, Live 0, still redraw 2-3.5 as they should). Steps 2 + 4 done.
+- Picture unchanged: rt vs cube L38 2.15 % / V21 1.10 % (rtlamp-10: 2.16 / 1.09), A/B repeats 0.00 %.
+- RT (helper, copies, waits; iGPU 720p, LampsPerPixel 2, 1 ray, actors in): L38 33.5-37.6 ms, V21 38.7 ms. On this 2-CU iGPU the trace
+  still costs more than the cube maps it replaces (8.1 ms in V21); the cube-map side of the bill is now gone.
+
 ### Runs rtlamp-10 (actors) + rtlamp-11 (soft 32 + filter v2), 2026-10-29 19:44-19:57, both PASS (DLL FB49B761, rt-sun-2 c9e185d8)
 - rtlamp-10, fork-0033 + Actors: the core posed 5040 skinned partitions in exchanges 1-60 (~84 a frame); A/B repeats 0.00 %; rt vs
   cube L38 2.2 %, V21 1.1 %; nothing wrong on or round the people (no speckle, no self-shadow); people moved between shots, so the
@@ -42,7 +83,7 @@
   39 ms (V21) vs 28 / 24 without actors: the skinned rebuilds ~+8 (L38) to +15 ms (V21) on the iGPU.
 - But V21's cube maps stayed 8.1 ms (7 people refreshes a frame): KeepCube refused any lamp whose last redraw was PARTIAL, and a
   people refresh with CubeFaceViewCull is always partial -> a loop that redrew them every frame (also in rtlamp-7/8 with
-  ActorsFromCubeMaps 0). Fixed (dbb?): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
+  ActorsFromCubeMaps 0). Fixed (d6d71721): a partial cube map is kept too while people do not come from the cube maps. DLL 98511EF1.
 - rtlamp-11, LampRadius 32 / invisible 48, 1 ray, Jitter off: hard / soft1 / soft4 still differ on < 0.1 % of pixels: traced lamp
   shadows are a small part of these views and their penumbrae barely show. Filter v2: +14 ms (iGPU) and further from soft4 than
   soft1 (0.13 vs 0.05 %): stays off. Soft lamp shadows: LampRadius 4 + Jitter (TAA) is enough here; the filter is parked.
