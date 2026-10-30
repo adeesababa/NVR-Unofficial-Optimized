@@ -578,6 +578,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (alphaAtlas < 0) return;
 	if (RtImageLight < 0) return;
 	c.gi2.w = (float)rt.Interleave;	// (also without GI: the AO and sky rays interleave the same way)
+	c.gi3 = D3DXVECTOR4((float)rt.GIInterleave, 0.0f, 0.0f, 0.0f);
 	const int images[5] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		!RtCore::AddPass(RtShader, images, 5, 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,

@@ -36,6 +36,7 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 lampPos[8];    // xyz scene space, w reach
     vec4 lampColor[8];  // rgb x dimmer
     vec4 gi2;           // (GI v2) x GIOffscreen (the analytic light's scale for hits off screen), y the on-screen depth tolerance (share), z GIClamp, w Interleave (1, 2, 4)
+    vec4 gi3;           // x GIInterleave (1, 2, 4): the GI rays in whole 8 x 8 thread tiles, in turn; yzw unused
 } cb;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
 layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outputImage;
@@ -274,12 +275,23 @@ void main() {
     }
     // GI (rt-ao-gi): one bounce ray, its own rotation (the AO rays' noise turned by a golden-ratio step) so the two decorrelate.
     vec4 gi = vec4(0.0, 0.0, 0.0, 1.0);
-    if (cb.gi.y > 0.5) {
+    // (2026-10-29) GIInterleave: the GI rays only in every 2nd / 4th 8 x 8 tile of threads a frame, in turn (whole tiles, so the skipped
+    // waves really do no GI work; per-texel skipping would leave GI lanes in every wave). The others keep their last bounce light (the
+    // shared image persists) for the GI denoiser and ComputeGI's accumulate to blend. The AO and sky rays are not affected.
+    int giInterleave = int(cb.gi3.x + 0.5);
+    ivec2 tile = ivec2(gl_WorkGroupID.xy);
+    bool giTile = giInterleave >= 4 ? ((tile.x & 1) + 2 * (tile.y & 1)) == (turn & 3)
+                : giInterleave == 2 ? ((tile.x + tile.y + turn) & 1) == 0
+                : true;
+    if (cb.gi.y > 0.5 && !giTile) {
+        // (no GI ray this frame here: the image keeps its last value)
+    }
+    else if (cb.gi.y > 0.5) {
         float frame = cb.ao.z > 0.5 ? cb.origin.w : 0.0;
         vec2 u = fract(vec2(Ign(vec2(texel) + 41.0), Ign(vec2(texel) + 73.0)) + frame * vec2(0.618034, 0.754878) + vec2(0.381966, 0.5));
         gi = Bounce(p + n * bias, CosineDirection(n, u), 0.05 * bias, fract(Ign(vec2(texel) + 97.0) + frame * 0.569840));
     }
-    imageStore(giImage, texel, gi);
+    if (cb.gi.y < 0.5 || giTile) imageStore(giImage, texel, gi);
     if (cb.ao.w > 3.5 && cb.ao.w < 4.5) aoVisibility = clamp(viewZ / 2000.0, 0.0, 1.0);
     if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
     imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
