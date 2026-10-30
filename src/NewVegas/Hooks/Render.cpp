@@ -3407,7 +3407,6 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		// UNOFFICIAL 2026-10-20 MaterialAware reflections (core/ReflMaterial.h): blended passes keep off the scene's alpha.
 		ReflMaterial::BeginWorld(TheRenderManager->renderState, TheRenderManager->device, ReflMaterial::CompiledIn() && TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0);
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
-		if (FrameWorldCalls == 1) ReactiveMask::Build(TheRenderManager->device);	// UNOFFICIAL 2026-10-30 ReactiveMask: what was drawn over the main list
 		ReflMaterial::EndWorld(TheRenderManager->renderState, TheRenderManager->device);
 		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);	// UNOFFICIAL ExactPassSums: a run still open at the world's end is folded in here
@@ -3444,8 +3443,12 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 
 	static GpuTimer depthResolveTimer("Depth resolves");
 	GpuProfileScope gpuResolve(depthResolveTimer, TheRenderManager->device);
-	if (!bPipBoyOpen || bPipBoyLive)
+	if (!bPipBoyOpen || bPipBoyLive) {
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture); // disable updating the world buffer when pipboy is out
+		// UNOFFICIAL 2026-10-30 ReactiveMask (core/ReactiveMask.h): what was drawn over the main list, now that this frame's world depth is
+		// readable (before the first-person weapon and the RenderScale v2 upscale; a v1 upscale has read FSR's inputs already)
+		if (FrameWorldCalls == 1) ReactiveMask::Build(TheRenderManager->device);
+	}
 
 	if (!IsFirstPerson) {
 		// clear the viewmodel depth buffer

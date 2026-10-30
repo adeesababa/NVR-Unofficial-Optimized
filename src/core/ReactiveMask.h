@@ -7,7 +7,8 @@
 // the scene after them; where they differ, the pixel is reactive.
 //   - GrassFirst::MainListHook copies the world's colour when the game's main opaque list (RenderBatches(1, 0x25B)) ends, after
 //     LinearScene has encoded it back (NoteOpaque);
-//   - RenderWorldSceneGraphHook, when the game's world scene ends (no NVR effect yet), copies the colour again and draws mask = largest
+//   - RenderWorldSceneGraphHook, when the game's world scene ends and its depth is resolved into TESR_DepthBufferWorld (no NVR effect
+//     yet; read before that resolve, the depth texture gave 0 everywhere, run 20261030-190111-slotA), copies the colour again and draws mask = largest
 //     channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build), and 0 where the world's
 //     depth there is farther than ReactiveMaxDistance: the sky and the distant land are drawn after the main list too (run
 //     20261030-182413-slotA marked them), and no alpha draw writes depth. (The blended stage alone, 0xB650C0, holds almost none of it:
@@ -79,7 +80,9 @@ namespace ReactiveMask {
 			"  float3 e = abs(c / (1.0f + c) - o / (1.0f + o));"
 			"  float r = max(max(e.r, e.g), e.b) * K.x;"
 			"  return r < K.z ? 0.0f : min(r, K.y); }"
-			"float4 main(float2 uv : TEXCOORD0) : COLOR0 { float r = reactive(uv); return float4(r, r, r, 1.0f); }"
+			"float4 main(float2 uv : TEXCOORD0) : COLOR0 { float r = reactive(uv);"
+			"  if (K.w > 1.5f) { float d = tex2D(Z, uv).r; r = K.w > 2.5f ? d : saturate(N.x / max(1.0f - d * (N.y - N.x) / N.y, 1e-6f) / 4096.0f); }"
+			"  return float4(r, r, r, 1.0f); }"
 			"float4 count(float2 uv : TEXCOORD0) : COLOR0 { clip(reactive(uv) - 0.1f); return 0.0f; }";
 		auto build = [&](const char* entry, IDirect3DPixelShader9*& out) {
 			ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
@@ -115,7 +118,7 @@ namespace ReactiveMask {
 		return ok;
 	}
 
-	// RenderWorldSceneGraphHook, when the game's world scene is drawn (before any NVR effect and before the upscale).
+	// RenderWorldSceneGraphHook, after the world scene and its depth resolve (before any NVR effect, the weapon and a v2 upscale).
 	inline void Build(IDirect3DDevice9* d) {
 		const float scale = Scale();
 		if (Failed || !(scale > 0.0f) || OpaqueFrame != FrameNumber() || ReadyFrame == FrameNumber()) return;
@@ -123,9 +126,6 @@ namespace ReactiveMask {
 		IDirect3DSurface9* rt0 = MainTarget(d, t);
 		if (!rt0) return;
 		if (!Ensure(d, t) || !Compile(d) || FAILED(d->StretchRect(rt0, NULL, FinalSurface, NULL, D3DTEXF_NONE))) { rt0->Release(); return; }
-		// This frame's world depth: NVR's own resolve into TESR_DepthBufferWorld runs only after the world scene (RenderWorldSceneGraphHook),
-		// so until then it holds the last frame's (run 20261030-183656-slotA: the sky still marked). The same resolve, once more, here.
-		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 		const bool count = GpuTimer::Enabled && (Query || SUCCEEDED(d->CreateQuery(D3DQUERYTYPE_OCCLUSION, &Query)));
 
 		NiDX9RenderState* state = TheRenderManager->renderState;
@@ -157,7 +157,7 @@ namespace ReactiveMask {
 		d->SetTexture(1, Final);
 		d->SetTexture(2, TheTextureManager->DepthTexture);	// (the depth surface is unbound above)
 		const float k[4] = { scale, std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMax"), 0.0f, 1.0f),
-			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveThreshold")), 0.0f };
+			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveThreshold")), (float)TheSettingManager->GetSettingI("Shaders.TAA.FSR", "ReactiveDebug") };
 		const float n[4] = { TheRenderManager->CameraData.x, TheRenderManager->CameraData.y,
 			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMaxDistance")), 0.0f };
 		d->SetPixelShaderConstantF(0, k, 1);
