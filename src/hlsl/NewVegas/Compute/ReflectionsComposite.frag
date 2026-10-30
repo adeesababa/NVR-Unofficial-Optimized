@@ -51,7 +51,7 @@ void main() {
     }
     reflection /= weights;
 
-    vec3 V = normalize(ViewPosition(uv, depth));
+    vec3 V = normalize(SurfacePosition(uv, depth));   // (2026-10-30: the weapon's own FOV)
     vec3 share;
     if (MaterialOn) {
         // MaterialAware: metal reflects in its own colour (F0 = its albedo, guessed from the lit colour's hue), the rest at F0 0.04.

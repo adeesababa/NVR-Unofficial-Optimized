@@ -73,6 +73,8 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtGlowBrightness = std::clamp(TheSettingManager->GetSettingF(rt, "GlowBrightness"), 0.0f, 16.0f);
 	Settings.RtHitTextures = TheSettingManager->GetSettingI(rt, "HitTextures") != 0;	// UNOFFICIAL 2026-10-29
 	Settings.RtHitAmbientGrid = TheSettingManager->GetSettingI(rt, "HitAmbientGrid") != 0;	// UNOFFICIAL 2026-10-30
+	Settings.RtWeapon = std::clamp(TheSettingManager->GetSettingF(rt, "Weapon"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-30
+	Settings.RtWeaponRoughness = std::clamp(TheSettingManager->GetSettingF(rt, "WeaponRoughness"), 0.02f, 1.0f);
 }
 
 // --- UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md; Compute\ReflectionsRT.glsl has the whole frame) -----------
@@ -160,6 +162,17 @@ namespace {
 	const RtCore::User RtUser = { "RT reflections", RtUserWants, RtUserSetup, RtUserRecord, 1 };	// Point 1: only through RtCore::Exchange (RtTrace)
 }
 
+// UNOFFICIAL 2026-10-30 RT weapon reflections: tan(world FOV / 2) / tan(1st-person FOV / 2): the game draws the first-person weapon from
+// the same eye with its own (narrower) FOV, so a weapon pixel's sideways view offset is the world projection's divided by this. 1 if
+// either is unknown.
+float ReflectionsEffect::WeaponFovScale() const {
+	if (!Player) return 1.0f;
+	const float world = Player->worldFoV, first = Player->firstPersonFoV;
+	if (world <= 1.0f || world >= 179.0f || first <= 1.0f || first >= 179.0f) return 1.0f;
+	const float toRad = 3.14159265f / 360.0f;
+	return tanf(world * toRad) / tanf(first * toRad);
+}
+
 // Once, before the RT core's first frame (ShaderManager, with the other RT users).
 void ReflectionsEffect::RtRegister() {
 	RtEffect = this;
@@ -210,9 +223,11 @@ bool ReflectionsEffect::RtImages() {
 // frame costs the RayGen pass, then the normal trace.)
 bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* target) {
 	rtResolved = false;
+	weaponFrame = false;
 	if (!RtWanted() || !RtImages()) return false;
 	// SplitTest (no helper): RayGen casts no ray, so Resolve must give the normal trace's picture exactly (the split checked on any GPU).
 	rtRays = RtCoreClient::Ready();
+	weaponFrame = rtRays && Settings.RtWeapon > 0.0f;	// UNOFFICIAL 2026-10-30 (dropped again below if this frame falls back to the normal trace)
 	if (rtRays && Settings.RtHitLamps) RtGatherLamps(Settings.RtDistance); else RtLampCount = 0;	// UNOFFICIAL 2026-10-29 (before RayGen: both passes read them)
 	if (!ExtRender(Device, Rt.MarchSurface, Rt.MarchSurface, 8, false, Rt.MarchSurface)) return false;
 	bool traced = !rtRays;	// SplitTest: nothing to trace
@@ -223,7 +238,7 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 		const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.SunDir;
 		RtPending.size = D3DXVECTOR4((float)RtWidth(), (float)RtHeight(), Settings.RtDistance, Settings.RtSunShadows ? 1.0f : 0.0f);
 		RtPending.forward = D3DXVECTOR4(view._13, view._23, view._33, 0.0f);
-		RtPending.right = D3DXVECTOR4(view._11 / proj._11, view._21 / proj._11, view._31 / proj._11, 0.0f);
+		RtPending.right = D3DXVECTOR4(view._11 / proj._11, view._21 / proj._11, view._31 / proj._11, 1.0f / WeaponFovScale());	// w: the weapon's
 		RtPending.up = D3DXVECTOR4(view._12 / proj._22, view._22 / proj._22, view._32 / proj._22, 0.0f);
 		const D3DXVECTOR3 eye = RtCore::Eye();	// the eye in scene space (2026-10-29 rt-sun-core 4ba2abfd: CameraLocation reads ~0 in game)
 		RtPending.origin = D3DXVECTOR4(eye.x, eye.y, eye.z, Settings.RtDebugView == 5 ? 1.0f : 0.0f);	// w: the alignment check
@@ -240,11 +255,12 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 		traced = RtCoreClient::Exchange(Device, RtUser) && RtRecorded;
 	}
 	if (!traced) {
+		weaponFrame = false;
 		if (++rtFallbackFrames == 1) Logger::Log("UNOFFICIAL Reflections: RT is on but the RT helper traced nothing this frame; the normal trace is drawn (logged once).");
 		return false;
 	}
 	Device->SetRenderTarget(0, target);
-	if (!ExtRender(Device, target, target, 9, false, target)) return false;
+	if (!ExtRender(Device, target, target, 9, false, target)) { weaponFrame = false; return false; }
 	rtResolved = true;	// UNOFFICIAL 2026-10-29: the blur passes read Rt.Spread this frame
 	if (++rtTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs with RT ([Shaders.Reflections.RT]%s).", rtRays ? "" : ", SplitTest: no rays");
 	return true;
@@ -589,6 +605,7 @@ namespace {
 		D3DXVECTOR4	data, data2, data3, data4, layout, cube2, grid, grid2, grid3, material;
 		D3DXVECTOR4	depthConstants, cameraData, cameraPosition, sky, flags;
 		D3DXVECTOR4	material2;	// UNOFFICIAL 2026-10-30 x 1: TESR_MaterialBuffer's roughness for the floor guess
+		D3DXVECTOR4	weapon;		// UNOFFICIAL 2026-10-30 x on, y WeaponFovScale, z strength, w roughness without material data
 	};
 	ReflUniforms ReflUploaded;	// what the uniform buffer holds (one effect instance)
 	struct ReflPush { D3DXVECTOR4 cube; UInt32 linearIndex, pointIndex, mipIndex, pass; };
@@ -817,6 +834,10 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		if (found != TheShaderManager->ConstantsTable.end() && found->second) cloudBrightness = found->second->w;
 	}
 	uniforms.material2 = D3DXVECTOR4(matbuf ? 1.0f : 0.0f, cloudSky ? 1.0f : 0.0f, cloudBrightness, 0.0f);
+	// UNOFFICIAL 2026-10-30 RT weapon reflections: only in a frame the RT trace runs (RayGen, Resolve, temporal, blur, composite agree).
+	const bool weaponOn = weaponFrame && RtWanted();
+	uniforms.weapon = D3DXVECTOR4(weaponOn ? 1.0f : 0.0f, WeaponFovScale(), Settings.RtWeapon * (TheShaderManager->GameState.isExterior ? Settings.ReflectivityExterior : Settings.ReflectivityInterior),
+		Settings.RtWeaponRoughness);
 	ID3D9NvrExtBuffer* buffer = extUniforms.Buffer;
 	if (!buffer || memcmp(&uniforms, &ReflUploaded, sizeof(uniforms))) {
 		buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));

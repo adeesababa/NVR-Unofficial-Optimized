@@ -24,6 +24,8 @@ void main() {
     vec4 clip = cb.reproject * vec4(world, 1.0);
     float w = max(clip.w, 0.001);
     vec2 last = vec2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
+    // UNOFFICIAL 2026-10-30 RT weapon reflections: the weapon moves with the camera: its history is where it is on the screen.
+    if (WeaponAt(uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy))) last = uv;
     float inside = float(all(greaterThan(last, vec2(0.0))) && all(lessThan(last, vec2(1.0))) && current.a + high.a > 0.0);
     vec4 history = textureLod(sampler2D(t_history, POINT_S), last, 0.0);
     history = clamp(history, low, high);
