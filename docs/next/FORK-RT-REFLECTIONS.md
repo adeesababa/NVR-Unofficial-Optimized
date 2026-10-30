@@ -128,6 +128,21 @@ DXVK sees them only as that draw's descriptors. So the tiers are:
 So: on-screen hits are exact; off-screen hits are as good as the cube; hidden hits are their draw's average colour on their own triangle normal (tiers 3-4, built but not yet seen in game),
 and approximate (no texture detail, no lamps beyond the ambient) until tiers 5-6.
 
+## Cost: resolution and the ray budget (main's item 3, 2026-10-30)
+Already built, so no new pass was added for this item:
+- **Half resolution:** RayGen, the helper's trace and Resolve all run at half the screen each way (`RtWidth/RtHeight` = width / 2,
+  height / 2). One ray per half-res pixel per frame at most.
+- **Depth-aware upsample:** the composite (`ReflectionsComposite.frag`, "Depth-aware bilinear upsample") rebuilds full resolution from
+  the four nearest half-res texels, each weighted down by its depth's distance from the pixel's (tolerance 3 % of the depth + 4 units):
+  no halo across silhouettes.
+- **Rough surfaces at quarter rate:** RoughShare 0.3 (rtrefl-5): above roughness 0.3 one pixel per 2x2 block casts a frame (the
+  caster moves round the block), the others reuse its hit; above MaxRoughness (0.5) no rays at all (cube / grid). With the blur and
+  temporal history that is the quarter-resolution rough reflection modern engines use.
+- **SSR first:** a ray is cast only where the screen march came up short (or for rough casters, always, so the block has a hit).
+- **Measured (iGPU, 720p):** helper passes luxe 4.7 ms, lucky22 5.4-5.7 ms with the budget (6.0-11.2 ms without); picture the same at
+  luxe, 3.3 % px slightly darker at lucky22 (averaging). Further cut if wanted: RoughShare down to 0.2 (more surfaces at quarter rate)
+  or a 4x4 block above roughness 0.4: not done.
+
 ## Water
 
 The game's water already reflects through its own planar reflection (WATER*.pso, `ReflectionMap`). That is exact for what the game
