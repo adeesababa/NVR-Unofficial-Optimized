@@ -465,7 +465,9 @@ namespace SettingShots {
 				for (int& s : SlotFrame) s = -1;
 				if (!Active) Logger::Log("LAND FLICKER %s: shot '%s' too short for landflicker %d (wait %d)", Run, List[Index].slug.c_str(), frames, total);
 			}
-			MaskNow = Active && frame == MaskAt;
+			// BeginFrame runs in image space, after the world of this frame is drawn: the flag set here colours the NEXT frame's
+			// land, whose picture is frame MaskAt (run 20261030-141538: set at MaskAt itself, no picture ever had the land masked).
+			MaskNow = Active && frame == MaskAt - 1;
 		}
 
 		// SetShadersHook, after the game bound a pass's shaders: in the mask frame a land shader is swapped for flat magenta.
@@ -570,7 +572,8 @@ namespace SettingShots {
 			for (size_t i = 0; i < n; i++) {
 				const int r = (Mask[i] >> 16) & 255, g = (Mask[i] >> 8) & 255, b = Mask[i] & 255;
 				const int r0 = (Reference[i] >> 16) & 255, g0 = (Reference[i] >> 8) & 255, b0 = Reference[i] & 255;
-				raw[i] = r - g > 60 && b - g > 60 && abs(r - r0) + abs(g - g0) + abs(b - b0) > 60;
+				// (TAA / FSR blend the mask frame with their history: the magenta comes out weaker than drawn)
+				raw[i] = (r - g) - (r0 - g0) > 25 && (b - g) - (b0 - g0) > 25;
 			}
 			for (UInt32 y = 1; y + 1 < H; y++) for (UInt32 x = 1; x + 1 < W; x++) {
 				const size_t i = (size_t)y * W + x;
@@ -649,6 +652,16 @@ namespace SettingShots {
 			HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
 			if (thread) CloseHandle(thread);
 			else { InFlight--; delete job; }
+			// the mask frame as read (what was taken as land: the check for this measurement)
+			if (Job* mask = new (std::nothrow) Job()) {
+				mask->width = W; mask->height = H; mask->bgra = Mask;
+				for (size_t i = 0; i < n; i++) if (land[i]) mask->bgra[i] = 0xFFFF00FFu;
+				sprintf_s(mask->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s-landmask.png", Run, (unsigned)Index, shot.slug.c_str());
+				InFlight++;
+				HANDLE t2 = CreateThread(nullptr, 0, Worker, mask, 0, nullptr);
+				if (t2) CloseHandle(t2);
+				else { InFlight--; delete mask; }
+			}
 			Stack.clear(); Stack.shrink_to_fit();
 		}
 	}
