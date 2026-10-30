@@ -149,6 +149,7 @@ namespace {
 		ID3D9NvrExtRtSkin*		rtSkin = nullptr;	// fork patch 0033 (skinned actors); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
+		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
 		UInt32		partitionFate[5] = {};				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
@@ -758,21 +759,29 @@ namespace {
 			if (entry.refused) continue;
 			entry.lastSeen = sceneFrame;
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
+			// ActorUpdateInterval: a posed partition is re-posed only every Nth frame (staggered by id), the frames between keep the
+			// last pose (a frame or two late: unseen in shadows; rt-lamp: actors were most of the RT cost indoors, ~60 partitions a frame)
+			const bool pose = !entry.sent || actorInterval <= 1 || ((sceneFrame + entry.id) % actorInterval) == 0;
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
-			if (FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
-			if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity || record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
-			if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
-			NvrRtGeometryOp& op = record->ops[record->opCount++];
-			op = NvrRtGeometryOp();
-			op.op = NVR_RT_OP_BUILD;
-			op.id = entry.id;
-			op.vertexCount = info.VertexCount;
-			op.triangleCount = info.TriangleCount;
-			op.arenaTexel = arenaUsed;
-			op.flags = NVR_RT_OP_FLAG_DYNAMIC;
-			arenaUsed += info.Texels;
-			entry.sent = true;
-			actorPartitions++;
+			if (pose && FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
+			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
+			if (pose) {
+				if (record->opCount >= NVR_RT_MAX_OPS || arenaUsed + info.Texels > arenaCapacity) { waiting++; if (!entry.sent) continue; }
+				else if (FAILED(rtSkin->StageSkinnedGeometry(&desc, &s, images[0], arenaUsed, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
+				else {
+					NvrRtGeometryOp& op = record->ops[record->opCount++];
+					op = NvrRtGeometryOp();
+					op.op = NVR_RT_OP_BUILD;
+					op.id = entry.id;
+					op.vertexCount = info.VertexCount;
+					op.triangleCount = info.TriangleCount;
+					op.arenaTexel = arenaUsed;
+					op.flags = NVR_RT_OP_FLAG_DYNAMIC;
+					arenaUsed += info.Texels;
+					entry.sent = true;
+					actorPartitions++;
+				}
+			}
 
 			NvrRtInstanceRecord& extra = record->records[record->instanceCount];
 			extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
@@ -990,6 +999,7 @@ namespace {
 		sceneFrame++;
 		radius = (std::max)(512.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "SceneRadius"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
+		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
 		arenaUsed = 0;
 		waiting = 0;
 		atlasThisFrame = 0;
