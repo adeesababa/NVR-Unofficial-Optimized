@@ -22,6 +22,7 @@
 #include "../core/DxvkCompute.h"
 #include "../core/GpuProfiler.h"
 #include "../core/Upscaler.h"
+#include "../core/ReactiveMask.h"	// UNOFFICIAL 2026-10-30 ReactiveMask: FSR's reactive mask from the world's alpha draws
 #include "../core/ObjectMotion.h"	// UNOFFICIAL 2026-10-29 ObjectMotion: FSR's motion vectors for what moved itself
 
 namespace {
@@ -29,6 +30,7 @@ namespace {
 	struct FSRPrepConstants {
 		D3DXMATRIX	projection, view, prevView;
 		D3DXVECTOR4	cameraData, prevProjection, cameraDelta, size;
+		D3DXVECTOR4	extra;	// UNOFFICIAL 2026-10-30 x: 1 = ReactiveMask::Texture at binding 5
 	};
 
 	// Binding tables: (set, binding) as the SPIR-V declares them (checked with spirv-dis), slot = binding for images,
@@ -37,7 +39,7 @@ namespace {
 #define UAV(b)      { 1, b, NVR_EXT_BIND_STORAGE_IMAGE, b, NVR_EXT_VIEW_2D, TRUE, 0 }
 #define CB(s, b)    { s, b, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
 #define POINTS      { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
-	const NVR_EXT_BINDING_DESC PrepBindings[] = { IMG(0), IMG(1), UAV(2), UAV(3), CB(2, 0), POINTS, IMG(4) };	// IMG(4): UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer
+	const NVR_EXT_BINDING_DESC PrepBindings[] = { IMG(0), IMG(1), UAV(2), UAV(3), CB(2, 0), POINTS, IMG(4), IMG(5) };	// IMG(4): UNOFFICIAL 2026-10-29 TESR_ObjectMotionBuffer; IMG(5): 2026-10-30 ReactiveMask
 	const NVR_EXT_BINDING_DESC CompositeBindings[] = { IMG(0), IMG(1), IMG(2), IMG(3), IMG(4), POINTS };
 #undef IMG
 #undef UAV
@@ -181,11 +183,14 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	const bool objectMotion = ObjectMotion::Ready();	// UNOFFICIAL 2026-10-29: cameraDelta.w = FSRPrep.comp's switch for t_objmotion
 	prep.cameraDelta.w = objectMotion ? 1.0f : 0.0f;
 	prep.size = D3DXVECTOR4((float)width, (float)height, reset ? 1.0f : 0.0f, FSRSettings.WeaponReactive);
+	const bool reactive = ReactiveMask::Ready();	// UNOFFICIAL 2026-10-30
+	prep.extra = D3DXVECTOR4(reactive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 	ID3D9NvrExtBuffer* prepBuffer = ExtUniforms(fsrPrepUniforms, &prep, sizeof(prep));
 	if (!prepBuffer) return fail("its constant buffer could not be written");
 	{
 		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, depth), Image(1, viewModel), Image(2, fsrMotion.Texture, true), Image(3, fsrDepth.Texture, true),
-			Buffer(0, NVR_EXT_BIND_UNIFORM_BUFFER, prepBuffer), Sampler(0, point), Image(4, objectMotion ? (IUnknown*)ObjectMotion::Texture : (IUnknown*)depth) };
+			Buffer(0, NVR_EXT_BIND_UNIFORM_BUFFER, prepBuffer), Sampler(0, point), Image(4, objectMotion ? (IUnknown*)ObjectMotion::Texture : (IUnknown*)depth),
+			Image(5, reactive ? (IUnknown*)ReactiveMask::Texture : (IUnknown*)depth) };
 		UInt32 prepPush = 0;
 		if (!FSRDispatchPrep(b, _countof(b), &prepPush, 4, (width + 7) / 8, (height + 7) / 8)) return false;
 	}
