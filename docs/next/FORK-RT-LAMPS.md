@@ -35,6 +35,18 @@
   7.2-8.5 GPU, CPU noisy 1.0-3.1): most of its 64 shadowed lamps are not among the 9 traced, and its people force redraws. The
   win grows with step 3 (every shadowed lamp traced where it matters) and step 2 (people traced: their redraws go too).
 
+### Cost: Interleave + where the frame goes (rtlamp-13/14/15, 2026-10-29 21:14-22:20, all PASS; 7a6d54a2, DLL 86893D44, protocol-3 helper)
+- Interleave (1, 2, 4; 973134db, default 1): works (static camera: 0.02-0.66 % of pixels differ from every-pixel tracing, at edges:
+  the traced frames' TAA jitter), but saves little: whole-frame GPU time with actors on, L38 ~150 / 149 / 151 ms, V21 128 / 127 / 128.
+- The game's whole frame (GPU, iGPU 720p; noisy, the cube baseline itself moves 10 ms between shots):
+  actors ON (rtlamp-13): L38 cube 114 -> traced ~150 (+35), V21 109 -> ~128 (+20);
+  actors OFF (rtlamp-15): L38 cube 91-97 -> traced 102-107 (+8..15), lpp1 106, lpp1 + Interleave 4 103; V21 129-134 -> 135 (+0..6).
+  So most of the +35 / +20 was the posed actors (3600 skinned partitions in 60 exchanges; refit), not the lamp rays; the lamp trace
+  itself is ~5-15 ms on this 2-CU iGPU and Interleave 4 takes ~3 ms off it. Interleave stays 1 by default (edges change for ~3 ms).
+- People's traced lamp shadows: rtlamp-13 (on) vs rtlamp-14 (off), AI frozen: the only differences are on the NPCs' bodies (their
+  pose differs between launches), no shadow shapes on the floor in either: the NPCs stand where no traced lamp's light falls on the
+  floor round them from this camera. rtlamp-16 shows the lamps over them one at a time (DebugView 3).
+
 ### Step 5: INTERIOR-SHADOWS-MODERN.md (on claude/rootplan-combo) -- coordinated 2026-10-29 20:25
 - Its layer 4 still names the v3 format (4 bits a lamp, 9 lamps). The v4 interface (3 entries a pixel: cube slot + 16-step
   visibility, + the depth code; reading code; fallback rules) is written up for the screen-pass author in the shared notes:
