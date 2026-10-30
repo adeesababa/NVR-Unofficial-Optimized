@@ -698,7 +698,7 @@ void LegacyFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
 
         distantFog = pows(hlslSmoothstep(LegacyDistantFogRange, 1.0, normalizedDepth), 0.5);
         if (LegacyDistantFogHeight == 0.0) distantHeightFade = 1.0 - float(getSky(coord, interior) > 0.0);
-        else distantHeightFade = exp(-pointHeight / (80000.0 * LegacyDistantFogHeight));
+        else distantHeightFade = saturate(exp(-pointHeight / (80000.0 * LegacyDistantFogHeight)));    // UNOFFICIAL 2026-10-30: at most 1, as below
 
         inScattering += SunsetFog;
         extinction *= 1.0 - distantFog * isDayTimeFog;
@@ -839,7 +839,9 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         sun = sunColorV * sunScattering * shadowVisibility * cb.pbrData.z * 100.0 * (classic ? 1.0 : cb.fogSun.x);
 
         distantFog = pows(hlslSmoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
-        distantHeightFade = (DistantFogHeight == 0.0) ? (1.0 - isSky) : exp(-worldPos.z / (80000.0 * DistantFogHeight));
+        // UNOFFICIAL 2026-10-30 (VolumetricFog.fx.hlsl, claude/terrain-flicker 80b1dd4b): at most 1 (below z 0 the exp passed 1 and the sky lerp
+        // ran past the sky colour: white, then inf in the TAA history)
+        distantHeightFade = (DistantFogHeight == 0.0) ? (1.0 - isSky) : saturate(exp(-worldPos.z / (80000.0 * DistantFogHeight)));
     }
 
     vec3 ambientColor = SkyAmbientAvailable > 0.5
