@@ -295,3 +295,95 @@ helper's own timing).
 - iGPU bulk run of rt-ao-1 in lucky22 + og-desert + a porch spot, read the shots, cost table (1-2 h incl. queue).
 - Tune Distance / the strength mapping against AmbientLight's look (RT occlusion is wider than AL's GTAO in creases) (1 h).
 - Requests for the core if the shots need them: skinned actors in the TLAS (darkening under NPCs), alpha-tested foliage.
+
+### rt-gi-8 (queued 2026-10-29 ~23:10, 79a6d04a): hit textures for the bounce albedo, Goodsprings + Lucky 38
+- The GI bounce's off-screen albedo now comes from `rtHitAlbedo` (RtHit.glsl: the hit texture's colour through the albedo atlas
+  when `[Main.Main.RayTracing] HitTextures` is on, else the record's average; a 256 x 256 RGBA8 stand-in at binding 7 when the core
+  has no atlas). Run toml rtao/run-toml-igpu-hit.toml (AlphaTested + HitTextures), fork-0033 + extra-p3, list rt-gi-8.
+- **Goodsprings (20261029-234633-slotC, og-goodsprings, AlphaTested + HitTextures, 52759 alpha meshes taken, 1595 instances):**
+  RtAOTrace's own helper time (iGPU 720p): AO alone 16.9 ms; AO + GI 42.2 / 37.7 ms (two shots); GIInterleave 4 + Interleave 2
+  17.7 ms (Lucky 38 was 13.3 ms with that setting). Denoisers as indoors: AO 6.5 ms, GI (half, rgb) 8.6 ms; input 0.6 ms. Outdoors
+  with foliage the full-rate GI is ~2.5x the AO; only the interleaved setting is playable-class on the iGPU. Pictures: no black,
+  no fireflies, no tile seams in the GI light view (DebugView 6): open ground gets little bounce (its rays mostly see sky, which the
+  bounce does not count), walls/rocks/the truck facing lit ground do. The camera moves between Goodsprings shots, so no A/B by
+  picture there. The NVR log has no line that confirms the albedo atlas was live (the core logs alpha slots only).
+- **Lucky 38 (20261030-001722-slotA, lucky22, same toml: AlphaTested + HitTextures; 22519 alpha meshes, 129 atlas slots, 3082
+  instances):** RtAOTrace helper time: AO alone 28.2 ms (rt-gi-7 without AlphaTested: 9.5 ms), AO + GI 50.2 / 67.1 ms (was
+  26-28), GIInterleave 4 + Interleave 2 16.0 ms (was 13.3). Denoisers AO 7.9 ms, GI 10.1 ms. No crash, no black, GI light view
+  plausible (warm bounce off the casino walls; the camera drifts in later shots as before, so the gi4-i2 light view is smeared by
+  motion, not judged).
+- **Verdict:** hit textures work (no crash, stand-in path when off) -> READY as a switch-off commit. Cost: **alpha testing, not
+  the textures, is the bill** — AO's 4 short rays went 9.5 -> 28 ms indoors because every leaf/fence/sign candidate runs
+  rtAlphaPass. Next: AO rays treat alpha-tested meshes as opaque by default (AOAlpha 0 skip / 1 opaque / 2 test), GI keeps the test.
+  rt-sun-core's RtDenoise Kernel = 3 (1f5d987e: half res 3x3 ~3.9 ms) to merge for both denoisers.
+
+### rt-gi-9 (568b3e17, DLL D7E6F506): AOAlpha + DenoiseKernel 3
+- **Lucky 38 (20261030-004006-slotA):** RtAOTrace helper time, AO alone: AOAlpha 1 (solid) 17.4 ms, 2 (tested) 19.0 ms, 0 (left
+  out) 14.1 ms; the same AOAlpha 1 trace again in the Kernel 5 shot read 23.5 ms, so the shot-to-shot spread (~±5 ms) is as large
+  as the AOAlpha differences. rt-gi-8's 28 ms for tested AO was that spread too, not the test: **indoors the alpha test is not the
+  bill; the extra geometry AlphaTested brings is** (AOAlpha 0 = 14 ms vs 9.5 ms with AlphaTested off in rt-gi-7). AO + GI 27.8 ms
+  (rt-gi-8: 50-67). Occlusion pictures (AL DebugView 1) for AOAlpha 1 and 2 cannot be told apart.
+  **Kernel 3 is a clear win:** AO denoise 7.9 -> 4.6 ms, GI denoise 10.1 -> 5.0 ms, no visible loss in the occlusion view
+  (Kernel 5 in the same run: 5.6 ms avg, p50 6.5).
+- **Goodsprings (20261030-010429-slotC):** AO alone AOAlpha 1 9.7 ms, 2 21.6 ms, 0 8.4 ms, AOAlpha 1 again (Kernel 5 shot) 13.3 ms;
+  AO + GI 29.2 ms (rt-gi-8: 38-42). Denoisers: AO 3.9 ms with Kernel 3 vs 6.2 ms with 5; GI 5.4 ms (rt-gi-8: 8.6). The camera
+  moves to a different view every Goodsprings shot (ao1 by the windmill, ao2 down the street by the truck), so the 2.2x for the
+  alpha test outdoors is suggestive, not proven; the occlusion pictures look clean in both (foliage gives soft contact darkening).
+- **Verdict rt-gi-9: PASS.** Kernel 3 halves both denoisers at no visible cost (both scenes). AOAlpha 1 (solid) is the default:
+  no loss in the pictures, never slower, maybe 2x cheaper among foliage. AO + GI full rate now 28-29 ms in both scenes
+  (from 38-67), GIInterleave 4 + Interleave 2 ~16-18 ms (rt-gi-8). Open: a still-camera outdoor spot for clean A/Bs (og-* spots
+  drift); next step for GI quality per ray = ReSTIR GI temporal reuse.
+
+### ReSTIR GI temporal reuse (e39c8048, DLL 838D0C5B; bench rt-gi-10 queued 2026-10-30 ~01:25)
+- `GIReuse` (0-32, default 8; GI itself stays off by default): the bounce leaves the AO pass for its own helper pass, RtGITrace.spv
+  (RtAOTrace.comp built with `-DRT_GI_PASS`, own 512-byte constants with last frame's view). Each half-res texel keeps a reservoir
+  (Ouyang et al. 2021, temporal step): A = rgb the estimate (chosen sample's light x W; this is NVR_RTGIRaw), a = W; B = M, view
+  distance, octahedral world normal. Two RGBA16F pairs, swapped each frame (8 images = the helper's per-pass maximum). History is
+  last frame's reservoir of the reprojected point when depth (5 %) and normal (~25 deg) match; M capped at GIReuse. A new candidate
+  (cosine-sampled bounce: RIS weight = luminance) each frame in the GIInterleave tiles and wherever there is no history.
+  One candidate alone gives exactly the old value; GIReuse 0 runs the bounce in the AO pass as before (the A/B).
+- v1 limits: no re-trace of the kept sample (a light switched off fades over GIReuse frames), no spatial reuse, no Jacobian.
+- **rt-gi-10 (20261030-013830-slotA, Lucky 38, e39c8048):** quality at a still camera PASS. Bounce light (DebugView 6) means (luma,
+  1280x720 every 4th pixel): denoised 19.32 (GIReuse 0) vs 18.84 (GIReuse 8): -2.5 %, the same light; raw 17.4 vs 19.6, raw sd 9.7
+  -> 8.9, and the firefly clusters on the walls and by the plant are gone with reuse. Cost (helper per pass): GIReuse 0 = 33.3 ms
+  (AO + GI in one pass); GIReuse 8 = AO 14.8 + RtGITrace 26.3 = 41.1 ms (the separate pass costs ~8 ms more than the GI rays did
+  inside the AO pass); GIReuse 8 + GIInterleave 4 = 13.4 + 11.9 = 25.3 ms (not 1/4: texels without history trace anyway, and the
+  camera was moving). The GIInterleave 4 light view, taken while the camera drifts, shows two faint ghost silhouettes and vertical
+  stripes at the left edge; there is no GIReuse 0 + GIInterleave 4 shot in motion to compare, so it is open whether reuse causes it.
+  Final pictures r0 / r8 are different views (drift), not compared.
+- **Default GIReuse 0** for now (029d3d56, DLL 3075BBC6), the reuse path is opt-in until a motion A/B. Next: a bench list that pairs
+  GIReuse 0 / 8 at GIInterleave 4 back to back in the drifting shots, and a cheaper GI pass (history-only tiles skip the input
+  reprojection maths; check why non-candidate tiles still trace).
+- **rt-gi-11 (20261030-022942-slotA, Lucky 38, 029d3d56): motion A/B PASS for reuse.** GIInterleave 4, GIReuse 0 / 8 alternating.
+  Still pair (m1): the same light. Moving pair (m2): **GIReuse 0 smears** (streaks, vertical stripes, the scene's last bounce light
+  dragged across: GIInterleave's "keep the last value" without reprojection); **GIReuse 8 stays clean** (reprojected, checked
+  history; a little blotchy). So rt-gi-10's stripes were the old interleave's, not reuse's. Cost (helper, per pass, same shots):
+  GIReuse 0 19.3 / 25.6 / 20.1 ms; GIReuse 8 25.7 / 28.7 ms (AO + RtGITrace): ~+6 ms for its own pass. Still GIReuse 8 + GIInterleave
+  4 (~26-29 ms) is cheaper than full-rate GI either way (33-41 ms) and is the one that holds up in motion.
+- **GIReuse default 8** (DLL 69708BDC, commit below). Next: the GI pass's extra cost (the separate pass reads the input and does the
+  reprojection for every texel; a texel without history traces even outside its tile), then spatial reuse.
+- **Reuse v2 (e6363499, shader only; bench rtgi16 = list rt-gi-11 again, 20261030-025100-slotA): PASS.** Outside the frame's
+  GIInterleave tiles nothing traces; a texel without history borrows a neighbour's reservoir or stays empty until its turn.
+  RtGITrace at GIInterleave 4, in motion: 8.5 / 10.8 / 9.2 / 8.5 / 9.1 ms (v1, rtgi15: 12.4 / 14.4). AO + GI 20.7-27 ms (v1 25.7-28.7).
+  The moving bounce-light views show no holes, blocks or stripes (a faint double outline round the player at most). Note: the
+  list's "r0" shots ran with reuse too (the DLL's default is now 8 and the list does not set 0), so all shots of this run are v2.
+- **GISpatial (fe57c778, DLL E67772D7; rt-gi-12, 20261030-030412-slotA): small gain, stays opt-in (default 0).** The only still
+  pair is the raw one (shots 1-2): bounce-light mean 19.60 / 19.62 (same), neighbour-to-neighbour luma difference 0.95 -> 0.90
+  (-5 %), sd 9.02 -> 8.79. Lucky 38 drifts from the 4th shot on, so the denoised and moving pairs are different views (their -6 % /
+  lower sd are not comparable). Cost: RtGITrace full rate 32.3 / 34.0 (s0 / s4 raw), 30.7 / 29.7 (denoised); GIInterleave 4: 9.2 ->
+  10.4 ms. Worth a try where noise shows (outdoors at night?), not as a default on this evidence.
+- **rt-gi-13 (20261030-031814-slotC, Goodsprings, fe57c778): reuse holds up outdoors.** Each shot is a different view (og spots
+  move), so judged one by one: GIReuse 0 + GIInterleave 4 smears (cloudy blobs over the ground and the shack); GIReuse 8 +
+  GIInterleave 4 is crisp (rocks, truck, windmill, the player keep their shape), no holes. Helper times: full rate GIReuse 0 21.0 ms
+  vs GIReuse 8 9.5 + 15.6 = 25.1 ms; GIInterleave 4: 17.7 vs 12.6 + 7.3 = 19.9 ms. The final picture with reuse looks normal.
+- **Light-change cut (564c3e09, DLL 04EAFF52; rtgi19 = rt-gi-11 again, 20261030-033306-slotA): PASS.** When the lamps' total or
+  brightest luminance, their count or the sun change by > 10 %, the history counts as 1 frame and grows back by one a frame (the
+  kept samples are not re-traced: a light switched off lingered up to GIReuse frames). Lucky 38 in motion: 3 cuts in 600 frames (no
+  churn from the lamp list's distance order); RtGITrace 8.9-11.7 ms at GIInterleave 4 (rtgi16: 8.5-10.8), the same look.
+
+### rt-ao-6 (20261030-034658-slotB, Lucky 38, 564c3e09): AO ray budget -> RayCount 2 default
+- The camera stayed put for all 5 shots this time. RtAOTrace helper time: RayCount 4 11.8 ms, 2 7.3 ms, 1 5.3 ms; 4 + Interleave 2
+  7.5 ms (2 + Interleave 2: the trailing shot, no print). Denoised occlusion (AL DebugView 1) vs RayCount 4, green channel every 2nd
+  pixel: mean |diff| 0.83 (2 rays), 0.90 (1 ray), 0.88 (Interleave 2), 0.91 (2 + I2) of 255; pixels off by > 8: 59 / 147 / 182 / 210
+  of 230400. The shared denoiser (Kernel 3) makes 2 rays look like 4 here. **Default RayCount 2** (DLL EA6439D2): -4.5 ms. In motion
+  fewer rays show more grain while the history rebuilds; 1 ray / Interleave 2 left as user options.
