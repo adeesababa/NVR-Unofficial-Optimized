@@ -50,6 +50,9 @@ public:
 		D3DXVECTOR4		FogSkyLook = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 		// UNOFFICIAL 2026-10-27: VolumetricFog's own TESR_SkyColor / SkyLowColor / HorizonColor, FogSkyLook already in them (UpdateFogSky)
 		D3DXVECTOR4		FogSkyColor, FogSkyLowColor, FogHorizonColor;
+		// UNOFFICIAL 2026-10-30: VolumetricFog's own TESR_FogColor, the weather's fog colour with FogSkyLook in it outdoors while the fog
+		// takes it (WeatherFogColor on, not LegacyFog / ClassicLook / FogReference); else the raw colour (UpdateFogSky)
+		D3DXVECTOR4		FogWeatherColor;
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
 	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; bool LightsObjects; };
