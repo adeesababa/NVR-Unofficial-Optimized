@@ -126,6 +126,12 @@ void main() {
                 vec3(1.0, 0.0, 1.0) * rtGuessShare + vec3(0.5) * (cubeShare + gridShare + skyShare);
         }
         else if (RtDebugView < 2.5) colour = rtT < 0.0 ? vec3(0.0) : rtT == 0.0 ? vec3(1.0, 0.0, 0.0) : vec3(1.0 - saturate(rtT / RtDistance) * 0.9);
+        else if (RtDebugView > 5.5) {
+            // 6 (2026-10-30) the fallbacks split: red the sky gradient (no clouds), blue the surroundings cube (holds the clouds where it
+            // saw them), grey the light grid, green everything the screen march or the rays answered.
+            float answered = confidence - cubeShare - gridShare - skyShare;
+            colour = vec3(1.0, 0.0, 0.0) * skyShare + vec3(0.0, 0.3, 1.0) * cubeShare + vec3(0.5) * gridShare + vec3(0.0, 1.0, 0.0) * answered;
+        }
         else if (RtDebugView > 4.5) {
             float expected = length(surfaceW), t = hitData.x;
             colour = !rayCast || t < 0.0 ? vec3(0.0) : t == 0.0 ? vec3(1.0, 0.0, 0.0) :
