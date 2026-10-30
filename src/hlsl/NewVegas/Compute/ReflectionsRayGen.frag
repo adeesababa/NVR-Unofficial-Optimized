@@ -97,5 +97,15 @@ void main() {
     bool wantRay = RtOn && ((RtFade(roughness) > 0.0 && (confidence < 0.999 || abs(RtDebugView - 3.0) < 0.5)) || abs(RtDebugView - 5.0) < 0.5);
     o_color = vec4(colour, confidence);
     o_dir = vec4(OctEncode(ViewToWorldDir(R)), 0.0, 0.0);
-    o_ray = vec4(depth, roughness + (wantRay ? 2.0 : 0.0), 0.0, 0.0);
+    // Ray budget by roughness (rt3.y = RoughShare's roughness, 0 off): above it, one pixel of each 2x2 block casts this frame (the
+    // pixel moves round the block frame by frame); the others are marked +4 and borrow its hit in ReflectionsRTResolve.frag.
+    bool borrow = false;
+    if (RtOn && RtFade(roughness) > 0.0 && rtc.rt3.y > 0.0 && roughness > rtc.rt3.y && abs(RtDebugView - 5.0) > 0.5) {
+        ivec2 q = ivec2(vpos) & 1;
+        bool caster = (q.x + 2 * q.y) == (int(NoiseFrame) & 3);
+        // The block's caster this frame casts even where the screen answered it (rtrefl-5 lucky22: otherwise its neighbours had no
+        // ray to borrow and fell back to the cube and the sky: 3.5 % of pixels darker than a ray per pixel); the others borrow.
+        if (caster) wantRay = true; else borrow = wantRay;
+    }
+    o_ray = vec4(depth, roughness + (borrow ? 4.0 : wantRay ? 2.0 : 0.0), 0.0, 0.0);
 }

@@ -11,21 +11,43 @@
 #include "Reflections.glsl"
 #include "ReflectionsRT.glsl"
 
+layout(location = 1) out vec4 o_spread;   // 2026-10-29: R16F, the hit's distance share (0 contact .. 1 far / unknown) for the blur passes
+
 void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 uv = (vpos + 0.5) * LowTexel;
     vec2 ray = texelFetch(sampler2D(t_rtRay, POINT_S), texel, 0).xy;
+    o_spread = vec4(1.0, 0.0, 0.0, 0.0);
     if (ray.x <= 0.0) { o_color = vec4(0.0); return; }   // RayGen: nothing reflects here
     vec4 march = texelFetch(sampler2D(t_rtMarch, POINT_S), texel, 0);
     vec4 hitData = texelFetch(sampler2D(t_rtHit, POINT_S), texel, 0);
     vec4 shade = texelFetch(sampler2D(t_rtShade, POINT_S), texel, 0);
-    uint hitFlags = uint(hitData.y + 0.5);
     vec3 worldR = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), texel, 0).xy);
+    bool borrowed = ray.y > 3.5;   // a rough pixel whose block's ray this frame was another pixel's (RayGen's budget)
     bool rayCast = ray.y > 1.5;
-    float roughness = ray.y - (rayCast ? 2.0 : 0.0);
+    float roughness = ray.y - (borrowed ? 4.0 : rayCast ? 2.0 : 0.0);
     vec2 pixelUV = uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy);   // RayGen's pixel centre in the block
     vec3 surfaceW = ViewToWorldDir(ViewPosition(pixelUV, ray.x));       // camera-relative
+    vec3 borrowHitW = vec3(0.0);
+    if (borrowed) {
+        // The block's casting pixel this frame (the same rule as RayGen): its hit point, a world point, shaded from here as our own.
+        ivec2 caster = (texel & ~1) + ivec2((int(NoiseFrame) & 3) & 1, (int(NoiseFrame) & 3) >> 1);
+        vec2 cRay = texelFetch(sampler2D(t_rtRay, POINT_S), caster, 0).xy;
+        vec4 cHit = texelFetch(sampler2D(t_rtHit, POINT_S), caster, 0);
+        if (cRay.y > 1.5 && cRay.y < 3.5 && cHit.x >= 0.0) {
+            vec2 cUV = (vec2(caster) + 0.5) * LowTexel - 0.5 * (LowTexel - cb.reciprocalResolution.xy);
+            vec3 cSurface = ViewToWorldDir(ViewPosition(cUV, cRay.x));
+            vec3 cDir = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), caster, 0).xy);
+            hitData = cHit;
+            shade = texelFetch(sampler2D(t_rtShade, POINT_S), caster, 0);
+            borrowHitW = cSurface + cDir * cHit.x;
+            if (cHit.x > 0.0) hitData.x = max(length(borrowHitW - surfaceW), 1.0e-3);   // our distance to it (for the views / the miss test)
+            rayCast = true;
+        }
+        else rayCast = false;   // no usable ray in the block: the old fallbacks
+    }
+    uint hitFlags = uint(hitData.y + 0.5);
     vec3 colour = march.rgb;
     float confidence = march.a;
 
@@ -40,8 +62,10 @@ void main() {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
+            // The hit's distance against the eye's (a reflection's blur grows with how far the reflected thing is from the surface).
+            o_spread = vec4(saturate(hitData.x / (hitData.x + ray.x * rtc.rt3.z)), 0.0, 0.0, 0.0);
             rtInstance = float(hitFlags & 15u);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
-            vec3 hitW = surfaceW + worldR * hitData.x;
+            vec3 hitW = borrowed ? borrowHitW : surfaceW + worldR * hitData.x;
             vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
             vec2 at = ToScreen(hitV);
             bool inView = hitV.z > nearZ && all(greaterThan(at, vec2(0.0))) && all(lessThan(at, vec2(1.0)));

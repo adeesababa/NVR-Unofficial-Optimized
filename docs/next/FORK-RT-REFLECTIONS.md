@@ -169,7 +169,63 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
-### 2026-10-29 16:58 noon again, rtrefl-4 (DLL 42db45eb: lamps, VNDF, RoughReach, the land self-hit skip, mask 0xEF)
+### 2026-10-29 19:26 hit-distance-aware blur (rtrefl-6; DLL adbea5a0, f79a0a7b): ContactSharpness 0.3 vs 1 (the old even blur)
+
+The runs are `bench/autotest/20261029-192624-slotA` (luxe) and `20261029-195738-slotA` (lucky22), all 9 shots each.
+- luxe: 0.32 % of pixels vs a 0.14 % floor; reflection alone 0.37 %. The differences sit on the edges where things meet the floor
+  (the fountain's base, counter and table edges): the contact sharpening acts where it should.
+- lucky22: 0.08 % vs 0.04 %; reflection alone 0.17 %.
+- **Verdict: works, small at these defaults.** In both rooms most hits are far from the surface compared with the eye's distance,
+  so the share is near 1 and the blur stays full. This becomes the main lever once the shared denoiser has a specular mode
+  (rt-sun-core's RtDenoise, 2026-10-29: one channel, no hit distance yet). Until then ContactSpread can go lower (sharper sooner)
+  at the price of more visible noise on rough floors. No measurable cost (a texture read in the blur; one more R16F target).
+
+### 2026-10-29 18:58 foliage in reflections: noon, `[Main.Main.RayTracing] AlphaTested` on (fork-0029, DLL b618044a, 77079aa2)
+
+The run is `bench/autotest/20261029-185845-slotA`, list rtrefl-3, all 9 shots. The core took the alpha-tested meshes (41877 met over 60
+exchanges, atlas 40 slots, 1334 instances), and my pass ran as ReflectionsRTAlpha (the cut-outs tested through RtAlpha.glsl).
+- **Only weakly verified.** Shots don't compare across launches: the two noon runs' SSR-only shots already differ on 41 % of pixels
+  (light). In this run, RT vs SSR is 23.9 % of pixels, +0.37/255 (rtrefl-4 noon without foliage: 24 %, +0.52). Less brightening is
+  what bushes blocking some of the sky in the wet ground's reflection would give. The alignment view cannot show it (a ground pixel
+  the screen shows is never behind a bush). A direct check needs a view of a reflecting surface behind or under foliage: a puddle
+  under a tree or a fence (a bench spot to find).
+- **Cost:** helper passes 2.7-3.2 ms (noon without foliage: exchange 1.9-2.3 ms); scene rebuild 0.28-0.34 ms with 1334 instances.
+
+### 2026-10-29 18:27 the ray budget (rtrefl-5; DLL 3142cb6b + shaders eed3580d): RoughShare + the key-lamp shadow ray only below roughness 0.25
+
+The runs are `bench/autotest/20261029-182734-slotA` (lucky22) and `20261029-184453-slotA` (luxe), all 9 shots each. Budget = RoughShare 0.3 (above
+roughness 0.3, one ray per 2x2 pixels a frame; the caster moves round the block, the others shade its hit point). Full = RoughShare 0.
+- **Cost (helper passes, the RT CORE lines):** luxe **4.7 ms** (6.0-9.8 in rtrefl-4), lucky22 **5.4-5.7 ms** (8.9-11.2). The
+  budget and the smooth-only lamp shadow take back what the lamp shadow ray cost, and the lamps stay. Exchange wait: luxe 5.6-6.0 ms,
+  lucky22 6.5-7.8 ms. (The first try, 20261029-181234: exchange 6.8-8.2 ms budget vs 9.8-10.9 full at lucky22.)
+- **Picture, budget vs full:** luxe 0.32 % of pixels vs a 0.14 % noise floor: the same. lucky22 3.3 % vs 0.07 %, mean -0.12/255
+  (the budget a little darker; reflection alone 13.7 %, -0.33). The first try's flaw was fixed in eed3580d: a block whose caster the
+  screen had answered gave its neighbours nothing to borrow. The fix barely moved lucky22 (3.5 -> 3.3 %), so what is left is not
+  missing rays. Most likely it is the averaging: four pixels sharing one sample, then averaged in the compressed (Tame) space, give a
+  slightly lower mean than four independent samples. Small; RoughShare can go up (rougher surfaces only) or to 0.
+
+### 2026-10-29 17:41 lucky22, rtrefl-4 (DLL 42db45eb), all 11 shots
+
+The run is `bench/autotest/20261029-174137-slotA`. Noise floor: 0.08 %.
+- **HitLamps** (rt vs rt-nolamps): 10.4 % of pixels, +0.33 brighter. The casino floor's reflection of what the camera cannot see
+  (the ceiling, the walls behind) now takes the red lanterns' light: a warmer red tint over the lower half, no blotches or odd
+  colours. **RT vs SSR**: 9.7 % (0.24 % before lamps, run 20261029-050819): in a lamp-lit room the lamps are most of what RT adds.
+- **VisibleNormals + RoughReach**: 4.65 %, -0.14.
+- **MaxRoughness 0.8**: 1.4 %, +0.16.
+- **Cost:** helper passes 8.9-11.2 ms (6.4 before), scene 0.6 ms, response 3.2-3.9 ms: the key-lamp shadow ray again (budget next).
+
+### 2026-10-29 17:23 luxe, rtrefl-4 (DLL 42db45eb), all 11 shots
+
+The run is `bench/autotest/20261029-172327-slotA`. Noise floor (pad-a vs pad-b): 0.20 %.
+- **HitLamps** (rt vs rt-nolamps): 1.0 % of pixels, lamps add light (+0.04). They brighten a wall patch behind the fountain and
+  floor areas reflecting what the camera cannot see.
+- **VisibleNormals + RoughReach** (rt vs rt-old): 0.77 %, -0.02.
+- **RT vs SSR**: 2.14 % (1.37 % with the earlier rays, run 20261029-043724).
+- **MaxRoughness 0.8** (reflection alone): 3.2 %, +0.27 (brighter: more of the rough floor reflects the room).
+- **Cost:** helper passes 6.0-9.8 ms (4.6 ms before this round), `Reflections trace (half)` 15-20 ms with RT (12.3 before), exchange
+  7.8-11 ms. **Most of the increase is the key-lamp shadow ray**, one more ray per indoor hit. Next: trace it only on smooth
+  surfaces (a sharp reflection shows the shadow; a rough one blurs it away), with the ray budget.
+ (DLL 42db45eb: lamps, VNDF, RoughReach, the land self-hit skip, mask 0xEF)
 
 The run is `bench/autotest/20261029-165859-slotA`, all 11 shots. Noise floor (pad-a vs pad-b): 10.5 % (wet ground), top half 0.4 %.
 - **The self-hit skip works**: the amber blotches are gone (reflection alone, shot 08).
