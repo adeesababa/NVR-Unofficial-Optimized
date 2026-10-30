@@ -16,6 +16,7 @@
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
 #include "RtCore.h"	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core
 #include "RtSunShadows.h"	// UNOFFICIAL 2026-10-28 RT sun shadows
+#include "Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (RayReconstructionFrameBegin)
 #include <unordered_map>	// UNOFFICIAL 2026-10-27 RenderScale v2 (RenderRect::RescaleRegistered)
 #include <vector>
 
@@ -1791,6 +1792,10 @@ void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
 }
 
 void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget) {
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (core/Upscaler.h; off by default: nothing changes): once a frame, before anything below
+	// (the RT point first of all), last frame's RR result becomes what the RT effects' denoisers go by this frame (RayReconstructionWantsRaw),
+	// and this frame's starts at "not run". (Before the early returns: a frame without the chain ran no RR either.)
+	Upscaler::RayReconstructionFrameBegin();
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
 	if (GameState.OverlayIsOn && TESMain::IsMenuBackgroundReady()) return; // disable all effects during terminal/lockpicking sequences
@@ -2145,8 +2150,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 #endif
 	const bool interiorApplies = interiorFoldable && !foldCheckFrame;
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (effects/TAAFSR.cpp RayReconstruct): a frame that goes to RR after the Reflections
+	// composite (below) applies its shadows and AO before that, in their own passes, not inside the fog, which runs after RR. Asked every
+	// frame, first (it notes the frame's plan for the RR point); false with RayReconstruction off (the default), and the fold is as before.
+	const bool rrPlanned = TAAEffect::RayReconstructionPlanned();
 	bool composite = (shadowApplies || aoApplies || interiorApplies) && !effectsBetween &&
-		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
+		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr) && !rrPlanned;
 	auto interiorApply = [&]() {	// the separate pass, as it ran before (and still runs when the fold cannot)
 		Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
 		{ Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface); PixelInspector::AfterFrame(Effects.ShadowsInteriors); }
@@ -2163,6 +2172,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur ? "off (DarkeningBlur)" :
 				effectsBetween ? "off (an effect between it and the fog reads the picture)" :
 				(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) ? "off (the Reflections surroundings cube reads the picture)" :
+				rrPlanned ? "off (DLSS Ray Reconstruction runs before the fog)" :	// UNOFFICIAL 2026-10-30
 				"off (the dedicated pass or the fog composite is unavailable, or this GPU's 16-bit rounding is unknown)");
 		}
 	}
@@ -2393,6 +2403,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 	}
+	// UNOFFICIAL 2026-10-30 the DLSS Ray Reconstruction point ([Shaders.TAA.DLSS] RayReconstruction, off by default; effects/TAAFSR.cpp,
+	// docs/next/FORK2-DLSS-RR.md): every RT composite is in the picture now and nothing after them is yet (froxels, fog, volumetric light,
+	// god rays, exposure, bloom, lens): DLSS-D denoises and anti-aliases it here, and TAA's resolve after the tonemap skips the frame. Off,
+	// or whenever it cannot run this frame (logged once): nothing happens.
+	if (Effects.TAA) Effects.TAA->RayReconstruct(Device, RenderTarget);
 	// UNOFFICIAL 2026-10-14 froxel grid ([Shaders.VolumetricLight.Main] Froxels): the volumetric light's grid is built before
 	// the fog, which reads it (its sunlight shaded along the view) and does the volumetric light's composite in its own last
 	// pass; the volumetric light below then only draws its composite if the fog could not.

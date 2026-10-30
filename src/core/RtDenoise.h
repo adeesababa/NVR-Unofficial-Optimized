@@ -9,6 +9,8 @@
 //   RtDenoise::Run(d, Device, noisyTexture, outputSurface, settings);   // once a frame, after the noisy signal is there
 // Run keeps its own history (2 RGBA16F screen textures + 2 for the a-trous chain); false: not run (no NVR DXVK, a pass missing):
 // use the noisy signal. Camera cuts (a jump of the camera) restart the history by themselves.
+// UNOFFICIAL 2026-10-30 DLSS RR (docs\next\FORK2-DLSS-RR.md): Run also returns false, without a pass, while Upscaler::
+// RayReconstructionWantsRaw() is true (DLSS Ray Reconstruction denoises the raw signal); every history restarts after such frames.
 
 namespace RtDenoise {
 	struct Settings {

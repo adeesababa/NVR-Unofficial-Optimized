@@ -3,6 +3,7 @@
 #include "RtDenoise.h"
 #include "DxvkCompute.h"
 #include "GpuProfiler.h"
+#include "Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS RR (RayReconstructionWantsRaw)
 
 #include <cmath>
 #include <string>
@@ -10,6 +11,9 @@
 namespace RtDenoise {
 	struct Denoiser {
 		std::string			name;
+		std::string			effect;					// UNOFFICIAL 2026-10-30 the caller's own name (the DLSS RR bypass' log line)
+		UInt32				rawSeen = 0;			// UNOFFICIAL 2026-10-30 rawGeneration when this one last ran (below)
+		bool				rawLogged = false;
 		IDirect3DTexture9*	history[2] = {};	// RGBA16F: value, second moment, history length, view depth (ping-pong by frame)
 		IDirect3DTexture9*	chain[2] = {};		// RGBA16F: the a-trous ping-pong
 		// RGB mode (Settings.Channels 3): A = (rgb, history length) in history / chain, B = (luma second moment, view depth) here
@@ -32,6 +36,9 @@ namespace RtDenoise {
 		ID3D9NvrExtPipeline* temporalRgb = nullptr;
 		ID3D9NvrExtPipeline* atrousRgb = nullptr;
 		bool tried = false;
+		// UNOFFICIAL 2026-10-30 DLSS RR: counts the calls Run skipped for RR (0 while it never did). A denoiser that ran before it changed
+		// holds a history from before those frames, also one its caller did not call meanwhile (RtLampShadows stops at rank 0).
+		UInt32 rawGeneration = 0;
 
 		IDirect3DBaseTexture9* Texture(const char* name) {
 			auto found = TheTextureManager->TextureNames.find(name);
@@ -93,12 +100,25 @@ namespace RtDenoise {
 
 	Denoiser* Create(const char* Name) {
 		Denoiser* d = new Denoiser();
-		d->name = std::string("RT denoise: ") + (Name ? Name : "RT denoiser");
+		d->effect = Name ? Name : "RT denoiser";
+		d->name = std::string("RT denoise: ") + d->effect;
 		d->timer = new GpuTimer(d->name.c_str());
 		return d;
 	}
 
 	bool Run(Denoiser* d, IDirect3DDevice9* Device, IDirect3DBaseTexture9* Noisy, IDirect3DSurface9* Output, const Settings& S) {
+		// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md): while RR denoises the frame (Upscaler::
+		// RayReconstructionWantsRaw: RR ran last frame, RayReconstruction on, RRKeepDenoisers off) no pass runs and the caller takes its
+		// noisy signal, as it does whenever this returns false. Every denoiser's history is dropped then (rawGeneration), so the first
+		// frame denoised again starts afresh instead of reprojecting from a camera of frames ago.
+		if (Upscaler::RayReconstructionWantsRaw()) {
+			rawGeneration++;
+			if (d && !d->rawLogged) {
+				d->rawLogged = true;
+				Logger::Log("UNOFFICIAL DLSS RR: %s: its own denoiser is skipped (RR denoises the raw signal)", d->effect.c_str());
+			}
+			return false;
+		}
 		if (!d || !Noisy || !Output || !DxvkCompute::Extension() || !DxvkCompute::PointClamp()) return false;
 		if (!tried) {
 			tried = true;
@@ -135,6 +155,7 @@ namespace RtDenoise {
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
 		const D3DXVECTOR3 camera(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
 		const D3DXVECTOR3 move = camera - d->prevCamera;
+		if (d->rawSeen != rawGeneration) { d->rawSeen = rawGeneration; d->hasHistory = false; }	// UNOFFICIAL 2026-10-30 DLSS RR (above)
 		const bool cut = !d->hasHistory || S.Reset || D3DXVec3Length(&move) > 512.0f;	// a jump: a camera cut, a load, a teleport
 
 		struct {

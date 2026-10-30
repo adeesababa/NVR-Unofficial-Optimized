@@ -152,14 +152,25 @@ IDirect3DBaseTexture9* TextureManager::GetFileTexture(std::string TexturePath, T
 	}
 
 	if (!Texture) {
-		Logger::Log("[ERROR] : Couldn't load texture file %s", TexturePath.c_str());
-		// NVR's own textures (Effects, Water, Precipitations) ship with the mod; when they are missing, effects still
-		// run but read black instead (ambient occlusion loses its noise pattern and bands, SMAA stops smoothing).
-		static bool hinted = false;
-		if (!hinted) {
-			hinted = true;
-			Logger::Log("[ERROR] : NVR's texture files are missing or incomplete (Data\\Textures\\Effects, Water, Precipitations). "
-				"Effects that use them will look wrong. Install the complete New Vegas Reloaded package, including its Textures folder.");
+		// UNOFFICIAL 2026-10-30 (tester log, P84 v4: "NVR's texture files are missing or incomplete" with every NVR texture loaded): the
+		// hint below came with ANY file that failed, and the one that failed was BloodFlow's optional loose replacer of a vanilla decal
+		// (Data\Textures\decals\fxbloodsplatterdecals01.dds; the game's own is inside its BSA, which this loader does not read). Only
+		// NVR's own folders get the error and the hint now; another path is a plain line (the effect that names it does without).
+		std::string lower = TexturePath;
+		for (char& c : lower) c = c == '/' ? '\\' : (char)tolower((unsigned char)c);
+		const bool nvrOwn = lower.find("textures\\effects\\") != std::string::npos || lower.find("textures\\water\\") != std::string::npos ||
+			lower.find("textures\\precipitations\\") != std::string::npos || lower.find("textures\\newvegasreloaded\\") != std::string::npos;
+		if (!nvrOwn) Logger::Log("Texture file %s is not there as a loose file (optional; the effect that names it does without)", TexturePath.c_str());
+		else {
+			Logger::Log("[ERROR] : Couldn't load texture file %s", TexturePath.c_str());
+			// NVR's own textures (Effects, Water, Precipitations) ship with the mod; when they are missing, effects still
+			// run but read black instead (ambient occlusion loses its noise pattern and bands, SMAA stops smoothing).
+			static bool hinted = false;
+			if (!hinted) {
+				hinted = true;
+				Logger::Log("[ERROR] : NVR's texture files are missing or incomplete (Data\\Textures\\Effects, Water, Precipitations). "
+					"Effects that use them will look wrong. Install the complete New Vegas Reloaded package, including its Textures folder.");
+			}
 		}
 	}
 	else Logger::Log("Loaded texture file %s", TexturePath.c_str());

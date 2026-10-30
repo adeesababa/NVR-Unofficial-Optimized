@@ -11,13 +11,17 @@
 //   CopyFromShared output -> NVR's texture (GPU)
 // Nobody waits on the CPU per frame. Fixed-size fields only (the two sides differ in pointer size); 8-byte alignment kept
 // by hand so both compilers lay the block out the same way (static_asserts below).
+//
+// UNOFFICIAL 2026-10-30 protocol 2 (DLSS Ray Reconstruction, docs/next/FORK2-DLSS-RR.md): four more images (the RR guides), made only
+// when NVR wants RR (features bit 0; imageCount 8, else 4); a frame with NVR_DLSS_FRAME_RR is evaluated by DLSS-D with the guides and
+// the frame's matrices instead of DLSS SR; DLSS SR's preset per frame; the helper reports rrAvailable separately (no RR never ends SR).
 
 #pragma once
 
 #include <stdint.h>
 
 #define NVR_DLSS_MAGIC            0x53534C44u   // 'DLSS'
-#define NVR_DLSS_PROTOCOL_VERSION 1u
+#define NVR_DLSS_PROTOCOL_VERSION 2u   // 2026-10-30: RR guides, presets, matrices
 #define NVR_DLSS_FRAME_RING       16u           // per-frame values kept; NVR never runs more than a few frames ahead
 
 // File mapping and event names: <base> is passed to the helper as "--shm <base>"; the events are <base>-frame (auto-reset,
@@ -38,11 +42,42 @@ enum NvrDlssState : uint32_t {
 };
 
 enum NvrDlssImage : uint32_t {
-	NVR_DLSS_IMAGE_COLOR  = 0,       // render size in the top-left of an input-size image
+	NVR_DLSS_IMAGE_COLOR  = 0,       // render size in the top-left of an input-size image (RR frames: linear HDR)
 	NVR_DLSS_IMAGE_DEPTH  = 1,       // r: device depth 0 near .. 1 far (not inverted)
 	NVR_DLSS_IMAGE_MOTION = 2,       // rg: previous uv - current uv, render size, unjittered
 	NVR_DLSS_IMAGE_OUTPUT = 3,       // display size, written whole by the helper every frame
-	NVR_DLSS_IMAGE_COUNT  = 4,
+	// UNOFFICIAL 2026-10-30 protocol 2: the RR guides (input size, render size in the top-left), only with NVR_DLSS_FEATURE_RR
+	NVR_DLSS_IMAGE_DIFFUSE_ALBEDO  = 4,   // rgba16f: rgb diffuse albedo
+	NVR_DLSS_IMAGE_SPECULAR_ALBEDO = 5,   // rgba16f: rgb specular albedo (integrated reflectance)
+	NVR_DLSS_IMAGE_NORMALS         = 6,   // rgba16f: xyz unit normal (camera-relative world space, view space with NVR_DLSS_RR_NORMALS_VIEW)
+	NVR_DLSS_IMAGE_ROUGHNESS       = 7,   // r16f: linear roughness
+	NVR_DLSS_IMAGE_COUNT_SR = 4,     // the images of a helper start without RR (imageCount)
+	NVR_DLSS_IMAGE_COUNT  = 8,       // the table's size; imageCount says how many were made (4 or 8). Inputs: every index but OUTPUT
+};
+
+// NvrDlssShared::features (NVR, setup)
+#define NVR_DLSS_FEATURE_RR       1u     // the RR images exist and NVR may send RR frames: the helper checks RR at start
+// NvrDlssFrame::flags (NVR, per frame)
+#define NVR_DLSS_FRAME_RR         1u     // evaluate DLSS-D (Ray Reconstruction) with the guides and the matrices, not DLSS SR
+// NvrDlssFrame::rrOptions (NVR, per frame; unverified NGX conventions a tester can flip, docs/next/FORK2-DLSS-RR.md)
+#define NVR_DLSS_RR_NORMALS_VIEW  1u     // the normals are in view space (else camera-relative world space)
+#define NVR_DLSS_RR_DEPTH_LINEAR  2u     // tell DLSS-D the depth is not hardware depth (DLSS.Use.HW.Depth 0; else 1)
+
+// NvrDlssFrame::preset: DLSS SR's model, NVR's own numbers ([Shaders.TAA.DLSS] Preset); the helper maps them to NGX's preset
+// letters per quality mode and re-creates the feature when it changes.
+enum NvrDlssPreset : uint32_t {
+	NVR_DLSS_PRESET_DEFAULT       = 0,   // no hint: the DLL's own choice (310.9.16: transformer K / M / L)
+	NVR_DLSS_PRESET_CNN           = 1,   // E; F at DLAA and Ultra Performance (NVIDIA's last CNN defaults)
+	NVR_DLSS_PRESET_TRANSFORMER   = 2,   // K at DLAA / Quality / Balanced, M at Performance, L at Ultra Performance
+	NVR_DLSS_PRESET_TRANSFORMER_J = 3,   // J everywhere
+	NVR_DLSS_PRESET_COUNT         = 4,
+};
+// NvrDlssFrame::rrPreset ([Shaders.TAA.DLSS] RRPreset)
+enum NvrDlssRrPreset : uint32_t {
+	NVR_DLSS_RR_PRESET_DEFAULT = 0,      // no hint
+	NVR_DLSS_RR_PRESET_D       = 1,      // NGX's RR preset D (4)
+	NVR_DLSS_RR_PRESET_E       = 2,      // NGX's RR preset E (5)
+	NVR_DLSS_RR_PRESET_COUNT   = 3,
 };
 
 // What the fork's ID3D9NvrExtSharedImage::GetInfo reported, plus the NT handle duplicated into the helper's process.
@@ -71,7 +106,14 @@ struct NvrDlssFrame {
 	float		preExposure;         // 1
 	float		frameTimeMs;
 	uint32_t	quality;             // NVSDK_NGX_PerfQuality_Value number (NVR picks it from render / display size)
-	uint32_t	flags;               // reserved
+	uint32_t	flags;               // NVR_DLSS_FRAME_* (protocol 2)
+	// ---- protocol 2 (2026-10-30)
+	uint32_t	preset;              // NvrDlssPreset (DLSS SR)
+	uint32_t	rrPreset;            // NvrDlssRrPreset (RR frames)
+	uint32_t	rrOptions;           // NVR_DLSS_RR_* (RR frames)
+	uint32_t	pad;
+	float		worldToView[16];     // RR frames: camera-relative view (rotation only), D3DX row-vector layout (row-major, v * M)
+	float		viewToClip[16];      // RR frames: the unjittered projection, the same layout
 };
 
 struct NvrDlssShared {
@@ -84,7 +126,7 @@ struct NvrDlssShared {
 	uint32_t	vendorId;            // of DXVK's Vulkan device
 	uint8_t		deviceLuid[8];
 	uint32_t	deviceLuidValid;
-	uint32_t	pad0;
+	uint32_t	imageCount;          // images made: NVR_DLSS_IMAGE_COUNT_SR, or NVR_DLSS_IMAGE_COUNT with NVR_DLSS_FEATURE_RR (protocol 2)
 	uint8_t		deviceUuid[16];
 	uint8_t		driverUuid[16];
 	NvrDlssImageDesc images[NVR_DLSS_IMAGE_COUNT];
@@ -93,7 +135,7 @@ struct NvrDlssShared {
 	uint32_t	displayWidth, displayHeight;
 	uint32_t	inputWidth, inputHeight;
 	uint32_t	setupDone;           // 1 once everything above is filled in
-	uint32_t	pad1;
+	uint32_t	features;            // NVR_DLSS_FEATURE_* (protocol 2)
 
 	// ---- per frame, written by NVR (latestFrame last, with a release barrier)
 	volatile int64_t	latestFrame;
@@ -112,6 +154,11 @@ struct NvrDlssShared {
 	volatile uint32_t	responseUsMax;       // worst since the last report
 	volatile uint32_t	paramMismatches;     // frames whose values were overwritten before the helper read them
 	volatile uint32_t	dlssEvaluated;       // frames DLSS itself ran (0 in pass-through)
+	// ---- protocol 2 (2026-10-30), written by the helper
+	volatile uint32_t	rrAvailable;         // 1: RR frames are evaluated (DLSS-D, or the pass-through test); 0: NVR sends none (SR goes on)
+	volatile uint32_t	rrEvaluated;         // RR frames the helper evaluated (pass-through ones included)
+	volatile int32_t	rrResult;            // the last DLSS-D NGX result code (0 = none)
+	uint32_t			rrPad;
 	char				message[512];        // the last status line, NUL-terminated (the helper's log has them all)
 
 	// ---- written by NVR
@@ -121,6 +168,6 @@ struct NvrDlssShared {
 
 #ifdef __cplusplus
 static_assert(sizeof(NvrDlssImageDesc) == 56, "NvrDlssImageDesc layout");
-static_assert(sizeof(NvrDlssFrame) == 64, "NvrDlssFrame layout");
-static_assert(sizeof(NvrDlssShared) == 1944, "NvrDlssShared layout (the same in the 32-bit and the 64-bit build)");
+static_assert(sizeof(NvrDlssFrame) == 208, "NvrDlssFrame layout");
+static_assert(sizeof(NvrDlssShared) == 4488, "NvrDlssShared layout (the same in the 32-bit and the 64-bit build)");
 #endif

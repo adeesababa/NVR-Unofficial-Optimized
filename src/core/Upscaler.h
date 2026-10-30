@@ -69,4 +69,43 @@ namespace Upscaler {
 	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run),
 	// 2 FSR 3.1 ([Shaders.TAA.FSR] Enabled + Version 1; FSR 2 from its first failure on, logged once).
 	IUpscaler*	Choose(int setting);
+
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md; [Shaders.TAA.DLSS] RayReconstruction, off by default):
+	// the DLSS helper's second NGX feature (DLSS-D), evaluated at the RR point of the pre-tonemap chain (TAAEffect::RayReconstruct,
+	// after the Reflections composite, native resolution only) instead of DLSS SR after the tonemap. The same helper, semaphores and
+	// frame counter as Dlss(): a frame goes either to DLSS SR (Evaluate) or to RR (EvaluateRayReconstruction), never both.
+	// Inputs' Color is the noisy lit picture decoded to linear HDR (Hdr true); Depth / Motion as the upscalers get them (FSRPrep's).
+	struct RrInputs : Inputs {
+		IDirect3DBaseTexture9*	DiffuseAlbedo = nullptr;	// rgba16f: rgb diffuse albedo
+		IDirect3DBaseTexture9*	SpecularAlbedo = nullptr;	// rgba16f: rgb specular albedo
+		IDirect3DBaseTexture9*	Normals = nullptr;			// rgba16f: xyz unit normal (camera-relative world space; view space with NormalsView)
+		IDirect3DBaseTexture9*	Roughness = nullptr;		// r16f: linear roughness
+		float	WorldToView[16] = {};	// camera-relative view (rotation only), D3DX row-vector layout
+		float	ViewToClip[16] = {};	// the unjittered projection, the same layout
+	};
+	struct RrOptions {
+		bool	Wanted = false;			// RayReconstruction (with [Shaders.TAA.DLSS] Enabled); a change restarts the helper (its images)
+		bool	KeepDenoisers = false;	// RRKeepDenoisers: NVR's own RT denoisers keep running under RR (A/B)
+		int		Preset = 0;				// Preset: DLSS SR's model (NvrDlssPreset: 0 default, 1 CNN, 2 transformer, 3 transformer J)
+		int		RrPreset = 0;			// RRPreset (NvrDlssRrPreset: 0 default, 1 D, 2 E)
+		bool	NormalsView = false;	// RRNormals 1: the normals guide in view space
+		bool	DepthLinear = false;	// RRDepthLinear: DLSS.Use.HW.Depth 0
+	};
+	// TAAEffect::UpdateSettings, every settings pass, next to DlssOptions.
+	void		DlssRrOptions(const RrOptions& Options);
+	const RrOptions& DlssRrSettings();
+	// True when an RR evaluate this frame can work: Wanted, the helper running with rrAvailable (RTX + nvngx_dlssd.dll + NGX's
+	// SuperSamplingDenoising, or the pass-through test). The RR point's own frame checks (native size, a world frame) are the caller's.
+	bool		RayReconstructionReady();
+	// This frame's DLSS-D: the inputs go to the helper, the result is in RayReconstructionOutput() (rgba16f, linear, display size).
+	// False: nothing was recorded (RR not ready, an input missing, the helper stopped): the caller leaves the frame alone, and DLSS SR
+	// (or FSR 2) runs after the tonemap as before.
+	bool		EvaluateRayReconstruction(IDirect3DDevice9* Device, const RrInputs& In);
+	IDirect3DTexture9*	RayReconstructionOutput();
+	// Once a frame, at the start of the pre-tonemap chain (before the RT point): last frame's RR result becomes this frame's
+	// WantsRaw, and this frame's starts at "not run".
+	void		RayReconstructionFrameBegin();
+	// The per-effect RT denoisers hand RR their raw signals this frame: RR ran last frame, Wanted, KeepDenoisers off. False: every
+	// effect runs exactly its old path.
+	bool		RayReconstructionWantsRaw();
 }

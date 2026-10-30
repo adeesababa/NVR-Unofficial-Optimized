@@ -7,6 +7,7 @@
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/RtAmbient.h"	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 #include "../core/MixCheck.h"	// UNOFFICIAL 2026-10-30 NvrDxvkMixCheck
+#include "../core/Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS RR (RayReconstructionWantsRaw: the RT estimate's blurs and history are skipped)
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -1094,6 +1095,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 	UINT passes = 0;
 	int blurred = 0;	// UNOFFICIAL 2026-10-25 (NVR DXVK): the buffer holding the blurred result (1 after the compute blur)
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md): this frame's estimate is the RT one (RtRaw / RtGI) and
+	// RR denoises the frame (Upscaler::RayReconstructionWantsRaw): no blur X / Y (Accumulate and Apply read buffer 0, the estimate as it
+	// is) and Accumulate keeps no history (share 0: it passes the estimate through into the targets Apply reads). Set by the RT estimate.
+	bool rrRaw = false;
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < 8 && SUCCEEDED(result); ++p) {
@@ -1103,6 +1108,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
 			if (p == 0 && prepared) continue;	// UNOFFICIAL 2026-10-21 (alrocks): RenderPrepare drew Prepare (and the smoothing) already
 			if (p == 3 && blurred) continue;	// the compute dispatch did blur Y too
+			if ((p == 2 || p == 3) && rrRaw) continue;	// UNOFFICIAL 2026-10-30 DLSS RR (above): no blurs, D3D9, Vulkan or compute
 			// UNOFFICIAL 2026-10-27 ComputeGI: the frame's light per prep texel first (its own F10 line), then (below) the GI pass in Estimate's place.
 			if (p == 1 && giOn && ExtOn()) {
 				static GpuTimer lightTimer("  Ambient light GI light (half)");
@@ -1180,6 +1186,19 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtVis ? rtVis : rtRaw, rtGIUsed ? (IDirect3DBaseTexture9*)rtGIUsed : (IDirect3DBaseTexture9*)rtRaw };
 							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView | (rtGI ? 0x100u : 0u), reduced);
 							if (drawn && rtGI) giDrawn = true;	// ComputeGI's accumulate and apply take the bounce light from here
+							// UNOFFICIAL 2026-10-30 DLSS RR (rrRaw above): Accumulate's history share 0 from here on (Estimate has read
+							// NVR_ALTemporal already; the passes after it read only .x's share from it, and .y / .z stay)
+							if (drawn && Upscaler::RayReconstructionWantsRaw()) {
+								rrRaw = true;
+								if (temporalHandle) {
+									D3DXVECTOR4 temporalData(0.0f, 0.0f, 0.0f, 0.0f);
+									Effect->GetVector(temporalHandle, &temporalData);
+									temporalData.x = 0.0f;
+									Effect->SetVector(temporalHandle, &temporalData);
+								}
+								static bool logged = false;
+								if (!logged) { logged = true; Logger::Log("UNOFFICIAL DLSS RR: AmbientLight: its own denoiser is skipped (RR denoises the raw signal)"); }
+							}
 						}
 						if (!drawn && giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
 						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);	// the first 2
@@ -1307,6 +1326,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		lastProj = TheRenderManager->projMatrix;
 		lastTime = now;
 		frameNumber++;
+		if (rrRaw) historyValid = false;	// UNOFFICIAL 2026-10-30 DLSS RR: an unblurred raw estimate; the next denoised frame starts afresh
 	}
 	else historyValid = false;
 	Device->SetRenderTarget(0, RenderTarget);

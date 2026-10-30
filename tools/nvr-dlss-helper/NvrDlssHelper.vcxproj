@@ -7,6 +7,8 @@
     /p:DlssDevDll=true                       (copy NVIDIA's development nvngx_dlss.dll with its on-screen overlay; testing only)
   Without the SDK folder it still builds, pass-through test only (NVR_DLSS_NO_SDK).
   NVIDIA's SDK files are never part of the NVR repository; nvngx_dlss.dll is copied next to the exe at build time.
+  UNOFFICIAL 2026-10-30: so is NVIDIA's Ray Reconstruction runtime nvngx_dlssd.dll, when the SDK folder has it (rel, or dev with
+  DlssDevDll=true, next to nvngx_dlss.dll); without it the helper runs DLSS SR only and reports Ray Reconstruction as not available.
 -->
 <Project DefaultTargets="Build" ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
@@ -88,6 +90,14 @@
     </PropertyGroup>
     <Copy SourceFiles="$(NgxDll)" DestinationFolder="$(OutDir)" Condition="Exists('$(NgxDll)')" />
     <Message Importance="high" Text="NvrDlssHelper: built with NVIDIA's DLSS SDK from $(DlssSdkDir); copied $(NgxDll)" />
+    <!-- UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction's runtime (nvngx_dlssd.dll), only when it is in the SDK folder. -->
+    <PropertyGroup>
+      <NgxDlssdDll Condition="'$(DlssDevDll)'=='true'">$(DlssDllDir)\dev\nvngx_dlssd.dll</NgxDlssdDll>
+      <NgxDlssdDll Condition="'$(DlssDevDll)'!='true'">$(DlssDllDir)\rel\nvngx_dlssd.dll</NgxDlssdDll>
+    </PropertyGroup>
+    <Copy SourceFiles="$(NgxDlssdDll)" DestinationFolder="$(OutDir)" Condition="Exists('$(NgxDlssdDll)')" />
+    <Message Importance="high" Condition="Exists('$(NgxDlssdDll)')" Text="NvrDlssHelper: copied $(NgxDlssdDll) (Ray Reconstruction)" />
+    <Message Importance="high" Condition="!Exists('$(NgxDlssdDll)')" Text="NvrDlssHelper: no $(NgxDlssdDll): Ray Reconstruction needs NVIDIA's nvngx_dlssd.dll next to the exe" />
   </Target>
   <Target Name="NoSdkNote" AfterTargets="Build" Condition="'$(DlssHaveSdk)'!='true'">
     <Message Importance="high" Text="NvrDlssHelper: NVIDIA's DLSS SDK not found at '$(DlssSdkDir)': built for the pass-through test only (NVR_DLSS_NO_SDK)" />

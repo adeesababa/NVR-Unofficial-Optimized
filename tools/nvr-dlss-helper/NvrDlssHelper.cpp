@@ -9,12 +9,21 @@
 // pass-through test, a stretch copy plus a marker) between a GPU wait for "inputs ready" = N and a signal of "output
 // ready" = N. The protocol is NvrDlssProtocol.h; docs/next/FORK2-DLSS.md in the NVR repository has the whole design.
 //
+// UNOFFICIAL 2026-10-30 protocol 2 (DLSS Ray Reconstruction, docs/next/FORK2-DLSS-RR.md): with NVR's RR switch on there are
+// eight images (four RR guides: diffuse albedo, specular albedo, normals, roughness), and a frame flagged NVR_DLSS_FRAME_RR is
+// evaluated by DLSS-D (NGX's RayReconstruction feature, nvngx_dlssd.dll next to the helper) instead of DLSS SR. RR has its
+// own NGX feature handle and parameter map; RR not available or failing only reports rrAvailable = 0, DLSS SR goes on. DLSS
+// SR also takes NVR's model preset per frame now (a hint per quality mode, set before the feature is made).
+//
 // Usage:
 //   NvrDlssHelper.exe --shm <name>   started by NVR (never by hand)
-//   NvrDlssHelper.exe --probe        prints the GPU, the Vulkan interop support and whether DLSS is available, then exits
+//   NvrDlssHelper.exe --probe        prints the GPU, the Vulkan interop support and whether DLSS (and Ray Reconstruction) is
+//                                    available, then exits
 //   NvrDlssHelper.exe --selftest     (or --selftest dlss: the child in DLSS mode; without DLSS it must give up cleanly) the whole cross-process exchange without the game: this process plays NVR's part
 //                                    (exports images and semaphores from a Vulkan device of its own), starts a second copy
 //                                    of itself in pass-through mode and checks the pixels and the order of 300 frames
+//   NvrDlssHelper.exe --selftest rr  the same with the RR exchange: eight images, every frame an RR frame, the four guides
+//                                    drawn as thumbnails by the pass-through child (--selftest dlss rr: the child in DLSS mode)
 // Only runs on NVIDIA GPUs (vendor 0x10DE): NVIDIA's licence for the DLSS SDK covers systems with NVIDIA GPUs only.
 
 #define WIN32_LEAN_AND_MEAN
@@ -168,6 +177,28 @@ namespace {
 	const uint32_t kCmdRing = 4;
 	const uint32_t kMarkerSize = 24;	// px, the pass-through test's marker boxes
 
+	// UNOFFICIAL 2026-10-30 protocol 2: the images' names (log lines) for the whole table; imageCount says how many exist.
+	const char* const kImageNames[NVR_DLSS_IMAGE_COUNT] = { "colour", "depth", "motion", "output", "diffuse albedo", "specular albedo",
+		"normals", "roughness" };
+	const uint32_t kGuideCount = NVR_DLSS_IMAGE_COUNT - NVR_DLSS_IMAGE_COUNT_SR;	// the RR guides: images 4..7
+
+	bool FileNextToHelper(const wchar_t* name) {
+		const DWORD attributes = GetFileAttributesW((g_exeDir + L"\\" + name).c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+	}
+
+	// UNOFFICIAL 2026-10-30 the pass-through RR test's guide thumbnails: along the output's bottom edge from the left, each a sixth
+	// of the output's width with the render rectangle's aspect, 16 px apart. False: the output is too small for the four.
+	bool GuideThumbnail(uint32_t outW, uint32_t outH, uint32_t renderW, uint32_t renderH, uint32_t index, VkOffset2D& at, VkExtent2D& size) {
+		const uint32_t gap = 16;
+		size.width = outW / 6;
+		size.height = renderW ? (uint32_t)((uint64_t)size.width * renderH / renderW) : 0;
+		if (!size.width || !size.height || gap + kGuideCount * (size.width + gap) > outW || size.height + 2 * gap > outH) return false;
+		at.x = (int32_t)(gap + index * (size.width + gap));
+		at.y = (int32_t)(outH - gap - size.height);
+		return true;
+	}
+
 	// ---------------------------------------------------------------------------------------------------------------------
 	// A Vulkan device on the GPU NVR's DXVK uses (matched by LUID, else UUID), with what the exchange and NGX need.
 
@@ -182,6 +213,7 @@ namespace {
 		VkPhysicalDeviceMemoryProperties memory = {};
 		uint32_t			timestampBits = 0;
 		bool				ngxExtensions = false;	// every device extension NGX asked for is enabled
+		bool				rrExtensions = false;	// UNOFFICIAL 2026-10-30: and every one NGX asked for Ray Reconstruction (only with wantRr)
 		PFN_vkGetMemoryWin32HandleKHR		getMemoryWin32Handle = nullptr;
 		PFN_vkGetSemaphoreWin32HandleKHR	getSemaphoreWin32Handle = nullptr;
 		PFN_vkImportSemaphoreWin32HandleKHR	importSemaphoreWin32Handle = nullptr;
@@ -201,7 +233,9 @@ namespace {
 		Log("NGX: %s", line.c_str());
 	}
 
-	NVSDK_NGX_FeatureDiscoveryInfo NgxDiscoveryInfo() {
+	// UNOFFICIAL 2026-10-30: feature = NVSDK_NGX_Feature_RayReconstruction for DLSS-D's own extension needs (the same project id,
+	// paths and log as DLSS SR's).
+	NVSDK_NGX_FeatureDiscoveryInfo NgxDiscoveryInfo(NVSDK_NGX_Feature feature = NVSDK_NGX_Feature_SuperSampling) {
 		if (g_ngxDataPath.empty()) {
 			wchar_t temp[MAX_PATH] = {};
 			GetTempPathW(MAX_PATH, temp);
@@ -216,7 +250,7 @@ namespace {
 		}
 		NVSDK_NGX_FeatureDiscoveryInfo info = {};
 		info.SDKVersion = NVSDK_NGX_Version_API;
-		info.FeatureID = NVSDK_NGX_Feature_SuperSampling;
+		info.FeatureID = feature;
 		info.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
 		info.Identifier.v.ProjectDesc.ProjectId = kNgxProjectId;
 		info.Identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
@@ -237,7 +271,9 @@ namespace {
 #endif
 
 	// match: LUID (8 bytes, when valid) or device UUID; null = the first NVIDIA GPU (probe / self-test exporter).
-	bool CreateVulkanDevice(VulkanDevice& vk, const uint8_t* luid, bool luidValid, const uint8_t* uuid, bool wantNgx) {
+	// UNOFFICIAL 2026-10-30 wantRr (with wantNgx): the instance and the device also get the extensions NGX asks for Ray
+	// Reconstruction (the union with DLSS SR's). Only when NVR wants RR, so a helper without it makes the same device as before.
+	bool CreateVulkanDevice(VulkanDevice& vk, const uint8_t* luid, bool luidValid, const uint8_t* uuid, bool wantNgx, bool wantRr = false) {
 		uint32_t loaderVersion = VK_API_VERSION_1_0;
 		PFN_vkEnumerateInstanceVersion enumerateVersion = (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion");
 		if (enumerateVersion) enumerateVersion(&loaderVersion);
@@ -263,8 +299,22 @@ namespace {
 				else Log("NGX wants the instance extension %s, which the loader does not have", ngxExts[i].extensionName);
 			}
 		}
+		if (wantNgx && wantRr) {
+			// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction's instance extensions, added to DLSS SR's. A failed query is only logged:
+			// RR then tries with SR's list, and a feature creation that fails turns RR off, never SR.
+			NVSDK_NGX_FeatureDiscoveryInfo discovery = NgxDiscoveryInfo(NVSDK_NGX_Feature_RayReconstruction);
+			uint32_t ngxCount = 0;
+			VkExtensionProperties* ngxExts = nullptr;
+			NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&discovery, &ngxCount, &ngxExts);
+			if (NVSDK_NGX_FAILED(r)) Log("NGX: Ray Reconstruction's instance extension query failed: %s", NgxResultString(r).c_str());
+			for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
+				if (HasExtension(instanceExts, ngxExts[i].extensionName)) AddUnique(enabledInstance, ngxExts[i].extensionName);
+				else Log("NGX wants the instance extension %s for Ray Reconstruction, which the loader does not have", ngxExts[i].extensionName);
+			}
+		}
 #else
 		(void)wantNgx;
+		(void)wantRr;
 #endif
 
 		VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -353,6 +403,23 @@ namespace {
 				for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
 					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, ngxExts[i].extensionName);
 					else { vk.ngxExtensions = false; Log("NGX wants the device extension %s, which the driver does not have", ngxExts[i].extensionName); }
+				}
+			}
+		}
+		vk.rrExtensions = false;
+		if (wantNgx && wantRr) {
+			// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction's device extensions, added to DLSS SR's. One the driver lacks turns RR off
+			// (InitNgx says why); a failed query is only logged (RR then tries with SR's list; a failed creation turns RR off).
+			vk.rrExtensions = true;
+			NVSDK_NGX_FeatureDiscoveryInfo discovery = NgxDiscoveryInfo(NVSDK_NGX_Feature_RayReconstruction);
+			uint32_t ngxCount = 0;
+			VkExtensionProperties* ngxExts = nullptr;
+			NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(vk.instance, vk.physical, &discovery, &ngxCount, &ngxExts);
+			if (NVSDK_NGX_FAILED(r)) Log("NGX: Ray Reconstruction's device extension query failed: %s (DLSS SR's extensions are used)", NgxResultString(r).c_str());
+			else {
+				for (uint32_t i = 0; i < ngxCount && ngxExts; i++) {
+					if (HasExtension(deviceExts, ngxExts[i].extensionName)) AddUnique(enabled, ngxExts[i].extensionName);
+					else { vk.rrExtensions = false; Log("NGX wants the device extension %s for Ray Reconstruction, which the driver does not have", ngxExts[i].extensionName); }
 				}
 			}
 		}
@@ -502,13 +569,26 @@ namespace {
 		uint64_t		gpuUs[64] = {}, responseUs[64] = {};
 		uint32_t		gpuCount = 0, responseCount = 0;
 		bool			loggedFirst = false;
+		// UNOFFICIAL 2026-10-30 protocol 2: the images NVR made (4, or 8 with the RR guides) and whether RR frames can come.
+		uint32_t		imageCount = NVR_DLSS_IMAGE_COUNT_SR;
+		bool			rrWanted = false;		// NVR_DLSS_FEATURE_RR with the eight images
+		bool			loggedFirstRr = false;
 #ifndef NVR_DLSS_NO_SDK
 		bool			ngxInit = false;
 		bool			dlssAvailable = false;
 		NVSDK_NGX_Parameter* ngxParams = nullptr;
 		NVSDK_NGX_Handle* dlss = nullptr;
-		uint32_t		dlssKey[6] = {};
+		uint32_t		dlssKey[7] = {};		// render, display, HDR, quality mode, preset (UNOFFICIAL 2026-10-30)
 		bool			dlssFailed = false;
+		bool			srPresetHints = false;	// UNOFFICIAL 2026-10-30: the preset hints were written once (a non-default preset)
+		// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (DLSS-D): its own feature handle and its own parameter map, so no RR key
+		// (DLSS.Denoise.Mode and the others, which nvngx_dlss.dll's SR creation reads too) ever reaches a DLSS SR creation or
+		// evaluate. Both features stay alive while frames alternate (re-creating one costs a vkDeviceWaitIdle).
+		NVSDK_NGX_Parameter* rrParams = nullptr;
+		NVSDK_NGX_Handle* dlssd = nullptr;
+		uint32_t		dlssdKey[7] = {};		// render, display, quality mode, RR preset, depth option
+		bool			rrFailed = false;
+		float			rrWorldToView[16] = {}, rrViewToClip[16] = {};	// the frame's matrices; NGX gets pointers to these
 #endif
 	};
 
@@ -545,6 +625,107 @@ namespace {
 	}
 
 #ifndef NVR_DLSS_NO_SDK
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (DLSS-D): the NGX string keys the helper uses that have no #define in the local
+	// SDK headers (NVIDIA's nvsdk_ngx_defs_dlssd.h and nvsdk_ngx_helpers_dlssd_vk.h are not in the local copy), each looked for as an
+	// exact line in the string dumps of nvngx_dlss.dll 310.9.16 ("rel") and of the driver's NGX core _nvngx.dll 32.0.15.8266
+	// ("core") on 2026-10-30:
+	//   SuperSamplingDenoising.Available              core: found verbatim (rel: not there)
+	//   SuperSamplingDenoising.NeedsUpdatedDriver     core: found verbatim
+	//   SuperSamplingDenoising.MinDriverVersionMajor  core: found verbatim
+	//   SuperSamplingDenoising.MinDriverVersionMinor  core: found verbatim
+	//   SuperSamplingDenoising.FeatureInitResult      core: found verbatim
+	//   DLSS.Denoise.Mode                             rel: found verbatim (core too). The value 1 (NVSDK_NGX_DLSS_Denoise_Mode_DLUnified) is
+	//                                                 from memory; rel holds the enum's names as strings, _Off then _DLUnified, next to
+	//                                                 "DLSS-D Mode %s (%d)", which fits Off 0 / DLUnified 1.
+	//   DLSS.Use.HW.Depth                             rel: found verbatim. 1 = hardware depth, 0 = linear depth: from memory.
+	//   DLSS.Roughness.Mode                           rel: found verbatim; deliberately not set (0, its default, is "unpacked": a roughness
+	//                                                 image of its own; from memory)
+	//   DLSS.Input.DiffuseAlbedo                      rel: found verbatim
+	//   DLSS.Input.SpecularAlbedo                     rel: found verbatim
+	//   DLSS.Input.Normals                            NOT found as such (only DLSS.Input.Normals.Subrect.Base.X/Y are). Believed (memory) to be
+	//                                                 a macro alias of GBuffer.Normals (#defined locally, found verbatim in rel): both are set.
+	//   DLSS.Input.Roughness                          NOT found as such (likewise); believed an alias of GBuffer.Roughness (#defined locally,
+	//                                                 found verbatim in rel): both are set.
+	//   WorldToViewMatrix                             rel: found verbatim (a float[16] by void pointer: memory)
+	//   ViewToClipMatrix                              rel: found verbatim (likewise)
+	//   RayReconstruction.Hint.Render.Preset.DLAA, .Quality, .Balanced, .Performance, .UltraPerformance, .UltraQuality
+	//                                                 rel: all six found verbatim (nvsdk_ngx_s.lib too). The values (Default 0, D 4, E 5) are
+	//                                                 the static library's debug types (NVSDK_NGX_RayReconstruction_Hint_Render_Preset).
+	// Every other key (Width, OutWidth, PerfQualityValue, DLSS.Feature.Create.Flags, Color, Depth, MotionVectors, Jitter.Offset.X,
+	// GBuffer.Normals, the DLSS SR preset hints, ...) is a #define of the local nvsdk_ngx_defs.h and is used by its macro name.
+	const char* const kRrKeyAvailable          = "SuperSamplingDenoising.Available";
+	const char* const kRrKeyNeedsUpdatedDriver = "SuperSamplingDenoising.NeedsUpdatedDriver";
+	const char* const kRrKeyMinDriverMajor     = "SuperSamplingDenoising.MinDriverVersionMajor";
+	const char* const kRrKeyMinDriverMinor     = "SuperSamplingDenoising.MinDriverVersionMinor";
+	const char* const kRrKeyFeatureInitResult  = "SuperSamplingDenoising.FeatureInitResult";
+	const char* const kRrKeyDenoiseMode        = "DLSS.Denoise.Mode";
+	const char* const kRrKeyUseHwDepth         = "DLSS.Use.HW.Depth";
+	const char* const kRrKeyDiffuseAlbedo      = "DLSS.Input.DiffuseAlbedo";
+	const char* const kRrKeySpecularAlbedo     = "DLSS.Input.SpecularAlbedo";
+	const char* const kRrKeyInputNormals       = "DLSS.Input.Normals";
+	const char* const kRrKeyInputRoughness     = "DLSS.Input.Roughness";
+	const char* const kRrKeyWorldToView        = "WorldToViewMatrix";
+	const char* const kRrKeyViewToClip         = "ViewToClipMatrix";
+	const int kRrDenoiseModeDLUnified = 1;
+
+	// UNOFFICIAL 2026-10-30 the presets: one hint per DLSS quality mode, in this order: DLAA, Quality, Balanced, Performance,
+	// Ultra Performance, Ultra Quality. DLSS SR's keys and letters are the local nvsdk_ngx_defs.h's; RR's keys are listed above.
+	const char* const kSrPresetKeys[6] = { NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
+		NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
+		NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality };
+	const unsigned int kSrPresetHints[NVR_DLSS_PRESET_COUNT][6] = {
+		{ NVSDK_NGX_DLSS_Hint_Render_Preset_Default, NVSDK_NGX_DLSS_Hint_Render_Preset_Default, NVSDK_NGX_DLSS_Hint_Render_Preset_Default,
+		  NVSDK_NGX_DLSS_Hint_Render_Preset_Default, NVSDK_NGX_DLSS_Hint_Render_Preset_Default, NVSDK_NGX_DLSS_Hint_Render_Preset_Default },
+		{ NVSDK_NGX_DLSS_Hint_Render_Preset_F, NVSDK_NGX_DLSS_Hint_Render_Preset_E, NVSDK_NGX_DLSS_Hint_Render_Preset_E,	// CNN
+		  NVSDK_NGX_DLSS_Hint_Render_Preset_E, NVSDK_NGX_DLSS_Hint_Render_Preset_F, NVSDK_NGX_DLSS_Hint_Render_Preset_E },
+		{ NVSDK_NGX_DLSS_Hint_Render_Preset_K, NVSDK_NGX_DLSS_Hint_Render_Preset_K, NVSDK_NGX_DLSS_Hint_Render_Preset_K,	// transformer
+		  NVSDK_NGX_DLSS_Hint_Render_Preset_M, NVSDK_NGX_DLSS_Hint_Render_Preset_L, NVSDK_NGX_DLSS_Hint_Render_Preset_K },
+		{ NVSDK_NGX_DLSS_Hint_Render_Preset_J, NVSDK_NGX_DLSS_Hint_Render_Preset_J, NVSDK_NGX_DLSS_Hint_Render_Preset_J,	// transformer J
+		  NVSDK_NGX_DLSS_Hint_Render_Preset_J, NVSDK_NGX_DLSS_Hint_Render_Preset_J, NVSDK_NGX_DLSS_Hint_Render_Preset_J },
+	};
+	const char* const kSrPresetNames[NVR_DLSS_PRESET_COUNT] = { "default (no hint)", "CNN (E; F at DLAA and Ultra Performance)",
+		"transformer (K; M at Performance, L at Ultra Performance)", "transformer J" };
+	const char* const kRrPresetKeys[6] = { "RayReconstruction.Hint.Render.Preset.DLAA", "RayReconstruction.Hint.Render.Preset.Quality",
+		"RayReconstruction.Hint.Render.Preset.Balanced", "RayReconstruction.Hint.Render.Preset.Performance",
+		"RayReconstruction.Hint.Render.Preset.UltraPerformance", "RayReconstruction.Hint.Render.Preset.UltraQuality" };
+	const unsigned int kRrPresetHints[NVR_DLSS_RR_PRESET_COUNT] = { 0, 4, 5 };	// default (no hint), D, E: the same in every mode
+	const char* const kRrPresetNames[NVR_DLSS_RR_PRESET_COUNT] = { "default (no hint)", "D", "E" };
+
+	// NVR's numbers, anything out of range = the default (no hint).
+	uint32_t SrPreset(uint32_t preset) { return preset < NVR_DLSS_PRESET_COUNT ? preset : (uint32_t)NVR_DLSS_PRESET_DEFAULT; }
+	uint32_t RrPreset(uint32_t preset) { return preset < NVR_DLSS_RR_PRESET_COUNT ? preset : (uint32_t)NVR_DLSS_RR_PRESET_DEFAULT; }
+
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction's capability keys (the driver NGX core's), from the capability parameters DLSS
+	// SR's check reads. True: RR can be tried (its feature creation still decides); false with the reason. Reads only (the probe
+	// uses it too).
+	bool RayReconstructionCapability(Helper& h, std::string& why) {
+		if (!h.ngxParams) { why = "no NGX capability parameters"; return false; }
+		int available = 0, needsDriver = 0, initResult = 0;
+		unsigned int minMajor = 0, minMinor = 0;
+		const NVSDK_NGX_Result r = NVSDK_NGX_Parameter_GetI(h.ngxParams, kRrKeyAvailable, &available);
+		NVSDK_NGX_Parameter_GetI(h.ngxParams, kRrKeyNeedsUpdatedDriver, &needsDriver);
+		NVSDK_NGX_Parameter_GetUI(h.ngxParams, kRrKeyMinDriverMajor, &minMajor);
+		NVSDK_NGX_Parameter_GetUI(h.ngxParams, kRrKeyMinDriverMinor, &minMinor);
+		NVSDK_NGX_Parameter_GetI(h.ngxParams, kRrKeyFeatureInitResult, &initResult);
+		const bool dll = FileNextToHelper(L"nvngx_dlssd.dll");
+		char text[384];
+		if (NVSDK_NGX_FAILED(r))
+			snprintf(text, sizeof(text), "the driver's NGX does not report it: no SuperSamplingDenoising.Available, %s%s", NgxResultString(r).c_str(),
+				dll ? "" : "; nvngx_dlssd.dll is not next to the helper either");
+		else if (!available) {
+			if (needsDriver) snprintf(text, sizeof(text), "the driver is too old: %u.%u or newer needed", minMajor, minMinor);
+			else if (!dll) snprintf(text, sizeof(text), "nvngx_dlssd.dll, NVIDIA's Ray Reconstruction runtime, is not next to the helper");
+			else snprintf(text, sizeof(text), "SuperSamplingDenoising not available, init result %s", NgxResultString((NVSDK_NGX_Result)initResult).c_str());
+		}
+		else if (!h.vk.rrExtensions) snprintf(text, sizeof(text), "the driver lacks a Vulkan extension NGX asked for it, see the log");
+		else {
+			if (!dll) Log("NGX: Ray Reconstruction is reported available although nvngx_dlssd.dll is not next to the helper (NGX found one elsewhere)");
+			return true;
+		}
+		why = text;
+		return false;
+	}
+
 	// NGX init and the capability check. Not available (any GTX card, an old driver, no nvngx_dlss.dll): logged, false.
 	bool InitNgx(Helper& h) {
 		NVSDK_NGX_FeatureDiscoveryInfo discovery = NgxDiscoveryInfo();
@@ -600,6 +781,23 @@ namespace {
 		}
 		h.dlssAvailable = true;
 		Status("NGX: DLSS available on %s", h.vk.properties.deviceName);
+		if (h.mode == NVR_DLSS_MODE_DLSS && h.rrWanted && g_shared) {
+			// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction, only when NVR made the RR images: available or not, DLSS SR runs on (this
+			// never returns false). RR's own parameter map is made here, so a failure shows before the first frame.
+			std::string why;
+			bool rr = RayReconstructionCapability(h, why);
+			if (rr) {
+				r = NVSDK_NGX_VULKAN_AllocateParameters(&h.rrParams);
+				if (NVSDK_NGX_FAILED(r) || !h.rrParams) {
+					rr = false;
+					h.rrParams = nullptr;
+					why = "no parameter map of its own: " + NgxResultString(r);
+				}
+			}
+			g_shared->rrAvailable = rr ? 1u : 0u;
+			if (rr) Status("NGX: Ray Reconstruction available on %s", h.vk.properties.deviceName);
+			else Status("NGX: Ray Reconstruction not available (%s); DLSS SR goes on", why.c_str());
+		}
 		return true;
 	}
 
@@ -615,16 +813,24 @@ namespace {
 	}
 
 	// The DLSS feature for these sizes / HDR / quality, (re)created inside this frame's command buffer when they change.
+	// UNOFFICIAL 2026-10-30: and NVR's model preset ([Shaders.TAA.DLSS] Preset), whose hints are read at creation only.
 	bool EnsureDlss(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f) {
 		const SharedImage& out = h.images[NVR_DLSS_IMAGE_OUTPUT];
 		const uint32_t quality = (uint32_t)QualityFor(f.renderWidth, out.width);
-		const uint32_t key[6] = { f.renderWidth, f.renderHeight, out.width, out.height, f.hdr, quality };
+		const uint32_t preset = SrPreset(f.preset);
+		const uint32_t key[7] = { f.renderWidth, f.renderHeight, out.width, out.height, f.hdr, quality, preset };
 		if (h.dlss && !memcmp(key, h.dlssKey, sizeof(key))) return true;
 		if (h.dlss) {
 			vkDeviceWaitIdle(h.vk.device);
 			NVSDK_NGX_VULKAN_ReleaseFeature(h.dlss);
 			h.dlss = nullptr;
 		}
+		// UNOFFICIAL 2026-10-30 all six hints, once a preset other than the default was asked for (the default then writes 0 = no
+		// hint, which clears the earlier choice on this parameter map). Until then nothing is written: the parameter map is exactly
+		// what it was before presets existed.
+		if (preset != NVR_DLSS_PRESET_DEFAULT) h.srPresetHints = true;
+		if (h.srPresetHints)
+			for (int mode = 0; mode < 6; mode++) NVSDK_NGX_Parameter_SetUI(h.ngxParams, kSrPresetKeys[mode], kSrPresetHints[preset][mode]);
 		NVSDK_NGX_DLSS_Create_Params create = {};
 		create.Feature.InWidth = f.renderWidth;
 		create.Feature.InHeight = f.renderHeight;
@@ -636,13 +842,65 @@ namespace {
 		create.InEnableOutputSubrects = false;
 		NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT1(h.vk.device, cmd, 1, 1, &h.dlss, h.ngxParams, &create);
 		if (NVSDK_NGX_FAILED(r) || !h.dlss) {
-			Status("NGX: DLSS feature creation failed (%ux%u -> %ux%u, %s, quality mode %u): %s", f.renderWidth, f.renderHeight, out.width, out.height,
-				f.hdr ? "HDR" : "LDR", quality, NgxResultString(r).c_str());
+			Status("NGX: DLSS feature creation failed (%ux%u -> %ux%u, %s, quality mode %u, preset %s): %s", f.renderWidth, f.renderHeight, out.width,
+				out.height, f.hdr ? "HDR" : "LDR", quality, kSrPresetNames[preset], NgxResultString(r).c_str());
 			h.dlss = nullptr;
 			return false;
 		}
 		memcpy(h.dlssKey, key, sizeof(key));
-		Log("NGX: DLSS feature made: %ux%u -> %ux%u, %s, quality mode %u", f.renderWidth, f.renderHeight, out.width, out.height, f.hdr ? "HDR" : "LDR", quality);
+		Log("NGX: DLSS feature made: %ux%u -> %ux%u, %s, quality mode %u, preset %s", f.renderWidth, f.renderHeight, out.width, out.height,
+			f.hdr ? "HDR" : "LDR", quality, kSrPresetNames[preset]);
+		return true;
+	}
+
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction: the DLSS-D feature for these sizes / quality mode / RR preset / depth kind,
+	// (re)created inside this frame's command buffer when they change, on RR's own parameter map. The keys are the ones NVIDIA's
+	// NGX_VULKAN_CREATE_DLSS_EXT1 sets (nvsdk_ngx_helpers_vk.h) plus DLSS-D's denoise mode, depth kind and preset hints; NVIDIA's
+	// own DLSS-D helper (not in the local SDK) is believed to set the same, with NVSDK_NGX_Feature_RayReconstruction.
+	bool EnsureDlssd(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f) {
+		const SharedImage& out = h.images[NVR_DLSS_IMAGE_OUTPUT];
+		if (!h.rrParams) {
+			Status("NGX: Ray Reconstruction feature creation failed (no parameter map); DLSS SR goes on");
+			return false;
+		}
+		const uint32_t quality = (uint32_t)QualityFor(f.renderWidth, out.width);
+		const uint32_t rrPreset = RrPreset(f.rrPreset);
+		const uint32_t depthLinear = (f.rrOptions & NVR_DLSS_RR_DEPTH_LINEAR) ? 1u : 0u;
+		const uint32_t key[7] = { f.renderWidth, f.renderHeight, out.width, out.height, quality, rrPreset, depthLinear };
+		if (h.dlssd && !memcmp(key, h.dlssdKey, sizeof(key))) return true;
+		if (h.dlssd) {
+			vkDeviceWaitIdle(h.vk.device);
+			NVSDK_NGX_VULKAN_ReleaseFeature(h.dlssd);
+			h.dlssd = nullptr;
+		}
+		NVSDK_NGX_Parameter* p = h.rrParams;
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_CreationNodeMask, 1);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_VisibilityNodeMask, 1);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_Width, f.renderWidth);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_Height, f.renderHeight);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_OutWidth, out.width);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_OutHeight, out.height);
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_PerfQualityValue, (int)quality);
+		// RR frames are always linear HDR (the pre-tonemap RR point), with DLSS's own exposure as for DLSS SR's HDR frames.
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+			NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure);
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
+		NVSDK_NGX_Parameter_SetI(p, kRrKeyDenoiseMode, kRrDenoiseModeDLUnified);
+		NVSDK_NGX_Parameter_SetI(p, kRrKeyUseHwDepth, depthLinear ? 0 : 1);
+		// DLSS.Roughness.Mode is not set: its default (unpacked) is a roughness image of its own, which NVR sends.
+		for (int mode = 0; mode < 6; mode++) NVSDK_NGX_Parameter_SetUI(p, kRrPresetKeys[mode], kRrPresetHints[rrPreset]);
+		NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_CreateFeature1(h.vk.device, cmd, NVSDK_NGX_Feature_RayReconstruction, p, &h.dlssd);
+		if (g_shared) g_shared->rrResult = (int32_t)r;
+		if (NVSDK_NGX_FAILED(r) || !h.dlssd) {
+			Status("NGX: Ray Reconstruction feature creation failed (%ux%u -> %ux%u, quality mode %u, RR preset %s, %s depth): %s; DLSS SR goes on",
+				f.renderWidth, f.renderHeight, out.width, out.height, quality, kRrPresetNames[rrPreset], depthLinear ? "linear" : "hardware",
+				NgxResultString(r).c_str());
+			h.dlssd = nullptr;
+			return false;
+		}
+		memcpy(h.dlssdKey, key, sizeof(key));
+		Log("NGX: Ray Reconstruction feature made: %ux%u -> %ux%u, quality mode %u, RR preset %s, %s depth", f.renderWidth, f.renderHeight,
+			out.width, out.height, quality, kRrPresetNames[rrPreset], depthLinear ? "linear" : "hardware");
 		return true;
 	}
 #endif
@@ -693,20 +951,56 @@ namespace {
 			VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 	}
 
+	// UNOFFICIAL 2026-10-30 the pass-through test of an RR frame (NVR's HelperTest with RayReconstruction, any NVIDIA GPU): the same
+	// stretch and marker, then the four guides' render rectangles as thumbnails along the bottom edge (GuideThumbnail), so a look
+	// at the game shows that NVR's guides arrive. The blits convert the formats: roughness (R16F) shows as red, and the normals'
+	// negative parts as black.
+	void RecordPassThroughRR(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, uint64_t frame) {
+		RecordPassThrough(h, cmd, f, frame);
+		const SharedImage& out = h.images[NVR_DLSS_IMAGE_OUTPUT];
+		const SharedImage& in = h.images[NVR_DLSS_IMAGE_COLOR];
+		const uint32_t rw = std::max(1u, std::min(f.renderWidth, in.width)), rh = std::max(1u, std::min(f.renderHeight, in.height));
+		VkOffset2D at = {};
+		VkExtent2D size = {};
+		if (h.imageCount < NVR_DLSS_IMAGE_COUNT || !GuideThumbnail(out.width, out.height, rw, rh, 0, at, size)) return;
+		// The pass-through's last barrier already made its writes available; this one orders the blits after them explicitly.
+		Barrier(cmd, out.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		for (uint32_t g = 0; g < kGuideCount; g++) {
+			const SharedImage& guide = h.images[NVR_DLSS_IMAGE_DIFFUSE_ALBEDO + g];
+			if (!GuideThumbnail(out.width, out.height, rw, rh, g, at, size)) break;
+			Barrier(cmd, guide.image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			VkImageBlit blit = {};
+			blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			blit.srcOffsets[1] = { (int32_t)std::min(rw, guide.width), (int32_t)std::min(rh, guide.height), 1 };
+			blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			blit.dstOffsets[0] = { at.x, at.y, 0 };
+			blit.dstOffsets[1] = { at.x + (int32_t)size.width, at.y + (int32_t)size.height, 1 };
+			vkCmdBlitImage(cmd, guide.image, VK_IMAGE_LAYOUT_GENERAL, out.image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_LINEAR);
+		}
+		Barrier(cmd, out.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+	}
+
 #ifndef NVR_DLSS_NO_SDK
 	// DLSS: inputs to SHADER_READ_ONLY_OPTIMAL and the output to GENERAL for NGX, everything back to GENERAL (the fork's layout).
+	// UNOFFICIAL 2026-10-30 protocol 2: DLSS SR's inputs are named (colour, depth, motion), not "every index below OUTPUT": the RR
+	// guides come after OUTPUT and are not DLSS SR's.
+	const uint32_t kSrInputs[3] = { NVR_DLSS_IMAGE_COLOR, NVR_DLSS_IMAGE_DEPTH, NVR_DLSS_IMAGE_MOTION };
+
 	bool RecordDlss(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f) {
 		if (!EnsureDlss(h, cmd, f)) return false;
 		const VkImageLayout read = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_OUTPUT; i++)
+		for (uint32_t i : kSrInputs)
 			Barrier(cmd, h.images[i].image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, read,
 				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 		const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-		NVSDK_NGX_Resource_VK res[NVR_DLSS_IMAGE_COUNT];
-		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_COUNT; i++) {
+		NVSDK_NGX_Resource_VK res[NVR_DLSS_IMAGE_COUNT] = {};
+		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_COUNT_SR; i++) {
 			const SharedImage& s = h.images[i];
 			res[i] = NVSDK_NGX_Create_ImageView_Resource_VK(s.view, s.image, range, s.format, s.width, s.height, i == NVR_DLSS_IMAGE_OUTPUT);
 		}
@@ -727,13 +1021,98 @@ namespace {
 		NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, h.dlss, h.ngxParams, &eval);
 		if (g_shared) g_shared->ngxResult = (int32_t)r;
 
-		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_OUTPUT; i++)
+		for (uint32_t i : kSrInputs)
 			Barrier(cmd, h.images[i].image, VK_ACCESS_SHADER_READ_BIT, 0, read, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 		if (NVSDK_NGX_FAILED(r)) {
 			Status("NGX: DLSS evaluate failed: %s", NgxResultString(r).c_str());
+			return false;
+		}
+		return true;
+	}
+
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (DLSS-D) on an RR frame: as RecordDlss, with all seven inputs (every image but
+	// OUTPUT) and the keys NVIDIA's NGX_VULKAN_EVALUATE_DLSS_EXT sets (the same names), plus the guides and the matrices, on RR's own
+	// parameter map. False: logged, RR is off from here on (the caller runs DLSS SR on the same colour into the same command buffer:
+	// the inputs are back in GENERAL whatever the evaluate did).
+	bool RecordDlssd(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f) {
+		if (!EnsureDlssd(h, cmd, f)) return false;
+		const VkImageLayout read = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		for (uint32_t i = 0; i < h.imageCount; i++) {
+			if (i == NVR_DLSS_IMAGE_OUTPUT) continue;
+			Barrier(cmd, h.images[i].image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, read,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		}
+		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+		const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		NVSDK_NGX_Resource_VK res[NVR_DLSS_IMAGE_COUNT] = {};
+		for (uint32_t i = 0; i < h.imageCount; i++) {
+			const SharedImage& s = h.images[i];
+			res[i] = NVSDK_NGX_Create_ImageView_Resource_VK(s.view, s.image, range, s.format, s.width, s.height, i == NVR_DLSS_IMAGE_OUTPUT);
+		}
+		// NGX takes the matrices by pointer: copies that outlive this call (the frame ring's slot may be rewritten by NVR meanwhile).
+		memcpy(h.rrWorldToView, f.worldToView, sizeof(h.rrWorldToView));
+		memcpy(h.rrViewToClip, f.viewToClip, sizeof(h.rrViewToClip));
+
+		NVSDK_NGX_Parameter* p = h.rrParams;
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_Color, &res[NVR_DLSS_IMAGE_COLOR]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_Output, &res[NVR_DLSS_IMAGE_OUTPUT]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_Depth, &res[NVR_DLSS_IMAGE_DEPTH]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_MotionVectors, &res[NVR_DLSS_IMAGE_MOTION]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeyDiffuseAlbedo, &res[NVR_DLSS_IMAGE_DIFFUSE_ALBEDO]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeySpecularAlbedo, &res[NVR_DLSS_IMAGE_SPECULAR_ALBEDO]);
+		// (also under the GBuffer names, as the normals and roughness are: NGX ignores keys it does not read)
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_GBuffer_DiffuseAlbedo, &res[NVR_DLSS_IMAGE_DIFFUSE_ALBEDO]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_GBuffer_SpecularAlbedo, &res[NVR_DLSS_IMAGE_SPECULAR_ALBEDO]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_GBuffer_Normals, &res[NVR_DLSS_IMAGE_NORMALS]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeyInputNormals, &res[NVR_DLSS_IMAGE_NORMALS]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, NVSDK_NGX_Parameter_GBuffer_Roughness, &res[NVR_DLSS_IMAGE_ROUGHNESS]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeyInputRoughness, &res[NVR_DLSS_IMAGE_ROUGHNESS]);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeyWorldToView, h.rrWorldToView);
+		NVSDK_NGX_Parameter_SetVoidPointer(p, kRrKeyViewToClip, h.rrViewToClip);
+		// The scalars, as NGX_VULKAN_EVALUATE_DLSS_EXT sets them for DLSS SR (its zero-or-one defaults included).
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_X, f.jitterX);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Jitter_Offset_Y, f.jitterY);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_Sharpness, 0.0f);
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_Reset, f.reset ? 1 : 0);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_MV_Scale_X, f.mvScaleX == 0.0f ? 1.0f : f.mvScaleX);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_MV_Scale_Y, f.mvScaleY == 0.0f ? 1.0f : f.mvScaleY);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_TonemapperType, 0);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, f.frameTimeMs);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Translucency_SubrectBase_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Translucency_SubrectBase_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, f.renderWidth);
+		NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, f.renderHeight);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, f.preExposure > 0.0f ? f.preExposure : 1.0f);
+		NVSDK_NGX_Parameter_SetF(p, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Indicator_Invert_X_Axis, 0);
+		NVSDK_NGX_Parameter_SetI(p, NVSDK_NGX_Parameter_DLSS_Indicator_Invert_Y_Axis, 0);
+		NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_EvaluateFeature_C(cmd, h.dlssd, p, nullptr);
+		if (g_shared) g_shared->rrResult = (int32_t)r;
+
+		for (uint32_t i = 0; i < h.imageCount; i++) {
+			if (i == NVR_DLSS_IMAGE_OUTPUT) continue;
+			Barrier(cmd, h.images[i].image, VK_ACCESS_SHADER_READ_BIT, 0, read, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		}
+		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		if (NVSDK_NGX_FAILED(r)) {
+			Status("NGX: Ray Reconstruction evaluate failed: %s; DLSS SR goes on", NgxResultString(r).c_str());
 			return false;
 		}
 		return true;
@@ -797,16 +1176,38 @@ namespace {
 			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, h.queries, slot * 2);
 		}
 		bool dlssRan = false;
+		// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction: an RR frame (only possible with the eight images) goes to DLSS-D while RR is
+		// available, else to DLSS SR on the same colour (the picture stays whole; NVR stops sending RR frames once it sees
+		// rrAvailable 0). In the pass-through test it is the stretch plus the guide thumbnails. Either way the frame is submitted.
+		const bool rrFrame = (use.flags & NVR_DLSS_FRAME_RR) != 0 && h.rrWanted;
+		bool rrRan = false;
 #ifndef NVR_DLSS_NO_SDK
 		if (h.mode == NVR_DLSS_MODE_DLSS && h.dlssAvailable && !h.dlssFailed && f.frame == frame) {
-			dlssRan = RecordDlss(h, cmd, use);
-			if (!dlssRan) {
-				h.dlssFailed = true;
-				SetState(NVR_DLSS_STATE_FAILED);	// NVR goes back to FSR 2; this and the frames in flight are stretched
+			if (rrFrame && g_shared->rrAvailable && !h.rrFailed) {
+				rrRan = RecordDlssd(h, cmd, use);
+				if (!rrRan) {
+					h.rrFailed = true;
+					MemoryBarrier();
+					g_shared->rrAvailable = 0;	// never FAILED: that would end DLSS SR too
+					if (g_statusEvent) SetEvent(g_statusEvent);
+				}
+			}
+			if (!rrRan) {
+				dlssRan = RecordDlss(h, cmd, use);
+				if (!dlssRan) {
+					h.dlssFailed = true;
+					SetState(NVR_DLSS_STATE_FAILED);	// NVR goes back to FSR 2; this and the frames in flight are stretched
+				}
 			}
 		}
 #endif
-		if (!dlssRan) RecordPassThrough(h, cmd, use, frame);
+		if (!dlssRan && !rrRan) {
+			if (rrFrame && h.mode == NVR_DLSS_MODE_PASSTHROUGH) {
+				RecordPassThroughRR(h, cmd, use, frame);
+				rrRan = true;
+			}
+			else RecordPassThrough(h, cmd, use, frame);
+		}
 		if (h.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * 2 + 1);
 		VK_CHECK(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
@@ -838,18 +1239,29 @@ namespace {
 			if (us > g_shared->responseUsMax) g_shared->responseUsMax = (uint32_t)us;
 		}
 		if (dlssRan) g_shared->dlssEvaluated++;
+		if (rrRan) g_shared->rrEvaluated++;
 		g_shared->framesSubmitted++;
 		MemoryBarrier();
 		g_shared->submittedFrame = (int64_t)frame;
+		const char* const work = rrRan ? (h.mode == NVR_DLSS_MODE_DLSS ? "DLSS Ray Reconstruction" : "pass-through RR") : dlssRan ? "DLSS" : "pass-through";
 		if (!h.loggedFirst) {
 			h.loggedFirst = true;
-			Log("first frame %llu submitted (%s, render %ux%u -> %ux%u, %s)", (unsigned long long)frame, dlssRan ? "DLSS" : "pass-through",
+			Log("first frame %llu submitted (%s, render %ux%u -> %ux%u, %s)", (unsigned long long)frame, work,
 				use.renderWidth, use.renderHeight, h.images[NVR_DLSS_IMAGE_OUTPUT].width, h.images[NVR_DLSS_IMAGE_OUTPUT].height, use.hdr ? "HDR" : "LDR");
 		}
-		if ((frame % 600) == 0)
-			Log("frame %llu: %llu submitted, helper GPU %.3f ms avg, response %.3f ms avg (max %.3f), %u overwritten, %u DLSS",
+		if (rrRan && !h.loggedFirstRr) {
+			h.loggedFirstRr = true;
+			Log("first RR frame %llu submitted (%s, render %ux%u -> %ux%u, %s normals, %s depth)", (unsigned long long)frame, work, use.renderWidth,
+				use.renderHeight, h.images[NVR_DLSS_IMAGE_OUTPUT].width, h.images[NVR_DLSS_IMAGE_OUTPUT].height,
+				(use.rrOptions & NVR_DLSS_RR_NORMALS_VIEW) ? "view-space" : "world-space", (use.rrOptions & NVR_DLSS_RR_DEPTH_LINEAR) ? "linear" : "hardware");
+		}
+		if ((frame % 600) == 0) {
+			char rr[64] = "";
+			if (h.rrWanted) snprintf(rr, sizeof(rr), ", %u RR (%s)", g_shared->rrEvaluated, g_shared->rrAvailable ? "available" : "off");
+			Log("frame %llu: %llu submitted, helper GPU %.3f ms avg, response %.3f ms avg (max %.3f), %u overwritten, %u DLSS%s",
 				(unsigned long long)frame, (unsigned long long)g_shared->framesSubmitted, g_shared->gpuTimeUsAvg / 1000.0,
-				g_shared->responseUsAvg / 1000.0, g_shared->responseUsMax / 1000.0, g_shared->paramMismatches, g_shared->dlssEvaluated);
+				g_shared->responseUsAvg / 1000.0, g_shared->responseUsMax / 1000.0, g_shared->paramMismatches, g_shared->dlssEvaluated, rr);
+		}
 		return true;
 	}
 
@@ -893,12 +1305,28 @@ namespace {
 			shared->displayHeight, shared->inputWidth, shared->inputHeight);
 		auto fail = [&](const char* why) { if (why) Status("%s", why); SetState(NVR_DLSS_STATE_FAILED); return 3; };
 		if (shared->vendorId != kNvidiaVendor) return fail("not an NVIDIA GPU: the helper runs on NVIDIA GPUs only (NVIDIA's DLSS SDK licence)");
-		if (!CreateVulkanDevice(h.vk, shared->deviceLuid, shared->deviceLuidValid != 0, shared->deviceUuid, true)) return fail(nullptr);
+		// UNOFFICIAL 2026-10-30 protocol 2: four images, or eight (the RR guides) only together with NVR_DLSS_FEATURE_RR. The RR bit
+		// without the guides only means no RR (DLSS SR as before).
+		shared->rrAvailable = 0;
+		h.imageCount = shared->imageCount;
+		if (h.imageCount != NVR_DLSS_IMAGE_COUNT_SR && h.imageCount != NVR_DLSS_IMAGE_COUNT) {
+			char why[160];
+			snprintf(why, sizeof(why), "the shared block names %u images (%u or %u expected)", h.imageCount, (unsigned)NVR_DLSS_IMAGE_COUNT_SR,
+				(unsigned)NVR_DLSS_IMAGE_COUNT);
+			return fail(why);
+		}
+		const bool rrFeature = (shared->features & NVR_DLSS_FEATURE_RR) != 0;
+		if (h.imageCount == NVR_DLSS_IMAGE_COUNT && !rrFeature) return fail("the shared block has the RR guide images but not the RR feature bit");
+		h.rrWanted = rrFeature && h.imageCount == NVR_DLSS_IMAGE_COUNT;
+		if (rrFeature && !h.rrWanted) Log("NVR wants Ray Reconstruction but made no RR guide images: no Ray Reconstruction (DLSS SR as before)");
+		if (h.rrWanted) Log("Ray Reconstruction wanted: %u images (the colour, depth, motion and output, plus %u RR guides)", h.imageCount, kGuideCount);
+		// (RR's extensions only for real DLSS-D: the pass-through test's RR frames need no NGX.)
+		if (!CreateVulkanDevice(h.vk, shared->deviceLuid, shared->deviceLuidValid != 0, shared->deviceUuid, true,
+			h.rrWanted && h.mode == NVR_DLSS_MODE_DLSS)) return fail(nullptr);
 		if (memcmp(h.vk.ids.driverUUID, shared->driverUuid, VK_UUID_SIZE))
 			return fail("the helper's Vulkan driver is not the game's (driver UUIDs differ): images cannot be shared");
-		const char* names[NVR_DLSS_IMAGE_COUNT] = { "colour", "depth", "motion", "output" };
-		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_COUNT; i++)
-			if (!ImportImage(h.vk, shared->images[i], names[i], h.images[i])) return fail(nullptr);
+		for (uint32_t i = 0; i < h.imageCount; i++)
+			if (!ImportImage(h.vk, shared->images[i], kImageNames[i], h.images[i])) return fail(nullptr);
 		if (!ImportTimeline(h.vk, shared->semInputsReady, "inputs-ready", h.inputsReady) ||
 			!ImportTimeline(h.vk, shared->semOutputReady, "output-ready", h.outputReady)) return fail(nullptr);
 
@@ -927,8 +1355,12 @@ namespace {
 		if (h.mode == NVR_DLSS_MODE_DLSS) return fail("NGX: this helper was built without NVIDIA's DLSS SDK (pass-through test only)");
 		Status("NGX: not built in (pass-through test only)");
 #endif
-		Status("ready: %s on %s (%ux%u -> %ux%u)", h.mode == NVR_DLSS_MODE_DLSS ? "DLSS" : "pass-through test", h.vk.properties.deviceName,
-			shared->inputWidth, shared->inputHeight, shared->displayWidth, shared->displayHeight);
+		// UNOFFICIAL 2026-10-30 the pass-through test takes RR frames on any NVIDIA GPU (no NGX: the stretch plus the guide thumbnails).
+		if (h.mode == NVR_DLSS_MODE_PASSTHROUGH && h.rrWanted) shared->rrAvailable = 1;
+		char rrNote[64] = "";
+		if (h.rrWanted) snprintf(rrNote, sizeof(rrNote), ", Ray Reconstruction %s", shared->rrAvailable ? "available" : "not available");
+		Status("ready: %s on %s (%ux%u -> %ux%u)%s", h.mode == NVR_DLSS_MODE_DLSS ? "DLSS" : "pass-through test", h.vk.properties.deviceName,
+			shared->inputWidth, shared->inputHeight, shared->displayWidth, shared->displayHeight, rrNote);
 		SetState(NVR_DLSS_STATE_READY);
 
 		uint64_t next = 1;
@@ -963,6 +1395,11 @@ namespace {
 		Log("exit after %llu frames%s", (unsigned long long)shared->framesSubmitted, parentGone ? " (the game is gone)" : "");
 		// No vkDeviceWaitIdle / NGX shutdown here: a submission may still wait for a signal the game will never send (it exited);
 		// the process exit releases everything.
+		// UNOFFICIAL 2026-10-30: the DLSS SR and RR features likewise (ReleaseFeature may touch the GPU); only RR's own parameter map
+		// (CPU memory, no GPU work) is destroyed by hand.
+#ifndef NVR_DLSS_NO_SDK
+		if (h.rrParams) { NVSDK_NGX_VULKAN_DestroyParameters(h.rrParams); h.rrParams = nullptr; }
+#endif
 		if (g_log) fclose(g_log);
 		ExitProcess(0);
 	}
@@ -1060,7 +1497,8 @@ namespace {
 #endif
 		);
 		Helper h;
-		if (!CreateVulkanDevice(h.vk, nullptr, false, nullptr, true)) { Log("probe: no usable NVIDIA Vulkan device"); return 1; }
+		// UNOFFICIAL 2026-10-30: with Ray Reconstruction's extension needs too (logged), so its line below sees the same device.
+		if (!CreateVulkanDevice(h.vk, nullptr, false, nullptr, true, true)) { Log("probe: no usable NVIDIA Vulkan device"); return 1; }
 		Log("probe: %s, Vulkan %u.%u, external memory + semaphores (Win32): yes, timeline semaphores: yes", h.vk.properties.deviceName,
 			VK_VERSION_MAJOR(h.vk.properties.apiVersion), VK_VERSION_MINOR(h.vk.properties.apiVersion));
 		{
@@ -1108,10 +1546,19 @@ namespace {
 				vkFreeMemory(h.vk.device, image.memory, nullptr);
 			}
 		}
+		// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction: NVIDIA's runtime next to the helper, and NGX's own answer (only asked when
+		// DLSS SR is available: RR needs it).
+		const bool dlssdHere = FileNextToHelper(L"nvngx_dlssd.dll");
 #ifndef NVR_DLSS_NO_SDK
 		const bool dlss = InitNgx(h);
 		Log("probe: DLSS %s", dlss ? "AVAILABLE" : "not available (see the line above)");
+		std::string rrWhy = "DLSS is not available";
+		const bool rr = dlss && RayReconstructionCapability(h, rrWhy);
+		Log("probe: Ray Reconstruction (SuperSamplingDenoising.Available) %s%s%s; nvngx_dlssd.dll next to the helper: %s", rr ? "AVAILABLE" : "not available",
+			rr ? "" : ": ", rr ? "" : rrWhy.c_str(), dlssdHere ? "yes" : "no");
 		if (h.ngxInit) NVSDK_NGX_VULKAN_Shutdown1(h.vk.device);
+#else
+		Log("probe: Ray Reconstruction not built in; nvngx_dlssd.dll next to the helper: %s", dlssdHere ? "yes" : "no");
 #endif
 		DestroyVulkanDevice(h.vk);
 		return 0;
@@ -1119,11 +1566,20 @@ namespace {
 
 	// dlssMode: the child runs in DLSS mode instead. On a GPU without DLSS it must give up cleanly (FAILED + the NGX reason, the
 	// fallback NVR relies on): that is a PASS there; on an RTX GPU it must get READY and run the frames.
-	int RunSelfTest(bool dlssMode) {
+	// UNOFFICIAL 2026-10-30 rrMode: protocol 2's RR exchange, as NVR's HelperTest with RayReconstruction makes it: eight images (the
+	// guides cleared to known colours once), features RR, every frame an RR frame (identity matrices). The pass-through child must
+	// report rrAvailable, count every frame in rrEvaluated and draw each guide's colour in its thumbnail. In DLSS mode (any of
+	// them) the output is DLSS's, not the pass-through's: the frames must come back and be counted as DLSS SR or RR frames.
+	int RunSelfTest(bool dlssMode, bool rrMode) {
 		g_console = true;
-		OpenLog(dlssMode ? L"NvrDlssHelper-selftest-dlss.log" : L"NvrDlssHelper-selftest.log");
-		Log("NvrDlssHelper self-test: this process plays NVR + the fork, a child copy of itself is the helper (%s)", dlssMode ? "DLSS mode" : "pass-through");
+		OpenLog(dlssMode ? (rrMode ? L"NvrDlssHelper-selftest-dlss-rr.log" : L"NvrDlssHelper-selftest-dlss.log")
+			: (rrMode ? L"NvrDlssHelper-selftest-rr.log" : L"NvrDlssHelper-selftest.log"));
+		Log("NvrDlssHelper self-test: this process plays NVR + the fork, a child copy of itself is the helper (%s%s)", dlssMode ? "DLSS mode" : "pass-through",
+			rrMode ? ", Ray Reconstruction frames" : "");
 		const uint32_t displayW = 1280, displayH = 720, renderW = 960, renderH = 540;	// RenderScale 0.75
+		const uint32_t imageCount = rrMode ? NVR_DLSS_IMAGE_COUNT : NVR_DLSS_IMAGE_COUNT_SR;
+		// The guides' colours (diffuse albedo, specular albedo, normals, roughness: R16F keeps only the red one).
+		const float guideColours[kGuideCount][4] = { { 0.8f, 0.4f, 0.2f, 1.0f }, { 0.1f, 0.5f, 0.9f, 1.0f }, { 0.25f, 0.75f, 0.5f, 1.0f }, { 0.6f, 0.0f, 0.0f, 1.0f } };
 		VulkanDevice vk;
 		if (!CreateVulkanDevice(vk, nullptr, false, nullptr, false)) { Log("selftest FAILED: no NVIDIA Vulkan device"); return 1; }
 
@@ -1144,6 +1600,8 @@ namespace {
 		shared->deviceLuidValid = vk.ids.deviceLUIDValid;
 		memcpy(shared->deviceUuid, vk.ids.deviceUUID, 16);
 		memcpy(shared->driverUuid, vk.ids.driverUUID, 16);
+		shared->imageCount = imageCount;	// UNOFFICIAL 2026-10-30 protocol 2
+		shared->features = rrMode ? NVR_DLSS_FEATURE_RR : 0u;
 		HANDLE frameEvent = CreateEventW(nullptr, FALSE, FALSE, (std::wstring(base) + NVR_DLSS_EVENT_FRAME_SUFFIX).c_str());
 		HANDLE statusEvent = CreateEventW(nullptr, FALSE, FALSE, (std::wstring(base) + NVR_DLSS_EVENT_STATUS_SUFFIX).c_str());
 		wchar_t exe[MAX_PATH] = {};
@@ -1157,12 +1615,13 @@ namespace {
 		}
 		CloseHandle(pi.hThread);
 
-		// What the fork does: four exportable images, two exportable timeline semaphores, handles duplicated into the child.
-		const VkFormat formats[NVR_DLSS_IMAGE_COUNT] = { VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT };
+		// What the fork does: four exportable images (eight with RR), two exportable timeline semaphores, handles duplicated into the child.
+		const VkFormat formats[NVR_DLSS_IMAGE_COUNT] = { VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
+			VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16_SFLOAT };
 		Exported images[NVR_DLSS_IMAGE_COUNT];
 		VkSemaphore inputsReady = VK_NULL_HANDLE, outputReady = VK_NULL_HANDLE;
 		bool ok = true;
-		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_COUNT && ok; i++) {
+		for (uint32_t i = 0; i < imageCount && ok; i++) {
 			const bool display = i == NVR_DLSS_IMAGE_OUTPUT;
 			ok = ExportImage(vk, formats[i], displayW, displayH, images[i]) && ExportHandle(vk, images[i].memory, pi.hProcess, images[i].desc.handle);
 			shared->images[i] = images[i].desc;
@@ -1224,9 +1683,19 @@ namespace {
 		{
 			VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 			vkBeginCommandBuffer(cmds[0], &begin);
-			for (Exported& e : images)
-				Barrier(cmds[0], e.image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+			for (uint32_t i = 0; i < imageCount; i++)
+				Barrier(cmds[0], images[i].image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
 					VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			// UNOFFICIAL 2026-10-30 the RR guides: one known colour each, for the whole run.
+			for (uint32_t g = 0; rrMode && g < kGuideCount; g++) {
+				const VkImage guide = images[NVR_DLSS_IMAGE_DIFFUSE_ALBEDO + g].image;
+				VkClearColorValue colour = {};
+				for (int c = 0; c < 4; c++) colour.float32[c] = guideColours[g][c];
+				const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+				vkCmdClearColorImage(cmds[0], guide, VK_IMAGE_LAYOUT_GENERAL, &colour, 1, &range);
+				Barrier(cmds[0], guide, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+			}
 			vkEndCommandBuffer(cmds[0]);
 			VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 			submit.commandBufferCount = 1;
@@ -1264,6 +1733,12 @@ namespace {
 			f.mvScaleY = (float)renderH;
 			f.preExposure = 1.0f;
 			f.frameTimeMs = 16.7f;
+			if (rrMode) {
+				// UNOFFICIAL 2026-10-30 an RR frame as NVR sends one: linear HDR colour, the default presets, identity matrices.
+				f.flags = NVR_DLSS_FRAME_RR;
+				f.hdr = 1;
+				for (int i = 0; i < 4; i++) f.worldToView[i * 5] = f.viewToClip[i * 5] = 1.0f;
+			}
 			LARGE_INTEGER written;
 			QueryPerformanceCounter(&written);
 			f.writtenQpc = written.QuadPart;
@@ -1320,11 +1795,37 @@ namespace {
 			const double ms = (double)(done.QuadPart - written.QuadPart) * 1000.0 / (double)frequency.QuadPart;
 			roundTripMs += ms;
 			worstMs = std::max(worstMs, ms);
-			if (check) {
+			if (check && dlssMode) {
+				// UNOFFICIAL 2026-10-30 DLSS mode: the output is DLSS's own picture, not the pass-through's pattern: the frame came back,
+				// and the counters below say which feature ran it.
+				checked++;
+				Log("selftest frame %llu: back (DLSS SR %u, Ray Reconstruction %u so far); round trip %.3f ms", (unsigned long long)n,
+					shared->dlssEvaluated, shared->rrEvaluated, ms);
+			}
+			else if (check) {
 				checked++;
 				const uint16_t* px = nullptr;
 				vkMapMemory(vk.device, readMemory, 0, readBytes, 0, (void**)&px);
 				auto at = [&](uint32_t x, uint32_t y, int c) { return HalfToFloat(px[((size_t)y * displayW + x) * 4 + c]); };
+				if (rrMode) {
+					// UNOFFICIAL 2026-10-30 each guide's thumbnail centre shows its colour (the pass-through RR drawing, GuideThumbnail).
+					for (uint32_t g = 0; g < kGuideCount; g++) {
+						VkOffset2D tAt = {};
+						VkExtent2D tSize = {};
+						bool good = GuideThumbnail(displayW, displayH, renderW, renderH, g, tAt, tSize);
+						float c[3] = {};
+						if (good) {
+							for (int k = 0; k < 3; k++) {
+								c[k] = at((uint32_t)tAt.x + tSize.width / 2, (uint32_t)tAt.y + tSize.height / 2, k);
+								good = good && fabsf(c[k] - guideColours[g][k]) < 0.01f;
+							}
+						}
+						if (!good) failures++;
+						Log("selftest frame %llu: %s thumbnail (%.3f, %.3f, %.3f) want (%.3f, %.3f, %.3f) %s", (unsigned long long)n,
+							kImageNames[NVR_DLSS_IMAGE_DIFFUSE_ALBEDO + g], c[0], c[1], c[2], guideColours[g][0], guideColours[g][1], guideColours[g][2],
+							good ? "ok" : "WRONG");
+					}
+				}
 				// the stretched input (uniform colour) in the middle, the moving magenta box at frame % 8, the green box
 				const float r = at(displayW / 2, displayH / 2, 0), b = at(displayW / 2, displayH / 2, 2);
 				const uint32_t mx = 16 + 32 * (uint32_t)(n % 8) + 12, other = 16 + 32 * (uint32_t)((n + 4) % 8) + 12;
@@ -1344,7 +1845,21 @@ namespace {
 			"test round trip (CPU write -> output back, with the test's own waits) %.3f ms avg, %.3f max",
 			(unsigned long long)shared->framesSubmitted, shared->gpuTimeUsAvg / 1000.0, shared->responseUsAvg / 1000.0, shared->responseUsMax / 1000.0,
 			shared->paramMismatches, roundTripMs / (double)frames, worstMs);
-		const bool passed = ok && checked > 0 && failures == 0 && shared->framesSubmitted == frames;
+		bool passed = ok && checked > 0 && failures == 0 && shared->framesSubmitted == frames;
+		// UNOFFICIAL 2026-10-30 the counters: in DLSS mode every frame ran DLSS SR or RR (RR not available on this PC: all SR, which
+		// is NVR's fallback); the pass-through RR test evaluated every frame as an RR frame and said so.
+		if (dlssMode) {
+			const bool counted = shared->dlssEvaluated + shared->rrEvaluated == frames;
+			Log("selftest: DLSS SR ran %u frames, Ray Reconstruction %u (rrAvailable %u, last RR result 0x%08X)%s", shared->dlssEvaluated,
+				shared->rrEvaluated, shared->rrAvailable, (unsigned)shared->rrResult, counted ? "" : ": NOT every frame");
+			passed = passed && counted;
+		}
+		else if (rrMode) {
+			const bool counted = shared->rrAvailable == 1 && shared->rrEvaluated == frames;
+			Log("selftest: rrAvailable %u, %u RR frames evaluated (want 1, %llu)%s", shared->rrAvailable, shared->rrEvaluated, (unsigned long long)frames,
+				counted ? "" : ": WRONG");
+			passed = passed && counted;
+		}
 		Log("selftest %s (%u frames checked, %u wrong)", passed ? "PASSED" : "FAILED", checked, failures);
 		vkDeviceWaitIdle(vk.device);
 		return passed ? 0 : 1;
@@ -1357,8 +1872,16 @@ int wmain(int argc, wchar_t** argv) {
 	for (int i = 1; i < argc; i++) {
 		if (!wcscmp(argv[i], L"--shm") && i + 1 < argc) return RunHelper(argv[i + 1]);
 		if (!wcscmp(argv[i], L"--probe")) return RunProbe();
-		if (!wcscmp(argv[i], L"--selftest")) return RunSelfTest(i + 1 < argc && !wcscmp(argv[i + 1], L"dlss"));
+		if (!wcscmp(argv[i], L"--selftest")) {
+			// UNOFFICIAL 2026-10-30: "dlss" and "rr" after it, in either order (--selftest rr, --selftest dlss rr).
+			bool dlss = false, rr = false;
+			for (int j = i + 1; j < argc; j++) {
+				if (!wcscmp(argv[j], L"dlss")) dlss = true;
+				else if (!wcscmp(argv[j], L"rr")) rr = true;
+			}
+			return RunSelfTest(dlss, rr);
+		}
 	}
-	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest (the exchange without the game).\n");
+	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest [dlss] [rr] (the exchange without the game).\n");
 	return 1;
 }
