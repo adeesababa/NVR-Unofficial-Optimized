@@ -215,6 +215,9 @@ ReflectionsRTTex / ReflectionsRTAlphaTex (albedo atlas on binding 6 / 7).
   vs 0.25 %. The change is in the floor where the out-of-view wall panels and fountain base reflect. GPU "Reflections RT" 8.7 ms
   either way (no in-launch cost); helper passes 7.8 ms a frame with AlphaTested + HitTextures on (4.7 in earlier runs without them:
   the core's alpha/albedo atlas work and the alpha pass, not this switch).
+- noon 20261030-025546-slotA (outdoor, forced rain wetness, AlphaTested + HitTextures, 92 atlas slots): NOT measurable: with the
+  alpha-tested foliage in the scene every pair, the noise pairs included, differs on ~40 % of pixels (swaying grass and shrubs, top
+  half too), as in the foliage run. No outdoor verdict; needs a still spot without foliage.
 - lucky22 20261030-001029-slotA: 8.49 % vs 0.00 % noise alone; full 0.64 % vs 0.20 %; "Reflections RT" 10.8 / 10.6 ms (tex / avg,
   pads 10.7-10.8: in noise); helper passes 9.5 ms (3082 instances, 325k triangles).
 
