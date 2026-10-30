@@ -2,6 +2,7 @@
 
 #include "RtDenoise.h"
 #include "DxvkCompute.h"
+#include "GpuProfiler.h"
 
 #include <cmath>
 #include <string>
@@ -17,6 +18,7 @@ namespace RtDenoise {
 		IDirect3DTexture9*	scratchB = nullptr;		// the last a-trous pass' B output (not needed after)
 		IDirect3DTexture9*	park = nullptr;			// 8 x 8: the device's render target while the passes run (a pass may not draw into it)
 		int					channels = 0;
+		GpuTimer*			timer = nullptr;			// "RT denoise: <name>" in the GPU profile
 		UINT				width = 0, height = 0;
 		UInt32				frame = 0;
 		bool				hasHistory = false;
@@ -91,7 +93,8 @@ namespace RtDenoise {
 
 	Denoiser* Create(const char* Name) {
 		Denoiser* d = new Denoiser();
-		d->name = Name ? Name : "RT denoiser";
+		d->name = std::string("RT denoise: ") + (Name ? Name : "RT denoiser");
+		d->timer = new GpuTimer(d->name.c_str());
 		return d;
 	}
 
@@ -146,13 +149,14 @@ namespace RtDenoise {
 		t.move[0] = move.x; t.move[1] = move.y; t.move[2] = move.z; t.move[3] = cut ? 1.0f : 0.0f;
 		t.params[0] = (std::max)(S.MaxHistory, 1.0f); t.params[1] = S.DepthTolerance; t.params[2] = 1.0f / w; t.params[3] = 1.0f / h;
 
+		GpuProfileScope gpu(*d->timer, Device);
 		IDirect3DSurface9* current = nullptr;
 		Device->GetRenderTarget(0, &current);	// a pass may not draw into the device's current target: park it on an 8 x 8 texture
 		IDirect3DSurface9* park = Surface(d->park);
 		Device->SetRenderTarget(0, park);
 		struct { float params[4], size[4]; UInt32 samplerIndex, pad[3]; } a = {};
 		a.params[1] = S.DepthSigma; a.params[2] = S.NormalPower; a.params[3] = S.ValueSigma;
-		a.size[0] = 1.0f / w; a.size[1] = 1.0f / h; a.size[2] = S.Ids ? 1.0f : 0.0f;
+		a.size[0] = 1.0f / w; a.size[1] = 1.0f / h; a.size[2] = S.Ids ? 1.0f : 0.0f; a.size[3] = S.Kernel == 3 ? 1.0f : 0.0f;
 		const int iterations = (std::max)(0, (std::min)(S.Iterations, 5));
 		const UInt32 last = d->frame & 1, now = (d->frame + 1) & 1;
 		bool ok = true;

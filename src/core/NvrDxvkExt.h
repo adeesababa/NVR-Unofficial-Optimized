@@ -1179,7 +1179,8 @@ __CRT_UUID_DECL(ID3D9NvrExtRtScene,    0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0
  * StageGeometry with the vertices posed: each position (float3 / float4) is blended from up to 4 bones of pPalette (3 x 4
  * row-major matrices, p' = M (x, y, z, 1): straight into scene space) by the vertex's blend weights and indices, which sit
  * in the position's stream at the given byte deltas. Texels and layout as StageGeometry (positions, then the triangle
- * list; no texcoords). Stage it again every frame the actor moves; the palette is copied at the call.
+ * list, then the texcoords when NVR_EXT_RT_TEXCOORD_FLAGS asks: they are not posed). Stage it again every frame the actor moves;
+ * the palette is copied at the call.
  */
 #define NVR_EXT_RT_SKIN_MAX_BONES 256u
 
