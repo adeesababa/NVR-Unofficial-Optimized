@@ -2907,6 +2907,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	ManyLamps::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the run's first object
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
 	OnePassDepth::Reapply(TheRenderManager->device);	// UNOFFICIAL LampsDepthFirst: a bind inside a depth-only draw keeps the depth-only shader
+#if NVR_TEST_TOOLS
+	SettingShots::Land::OnBind(TheRenderManager->device, PixelShader ? PixelShader->Name : nullptr, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-30, test only: 'landflicker' mask
+#endif
 	if (profiling) ShaderSplit::EndBind(bindStart);
 
 }
@@ -3704,6 +3707,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		PixelInspector::EndFrame();
 #if NVR_TEST_TOOLS
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
+		SettingShots::Land::OnPicture(Device, OutputSurface);	// UNOFFICIAL 2026-10-30, test only: 'landflicker' (before Capture, which may end the shot)
 		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
 #endif
 		ReShadeIntegration::RenderEffects(OutputSurface);	// UNOFFICIAL: with ReShade loaded, its effects here (before the HUD) on NVR's depth
