@@ -5,11 +5,13 @@
 // smoke, fire, sparks, glass, decals and every other alpha-blended thing drawn over the world were accumulated like solid walls (they
 // trail and smear as the camera moves). AMD's own recipe (ffxFsr2ContextGenerateReactiveMask): the scene before the alpha draws against
 // the scene after them; where they differ, the pixel is reactive.
-//   - RenderBlendedHook, as the world scene's blended stage starts (0xB650C0: BSShaderAccumulator's back-to-front lists, after every
-//     opaque group), copies the world's colour (NoteOpaque);
-//   - as it ends, copies the colour again and draws mask = largest channel change of c / (1 + c) x ReactiveMask, 0 below
-//     ReactiveThreshold, at most ReactiveMax (Build). (First taken from the main opaque list's end to the world scene's end: that also
-//     marked the sky and the distant land, drawn after the main list, run 20261030-182413-slotA.)
+//   - GrassFirst::MainListHook copies the world's colour when the game's main opaque list (RenderBatches(1, 0x25B)) ends, after
+//     LinearScene has encoded it back (NoteOpaque);
+//   - RenderWorldSceneGraphHook, when the game's world scene ends (no NVR effect yet), copies the colour again and draws mask = largest
+//     channel change of c / (1 + c) x ReactiveMask, 0 below ReactiveThreshold, at most ReactiveMax (Build), and 0 where the world's
+//     depth there is farther than ReactiveMaxDistance: the sky and the distant land are drawn after the main list too (run
+//     20261030-182413-slotA marked them), and no alpha draw writes depth. (The blended stage alone, 0xB650C0, holds almost none of it:
+//     the windows' glow cards and the neon are drawn outside it, run 20261030-183310-slotA, 0.00 %.)
 //   - FSRPrep.comp / FSRUpPrep.comp (FSR 2, FSR 3.1, RenderScale v1 and v2) take max(weapon, mask) as the reactive value.
 // Off: nothing is copied or drawn and the readers keep the weapon-only mask, as before.
 // ReactiveDebug (diagnostic): the mask drawn over the world. With the F10 profile on: a REACTIVE MASK line every 240 frames (the share of pixels above 0.1, from an occlusion query).
@@ -65,10 +67,14 @@ namespace ReactiveMask {
 
 	inline bool Compile(IDirect3DDevice9* d) {
 		if (PS) return true;
-		// s0 the opaque copy, s1 the final copy; c0 x ReactiveMask, y ReactiveMax, z ReactiveThreshold.
+		// s0 the opaque copy, s1 the final copy, s2 the world's depth (INTZ, device depth); c0 x ReactiveMask, y ReactiveMax,
+		// z ReactiveThreshold; c1 x near, y far, z ReactiveMaxDistance.
 		static const char* kPS =
-			"sampler2D O : register(s0); sampler2D C : register(s1); float4 K : register(c0);"
+			"sampler2D O : register(s0); sampler2D C : register(s1); sampler2D Z : register(s2); float4 K : register(c0); float4 N : register(c1);"
 			"float reactive(float2 uv) {"
+			"  float d = tex2D(Z, uv).r;"
+			"  float z = N.x / max(1.0f - d * (N.y - N.x) / N.y, 1e-6f);"
+			"  if (z > N.z) return 0.0f;"
 			"  float3 o = max(tex2D(O, uv).rgb, 0.0f); float3 c = max(tex2D(C, uv).rgb, 0.0f);"
 			"  float3 e = abs(c / (1.0f + c) - o / (1.0f + o));"
 			"  float r = max(max(e.r, e.g), e.b) * K.x;"
@@ -97,9 +103,9 @@ namespace ReactiveMask {
 		return rt0;
 	}
 
-	// RenderBlendedHook, as the world scene's blended stage starts (the main view's first one a frame). True = Build at its end.
+	// GrassFirst::MainListHook, after the game's main list (and LinearScene's re-encode), world context only. True = copied.
 	inline bool NoteOpaque(IDirect3DDevice9* d) {
-		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber()) return false;
+		if (Failed || !(Scale() > 0.0f) || OpaqueFrame == FrameNumber() || !TheTextureManager->DepthTexture) return false;
 		D3DSURFACE_DESC t = {};
 		IDirect3DSurface9* rt0 = MainTarget(d, t);
 		if (!rt0) return false;
@@ -109,7 +115,7 @@ namespace ReactiveMask {
 		return ok;
 	}
 
-	// RenderBlendedHook, as that stage ends (before any NVR effect and before the upscale).
+	// RenderWorldSceneGraphHook, when the game's world scene is drawn (before any NVR effect and before the upscale).
 	inline void Build(IDirect3DDevice9* d) {
 		const float scale = Scale();
 		if (Failed || !(scale > 0.0f) || OpaqueFrame != FrameNumber() || ReadyFrame == FrameNumber()) return;
@@ -121,9 +127,9 @@ namespace ReactiveMask {
 
 		NiDX9RenderState* state = TheRenderManager->renderState;
 		IDirect3DVertexShader9* vs = nullptr; IDirect3DPixelShader9* ps = nullptr; IDirect3DVertexDeclaration9* decl = nullptr; DWORD fvf = 0;
-		IDirect3DSurface9* zs = nullptr; IDirect3DBaseTexture9* tex[2] = {}; D3DVIEWPORT9 vp = {};
+		IDirect3DSurface9* zs = nullptr; IDirect3DBaseTexture9* tex[3] = {}; D3DVIEWPORT9 vp = {};
 		d->GetVertexShader(&vs); d->GetPixelShader(&ps); d->GetVertexDeclaration(&decl); d->GetFVF(&fvf);
-		d->GetDepthStencilSurface(&zs); d->GetTexture(0, &tex[0]); d->GetTexture(1, &tex[1]); d->GetViewport(&vp);
+		d->GetDepthStencilSurface(&zs); d->GetTexture(0, &tex[0]); d->GetTexture(1, &tex[1]); d->GetTexture(2, &tex[2]); d->GetViewport(&vp);
 		static const D3DRENDERSTATETYPE kRS[] = { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
 			D3DRS_SCISSORTESTENABLE, D3DRS_CULLMODE, D3DRS_COLORWRITEENABLE, D3DRS_FILLMODE, D3DRS_SRGBWRITEENABLE, D3DRS_FOGENABLE, D3DRS_CLIPPLANEENABLE };
 		const DWORD want[] = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, D3DCULL_NONE, 0xFu, D3DFILL_SOLID, FALSE, FALSE, 0 };
@@ -131,11 +137,11 @@ namespace ReactiveMask {
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) { if (FAILED(d->GetRenderState(kRS[i], &savedRS[i]))) savedRS[i] = want[i]; if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], want[i]); }
 		static const D3DSAMPLERSTATETYPE kSS[] = { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE };
 		const DWORD wantS[] = { D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, FALSE };
-		DWORD savedS[2][sizeof(kSS) / sizeof(kSS[0])];
-		for (DWORD s = 0; s < 2; s++)
+		DWORD savedS[3][sizeof(kSS) / sizeof(kSS[0])];
+		for (DWORD s = 0; s < 3; s++)
 			for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) { if (FAILED(d->GetSamplerState(s, kSS[i], &savedS[s][i]))) savedS[s][i] = wantS[i]; if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], wantS[i]); }
-		float savedPS[4] = {};
-		d->GetPixelShaderConstantF(0, savedPS, 1);
+		float savedPS[8] = {};
+		d->GetPixelShaderConstantF(0, savedPS, 2);
 
 		d->SetRenderTarget(0, Surface);
 		d->SetDepthStencilSurface(NULL);
@@ -146,9 +152,13 @@ namespace ReactiveMask {
 		d->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
 		d->SetTexture(0, Opaque);
 		d->SetTexture(1, Final);
+		d->SetTexture(2, TheTextureManager->DepthTexture);	// (the depth surface is unbound above)
 		const float k[4] = { scale, std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMax"), 0.0f, 1.0f),
 			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveThreshold")), 0.0f };
+		const float n[4] = { TheRenderManager->CameraData.x, TheRenderManager->CameraData.y,
+			(std::max)(0.0f, TheSettingManager->GetSettingF("Shaders.TAA.FSR", "ReactiveMaxDistance")), 0.0f };
 		d->SetPixelShaderConstantF(0, k, 1);
+		d->SetPixelShaderConstantF(1, n, 1);
 		struct V { float x, y, z, w, u, v; };
 		const float w = (float)Width, h = (float)Height;
 		const V quad[4] = { { -0.5f, -0.5f, 0, 1, 0, 0 }, { w - 0.5f, -0.5f, 0, 1, 1, 0 }, { -0.5f, h - 0.5f, 0, 1, 0, 1 }, { w - 0.5f, h - 0.5f, 0, 1, 1, 1 } };
@@ -168,9 +178,9 @@ namespace ReactiveMask {
 			}
 		}
 
-		for (DWORD s = 0; s < 2; s++) for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], savedS[s][i]);
+		for (DWORD s = 0; s < 3; s++) for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], savedS[s][i]);
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], savedRS[i]);
-		d->SetPixelShaderConstantF(0, savedPS, 1);
+		d->SetPixelShaderConstantF(0, savedPS, 2);
 		// [Shaders.TAA.FSR] ReactiveDebug (diagnostic): the mask shown in place of the world (white = reactive), to see what it marks
 		if (TheSettingManager->GetSettingI("Shaders.TAA.FSR", "ReactiveDebug") != 0) d->StretchRect(Surface, NULL, rt0, NULL, D3DTEXF_POINT);
 		d->SetRenderTarget(0, rt0); rt0->Release();
@@ -178,6 +188,7 @@ namespace ReactiveMask {
 		d->SetViewport(&vp);
 		d->SetTexture(0, tex[0]); if (tex[0]) tex[0]->Release();
 		d->SetTexture(1, tex[1]); if (tex[1]) tex[1]->Release();
+		d->SetTexture(2, tex[2]); if (tex[2]) tex[2]->Release();
 		if (decl) { d->SetVertexDeclaration(decl); decl->Release(); } else d->SetFVF(fvf);
 		state->SetVertexShader(vs, false); if (vs) vs->Release();
 		state->SetPixelShader(ps, false); if (ps) ps->Release();
