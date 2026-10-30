@@ -181,6 +181,15 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
+### 2026-10-30 01:55 glow at hits (rtrefl-9; f7b1b776 = rt-sun-2 35f88f09 merged, DLL 1C6828D4; fork-0033b, helper extra-p3)
+The core now sets NVR_RT_RECORD_GLOW on draws with a glow map (neon, lit signs and windows, lamp globes); a glowing hit the screen
+cannot show adds its colour x `[Shaders.Reflections.RT] GlowBrightness` (3) to its shading. First real check of the core's flag.
+- luxe 20261030-005110-slotA: reflection alone GlowBrightness 3 vs 0: 3.01 % px > 2 (noise 0.02 %), 17403 px brighter / 567
+  darker; full picture 0.53 % vs 0.19 %, at most +27 levels: no blowout. On the out-of-view wall panels in the floor.
+- lucky22 20261030-014310-slotA: small: 0.32 % alone (noise 0.01 %, 652 brighter / 126 darker); the full
+  picture is in noise (0.16 % vs 0.20 %): the casino's neon is on screen, where the screen tier already reflects it exactly.
+- Cost: none measurable (one multiply-add in Resolve); "Reflections RT" 10.1-13.2 ms across the shots, glow or not.
+
 ### 2026-10-30 00:20 hit textures (rtrefl-8; 8de4960b, DLL 485F9B82; core rt-sun-2 4d776164, fork-0033, helper protocol 3)
 `[Shaders.Reflections.RT] HitTextures` (true, inside RT Enabled false) with the core's `[Main.Main.RayTracing] HitTextures` (off by
 default; on in the run toml with AlphaTested): a hit the screen cannot show takes its texture's colour at the hit (RtHit.glsl
