@@ -7,7 +7,8 @@
 // "this pixel is glass" is missing. Here, inside that stage, each see-through draw (alpha blended, depth written, not a cut-out, not
 // water: SandstormGlass::IsSeeThroughPass's rules) is drawn once more, right after itself, into a screen-sized mask target with a
 // one-instruction pixel shader writing 1 (z test LESSEQUAL against the depth the glass just wrote; no blending, no depth write), so the
-// mask holds the nearest glass where it is what the camera sees. The game's MSAA: the mask is multisampled like the scene and resolved
+// mask holds the nearest glass where it is what the camera sees. An opaque depth-writing draw later in the stage (characters, things
+// sorted after the glass) is drawn the same way writing 0, once the mask holds glass, so it unmarks the glass it covers. The game's MSAA: the mask is multisampled like the scene and resolved
 // after the stage. Cost: one extra draw per glass draw (glass is a few draws a frame) plus its state changes.
 // Off (GlassReflect 0, the default): nothing hooked, no target, no draw.
 #include <d3d9.h>
@@ -22,7 +23,8 @@ namespace GlassMask {
 	inline IDirect3DSurface9* MsaaSurface = nullptr;	// with the game's MSAA: what the redraws write, resolved into Texture
 	inline D3DSURFACE_DESC Made = {};
 	inline IDirect3DPixelShader9* PS2 = nullptr;  inline IDirect3DPixelShader9* PS3 = nullptr;	// "return 1" for vs_2_x / vs_3_0
-	inline UInt32 Draws = 0, Frames = 0;
+	inline IDirect3DPixelShader9* Clear2 = nullptr;  inline IDirect3DPixelShader9* Clear3 = nullptr;	// "return 0" (an occluder unmarks)
+	inline UInt32 Draws = 0, Clears = 0, Frames = 0;
 
 	inline bool Wanted() {
 		ReflectionsEffect* reflections = TheShaderManager->Effects.Reflections;
@@ -36,8 +38,8 @@ namespace GlassMask {
 		Made = {};
 	}
 
-	inline IDirect3DPixelShader9* Compile(IDirect3DDevice9* d, const char* profile) {
-		static const char kSource[] = "float4 main() : COLOR0 { return float4(1.0, 1.0, 1.0, 1.0); }";
+	inline IDirect3DPixelShader9* Compile(IDirect3DDevice9* d, const char* profile, bool one = true) {
+		const char* kSource = one ? "float4 main() : COLOR0 { return float4(1.0, 1.0, 1.0, 1.0); }" : "float4 main() : COLOR0 { return float4(0.0, 0.0, 0.0, 0.0); }";
 		ID3DXBuffer* code = nullptr;
 		ID3DXBuffer* errors = nullptr;
 		IDirect3DPixelShader9* ps = nullptr;
@@ -56,7 +58,9 @@ namespace GlassMask {
 		Release();
 		if (!PS2) PS2 = Compile(d, "ps_2_0");
 		if (!PS3) PS3 = Compile(d, "ps_3_0");
-		bool ok = PS2 && PS3 &&
+		if (!Clear2) Clear2 = Compile(d, "ps_2_0", false);
+		if (!Clear3) Clear3 = Compile(d, "ps_3_0", false);
+		bool ok = PS2 && PS3 && Clear2 && Clear3 &&
 			SUCCEEDED(d->CreateTexture(t.Width, t.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &Texture, NULL)) &&
 			SUCCEEDED(Texture->GetSurfaceLevel(0, &TextureSurface));
 		if (ok && t.MultiSampleType != D3DMULTISAMPLE_NONE)
@@ -91,8 +95,22 @@ namespace GlassMask {
 		return ok;
 	}
 
-	// Right after a see-through draw: the same draw once more into the mask (the bound vertex shader and streams as they are).
-	template <typename DrawFn> inline void Redraw(IDirect3DDevice9* d, DrawFn draw) {
+	// An opaque draw that writes depth (no blending, no alpha test: a cut-out's holes would unmark glass seen through them), once the
+	// mask holds glass this scene: it unmarks what it covers.
+	inline bool Occludes(IDirect3DDevice9* d) {
+		if (!Written) return false;
+		DWORD blend = TRUE, zwrite = FALSE, zenable = FALSE, atest = TRUE;
+		d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+		d->GetRenderState(D3DRS_ALPHATESTENABLE, &atest);
+		if (blend || atest) return false;
+		d->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+		d->GetRenderState(D3DRS_ZENABLE, &zenable);
+		return zwrite && zenable;
+	}
+
+	// Right after a see-through draw (glass) or an occluder: the same draw once more into the mask writing 1 or 0 (the bound vertex
+	// shader and streams as they are).
+	template <typename DrawFn> inline void Redraw(IDirect3DDevice9* d, bool glass, DrawFn draw) {
 		IDirect3DVertexShader9* vs = nullptr;
 		d->GetVertexShader(&vs);
 		UINT size = 0;
@@ -102,7 +120,8 @@ namespace GlassMask {
 			if (size >= 4) { std::vector<DWORD> code(size / 4); vs->GetFunction(code.data(), &size); version = code[0]; }
 			vs->Release();
 		}
-		IDirect3DPixelShader9* mine = (version & 0xFFFF) >= 0x0300 ? PS3 : PS2;	// vs_3_0 needs ps_3_0; fixed function / vs_2_x take ps_2_0
+		const bool three = (version & 0xFFFF) >= 0x0300;	// vs_3_0 needs ps_3_0; fixed function / vs_2_x take ps_2_0
+		IDirect3DPixelShader9* mine = glass ? (three ? PS3 : PS2) : (three ? Clear3 : Clear2);
 		IDirect3DSurface9* rt0 = nullptr;
 		IDirect3DPixelShader9* ps = nullptr;
 		d->GetRenderTarget(0, &rt0);
@@ -122,7 +141,7 @@ namespace GlassMask {
 		d->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
 		d->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
 		d->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
-		if (SUCCEEDED(draw())) { Draws++; Written = true; }
+		if (SUCCEEDED(draw())) { if (glass) { Draws++; Written = true; } else Clears++; }
 		// Everything back as the game set it (its state cache never sees these).
 		d->SetRenderTarget(0, rt0);
 		d->SetPixelShader(ps);
@@ -139,11 +158,13 @@ namespace GlassMask {
 	// The blended stage ended: the multisampled mask resolved for Reflections.
 	inline void AfterStage(IDirect3DDevice9* d) {
 		if (MsaaSurface && Written) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
-		static UInt32 lastDraws = 0;
-		if ((++Frames % 600) == 1)
-			Logger::Log("UNOFFICIAL GlassMask: %u glass redraws in the last %u blended stages (%s)", Draws - lastDraws, Frames == 1 ? 1u : 600u,
-				MsaaSurface ? "multisampled, resolved" : "single-sampled");
-		if ((Frames % 600) == 1) lastDraws = Draws;
+		static UInt32 lastDraws = 0, lastClears = 0;
+		if ((++Frames % 600) == 1) {
+			Logger::Log("UNOFFICIAL GlassMask: %u glass redraws, %u occluder redraws in the last %u blended stages (%s)", Draws - lastDraws,
+				Clears - lastClears, Frames == 1 ? 1u : 600u, MsaaSurface ? "multisampled, resolved" : "single-sampled");
+			lastDraws = Draws;
+			lastClears = Clears;
+		}
 	}
 
 	// What Reflections binds this frame (null: no glass this frame, or off).

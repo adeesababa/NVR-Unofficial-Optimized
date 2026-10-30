@@ -3219,7 +3219,7 @@ namespace SandstormGlass {
 	static DrawIndexedPrimitiveFn Next = nullptr;
 	static unsigned HiddenDraws = 0;	// see-through draws that wrote no depth (logged)
 
-	static bool IsSeeThroughPass(IDirect3DDevice9* Device) {
+	static bool IsSeeThroughPass(IDirect3DDevice9* Device, bool glassMask = false) {
 		DWORD blend = FALSE, zwrite = FALSE, test = FALSE, reference = 0;
 		Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
 		Device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
@@ -3234,7 +3234,8 @@ namespace SandstormGlass {
 		// GPL-3.0, commit 432ed1e6. Characters and creatures keep their depth, or they get the dust behind them and look
 		// see-through: skinned meshes (hair, blended clothing and armour), and unskinned ones hung on a skeleton's bones (hats,
 		// helmets, goggles). Changed here: behind its own switch, for A/B.
-		if (geometry && sandstorm && sandstorm->Settings.CharactersKeepDepth) {
+		// UNOFFICIAL 2026-10-29 GlassMask: characters are never glass, whatever the storm's switch.
+		if (geometry && (glassMask || (sandstorm && sandstorm->Settings.CharactersKeepDepth))) {
 			if (geometry->skinInstance) return false;
 			NiNode* node = geometry->m_parent;
 			for (int depth = 0; node && depth < 32; ++depth, node = node->m_parent)
@@ -3251,10 +3252,15 @@ namespace SandstormGlass {
 	static HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* Device, D3DPRIMITIVETYPE Type, INT Base, UINT MinIndex, UINT Vertices, UINT Start, UINT Count) {
 		// UNOFFICIAL 2026-10-29 GlassMask (core/GlassMask.h): no storm hiding glass depth, glass reflections on: the see-through draw as
 		// the game does it, then once more into the glass mask.
-		if (InBlendedStage && !HideDepth && GlassOn && IsSeeThroughPass(Device)) {
-			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
-			if (SUCCEEDED(result)) GlassMask::Redraw(Device, [&]() { return Next(Device, Type, Base, MinIndex, Vertices, Start, Count); });
-			return result;
+		if (InBlendedStage && !HideDepth && GlassOn) {
+			const bool glass = IsSeeThroughPass(Device, true);
+			// Glass: marked. An opaque depth-writing draw later in the stage over glass already marked: unmarked again (the mask
+			// otherwise keeps glass the camera no longer sees, e.g. a bottle behind something drawn after it).
+			if (glass || GlassMask::Occludes(Device)) {
+				const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+				if (SUCCEEDED(result)) GlassMask::Redraw(Device, glass, [&]() { return Next(Device, Type, Base, MinIndex, Vertices, Start, Count); });
+				return result;
+			}
 		}
 		if (InBlendedStage && HideDepth && IsSeeThroughPass(Device)) {
 			HiddenDraws++;
