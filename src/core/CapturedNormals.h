@@ -23,7 +23,8 @@
 #include <unordered_set>
 #include "DxvkCompute.h"
 #include "DrawState.h"	// UNOFFICIAL 2026-10-29 SharedDrawState: the tracked state lives there
-#include "PassSums.h"	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
+#include "PassSums.h"
+#include "GpuProfiler.h"	// UNOFFICIAL ShadowContrast step timer	// UNOFFICIAL 2026-10-29 lean hook: AfterStateBlock
 
 namespace CapturedNormals {
 
@@ -54,6 +55,17 @@ namespace CapturedNormals {
 	inline std::unordered_set<IDirect3DPixelShader9*> MaterialWriters;
 	inline bool LastMaterialWriter = false, MaterialBound = false, MaterialDrawn = false;
 	inline UInt32 MaterialWrites = 0, MaterialBusy = 0;	// draws that wrote it; writer draws that found stage 2 taken
+	// UNOFFICIAL 2026-10-29 ShadowContrast for the game's passes (ROOTPLAN round 6 step 17; ObjectTemplate.hlsl ShadowContrast): the added
+	// lamp passes (DIFFUSE) of the object shader add the light their shadows took to MaterialBuffer's alpha (written 1 by the opaque
+	// draws, so a = 1 + that light); after the main list ApplyContrast darkens the rest of each pixel's light by that share. Needs
+	// MaterialBuffer. ContrastStrength: [Shaders.ShadowsInteriors.Forward] ShadowContrast indoors, 0 elsewhere or not compiled in (PBR.cpp).
+	inline float ContrastStrength = 0.0f;
+	inline std::unordered_set<IDirect3DPixelShader9*> ContrastWriters;
+	inline void NoteContrastWriter(IDirect3DPixelShader9* handle) { if (handle) ContrastWriters.insert(handle); }
+	inline bool LastContrastWriter = false, ContrastDrawn = false, ContrastFailed = false;
+	inline UInt32 ContrastWrites = 0, ContrastOtherBlend = 0, ContrastApplied = 0;
+	inline IDirect3DTexture9* ContrastCopyTex = nullptr;  inline IDirect3DSurface9* ContrastCopy = nullptr;  inline D3DSURFACE_DESC ContrastMade = {};
+	inline IDirect3DPixelShader9* ContrastPS = nullptr;
 	inline void NoteMaterialWriter(IDirect3DPixelShader9* handle) { if (handle) MaterialWriters.insert(handle); }
 	inline bool CompiledIn();
 	inline bool MaterialCompiledIn() {
@@ -397,13 +409,19 @@ namespace CapturedNormals {
 		IDirect3DPixelShader9* ps = nullptr;
 		if (Lean()) ps = T.ps;
 		else { d->GetPixelShader(&ps); if (ps) ps->Release(); }
-		if (ps != LastPS) { LastPS = ps; LastWriter = ps && Writers.count(ps) != 0; LastMaterialWriter = ps && MaterialWriters.count(ps) != 0; }
+		if (ps != LastPS) { LastPS = ps; LastWriter = ps && Writers.count(ps) != 0; LastMaterialWriter = ps && MaterialWriters.count(ps) != 0;
+			LastContrastWriter = ps && ContrastWriters.count(ps) != 0; }
 		bool write = LastWriter;
+		bool contrast = false;	// UNOFFICIAL ShadowContrast: an added lamp pass that gives its lost light to MaterialBuffer's alpha
 		if (write) {
 			const DWORD mask = StateNow(d, D3DRS_COLORWRITEENABLE, 0xF), blend = StateNow(d, D3DRS_ALPHABLENDENABLE, FALSE);
 			const DWORD src = blend ? StateNow(d, D3DRS_SRCBLEND, D3DBLEND_ONE) : D3DBLEND_ONE, dst = blend ? StateNow(d, D3DRS_DESTBLEND, D3DBLEND_ZERO) : D3DBLEND_ZERO;
 			// opaque, or a SRCALPHA / INVSRCALPHA fade (the land over objects): the templates write alpha 1 there, a plain replace
 			write = (mask & 7) && (!blend || (src == D3DBLEND_SRCALPHA && dst == D3DBLEND_INVSRCALPHA));
+			// added (ONE / ONE): the alpha adds up across the lamp passes; any other added blend would scale it, so it is left out (counted)
+			if (!write && LastContrastWriter && ContrastStrength > 0.0f && (mask & 7) && blend && dst == D3DBLEND_ONE) {
+				if (src == D3DBLEND_ONE) contrast = true; else ContrastOtherBlend++;
+			}
 		}
 		if (write) {
 			if (!Bound) Bind(d);
@@ -424,8 +442,110 @@ namespace CapturedNormals {
 				if (!rt2 || ours) { SetMask(d, D3DRS_COLORWRITEENABLE2, 0xF); MaterialBound = true; MaterialDrawn = true; MaterialWrites++; }
 				else MaterialBusy++;
 			}
+			else if (contrast) {	// UNOFFICIAL ShadowContrast: alpha only (the opaque draws' rgb stays)
+				if (!rt2) { D3DVIEWPORT9 vp; d->GetViewport(&vp); d->SetRenderTarget(2, MaterialDrawSurface()); d->SetViewport(&vp); }
+				if (!rt2 || ours) { SetMask(d, D3DRS_COLORWRITEENABLE2, D3DCOLORWRITEENABLE_ALPHA); MaterialBound = true; ContrastDrawn = true; ContrastWrites++; }
+				else MaterialBusy++;
+			}
 			else if (ours) SetMask(d, D3DRS_COLORWRITEENABLE2, 0);
 		}
+	}
+
+	// UNOFFICIAL 2026-10-29 ShadowContrast (see ContrastStrength): after the main list, the scene x 1 - strength x lost / (lit + lost), lost =
+	// MaterialBuffer's alpha - 1 where an opaque draw wrote it. A multiply blend (dest x the factor), so every sample of a multisampled
+	// scene is darkened alike; the factor from a copy of the frame (lit) in the space the frame is in now (LinearScene keeps it linear
+	// inside the list; otherwise it is decoded with the gamma). Everything the next draw relies on is put back.
+	inline void ApplyContrast(IDirect3DDevice9* d, IDirect3DSurface9* target) {
+		if (ContrastFailed || !target || !MaterialTexture) return;
+		D3DSURFACE_DESC t = {};
+		if (FAILED(target->GetDesc(&t))) return;
+		if (!ContrastCopyTex || ContrastMade.Width != t.Width || ContrastMade.Height != t.Height || ContrastMade.Format != t.Format) {
+			if (ContrastCopy) { ContrastCopy->Release(); ContrastCopy = nullptr; }
+			if (ContrastCopyTex) { ContrastCopyTex->Release(); ContrastCopyTex = nullptr; }
+			if (FAILED(d->CreateTexture(t.Width, t.Height, 1, D3DUSAGE_RENDERTARGET, t.Format, D3DPOOL_DEFAULT, &ContrastCopyTex, NULL)) ||
+				FAILED(ContrastCopyTex->GetSurfaceLevel(0, &ContrastCopy))) {
+				Logger::Log("[ERROR] ShadowContrast: could not make the frame's copy (%ux%u format %u): the game's passes keep their shadows as before", t.Width, t.Height, (unsigned)t.Format);
+				ContrastFailed = true;
+				return;
+			}
+			ContrastMade = t;
+		}
+		if (!ContrastPS) {
+			// c0: x strength, y 1 = the frame is linear now, z the gamma, w 1 / the gamma
+			static const char* kPS =
+				"sampler2D S : register(s0); sampler2D M : register(s1); float4 E : register(c0);"
+				"float4 main(float2 uv : TEXCOORD0) : COLOR0 {"
+				"  float3 c = max(tex2D(S, uv).rgb, 0.0); float a = tex2D(M, uv).a; float lost = a > 0.5 ? max(a - 1.0, 0.0) : 0.0;"
+				"  float3 lin = E.y > 0.5 ? c : pow(c, E.z); float l = dot(lin, float3(0.2126, 0.7152, 0.0722));"
+				"  float f = saturate(1.0 - E.x * lost / max(l + lost, 1.0e-5));"
+				"  return float4((E.y > 0.5 ? f : pow(f, E.w)).xxx, 1.0); }";
+			ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
+			if (FAILED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL)) || !code ||
+				FAILED(d->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &ContrastPS))) {
+				Logger::Log("[ERROR] ShadowContrast: its shader failed (%s)", errors ? (const char*)errors->GetBufferPointer() : "?");
+				ContrastFailed = true;
+			}
+			if (errors) errors->Release();
+			if (code) code->Release();
+			if (ContrastFailed) return;
+		}
+		static GpuTimer contrastTimer("ShadowContrast step");	// UNOFFICIAL: the copy + the full-screen step, in the F10 GPU profile
+		GpuProfileScope gpu(contrastTimer, d);
+		if (FAILED(d->StretchRect(target, NULL, ContrastCopy, NULL, D3DTEXF_NONE))) { ContrastFailed = true; Logger::Log("[ERROR] ShadowContrast: frame copy failed"); return; }
+
+		D3DVIEWPORT9 vp = {}; d->GetViewport(&vp);
+		IDirect3DSurface9* rt0 = nullptr; d->GetRenderTarget(0, &rt0);
+		IDirect3DSurface9* rt[4] = {};
+		for (DWORD i = 1; i < 4; i++) if (SUCCEEDED(d->GetRenderTarget(i, &rt[i])) && rt[i]) d->SetRenderTarget(i, nullptr);
+		if (rt0 != target) d->SetRenderTarget(0, target);
+		d->SetViewport(&vp);
+		IDirect3DVertexShader9* vs = nullptr; IDirect3DPixelShader9* ps = nullptr; IDirect3DVertexDeclaration9* decl = nullptr;
+		IDirect3DVertexBuffer9* vb = nullptr; UINT vbOffset = 0, vbStride = 0; DWORD fvf = 0; float c0[4] = {};
+		IDirect3DBaseTexture9* tex[2] = {};
+		d->GetVertexShader(&vs); d->GetPixelShader(&ps); d->GetVertexDeclaration(&decl); d->GetFVF(&fvf);
+		d->GetStreamSource(0, &vb, &vbOffset, &vbStride); d->GetTexture(0, &tex[0]); d->GetTexture(1, &tex[1]); d->GetPixelShaderConstantF(0, c0, 1);
+		static const D3DRENDERSTATETYPE kRS[] = { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHATESTENABLE, D3DRS_CULLMODE, D3DRS_STENCILENABLE,
+			D3DRS_SCISSORTESTENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_COLORWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_DESTBLEND,
+			D3DRS_BLENDOP, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_FOGENABLE };
+		const DWORD want[] = { D3DZB_FALSE, FALSE, FALSE, D3DCULL_NONE, FALSE, FALSE, FALSE, 0x7, TRUE, D3DBLEND_ZERO, D3DBLEND_SRCCOLOR,
+			D3DBLENDOP_ADD, FALSE, FALSE };
+		DWORD saved[sizeof(kRS) / sizeof(kRS[0])];
+		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) { if (FAILED(d->GetRenderState(kRS[i], &saved[i]))) saved[i] = want[i]; if (saved[i] != want[i]) d->SetRenderState(kRS[i], want[i]); }
+		static const D3DSAMPLERSTATETYPE kSS[] = { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE };
+		const DWORD wantS[] = { D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, FALSE };
+		DWORD savedS[2][sizeof(kSS) / sizeof(kSS[0])];
+		for (DWORD s = 0; s < 2; s++)
+			for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) { if (FAILED(d->GetSamplerState(s, kSS[i], &savedS[s][i]))) savedS[s][i] = wantS[i]; if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], wantS[i]); }
+
+		const bool linear = LinearScene::Linear;
+		const float gamma = LinearScene::Gamma > 1.0f ? LinearScene::Gamma : 2.2f;
+		const float e[4] = { ContrastStrength, linear ? 1.0f : 0.0f, gamma, 1.0f / gamma };
+		d->SetVertexShader(nullptr);
+		d->SetPixelShader(ContrastPS);
+		d->SetPixelShaderConstantF(0, e, 1);
+		d->SetTexture(0, ContrastCopyTex);
+		d->SetTexture(1, MaterialTexture);
+		d->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+		const float x0 = (float)vp.X - 0.5f, y0 = (float)vp.Y - 0.5f, x1 = (float)(vp.X + vp.Width) - 0.5f, y1 = (float)(vp.Y + vp.Height) - 0.5f;
+		const float u0 = (float)vp.X / t.Width, v0 = (float)vp.Y / t.Height, u1 = (float)(vp.X + vp.Width) / t.Width, v1 = (float)(vp.Y + vp.Height) / t.Height;
+		const float quad[4][6] = { { x0, y0, 0, 1, u0, v0 }, { x1, y0, 0, 1, u1, v0 }, { x0, y1, 0, 1, u0, v1 }, { x1, y1, 0, 1, u1, v1 } };
+		d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
+		ContrastApplied++;
+
+		for (DWORD s = 0; s < 2; s++)
+			for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], savedS[s][i]);
+		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) if (saved[i] != want[i]) d->SetRenderState(kRS[i], saved[i]);
+		if (rt0 != target) d->SetRenderTarget(0, rt0);
+		for (DWORD i = 1; i < 4; i++) if (rt[i]) { d->SetRenderTarget(i, rt[i]); rt[i]->Release(); }
+		if (rt0) rt0->Release();
+		d->SetViewport(&vp);
+		d->SetTexture(0, tex[0]); if (tex[0]) tex[0]->Release();
+		d->SetTexture(1, tex[1]); if (tex[1]) tex[1]->Release();
+		d->SetPixelShaderConstantF(0, c0, 1);
+		if (decl) { d->SetVertexDeclaration(decl); decl->Release(); } else d->SetFVF(fvf);
+		d->SetStreamSource(0, vb, vbOffset, vbStride); if (vb) vb->Release();
+		d->SetVertexShader(vs); if (vs) vs->Release();
+		d->SetPixelShader(ps); if (ps) ps->Release();
 	}
 
 	inline HRESULT STDMETHODCALLTYPE DIPHook(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, INT b, UINT mi, UINT nv, UINT s, UINT pc) {
@@ -515,8 +635,12 @@ namespace CapturedNormals {
 			if (MaterialCompiled)	// UNOFFICIAL 2026-10-29 MaterialBuffer
 				Logger::Log("MaterialBuffer: per frame %.1f draws wrote it, %.1f writer draws found stage 2 taken (the skin blur's); %u material writer shaders",
 					MaterialWrites / (double)Frames, MaterialBusy / (double)Frames, (unsigned)MaterialWriters.size());
+			if (MaterialCompiled && !ContrastWriters.empty())	// UNOFFICIAL ShadowContrast (the game's passes)
+				Logger::Log("ShadowContrast: per frame %.1f lamp passes gave their shadows' light to MaterialBuffer (%.1f with another added blend, left out), applied %.2f times; strength %.2f; %u lamp-pass shaders",
+					ContrastWrites / (double)Frames, ContrastOtherBlend / (double)Frames, ContrastApplied / (double)Frames, ContrastStrength, (unsigned)ContrastWriters.size());
 			Frames = Writes = Masked = Unbinds = 0;
 			MaterialWrites = MaterialBusy = 0;
+			ContrastWrites = ContrastOtherBlend = ContrastApplied = 0;
 		}
 	}
 
@@ -569,9 +693,11 @@ namespace CapturedNormals {
 		InSpan = false;
 		Tracked = false;	// UNOFFICIAL lean hook: resynced at the next span
 		SharedDrawState::Valid = false;
-		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);	// the game's MSAA: resolved for the readers
 		if (MaterialMsaa && MaterialSurface) d->StretchRect(MaterialMsaa, NULL, MaterialSurface, NULL, D3DTEXF_NONE);	// UNOFFICIAL MaterialBuffer
+		if (ContrastDrawn && ContrastStrength > 0.0f) ApplyContrast(d, SpanTarget);	// UNOFFICIAL ShadowContrast (the game's lamp passes)
+		ContrastDrawn = false;
+		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		MaterialData.x = MaterialDrawn && !Failed ? 1.0f : 0.0f;
 		if (CheckThisFrame && Drawn) {	// the self-check's second half: templates drew, so something must be written
 			const int n = CountWritten(d);

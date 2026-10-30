@@ -546,6 +546,12 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 						// UNOFFICIAL 2026-10-29 MaterialBuffer: Object / Parallax / Terrain write it on COLOR2 (the skin templates' COLOR2 is the skin blur's)
 						if (writes && Template.Name && (!strcmp(Template.Name, "ObjectTemplate") || !strcmp(Template.Name, "ParallaxTemplate") || !strcmp(Template.Name, "TerrainTemplate")))
 							CapturedNormals::NoteMaterialWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+						// UNOFFICIAL 2026-10-29 ShadowContrast: the object shader's added lamp passes (DIFFUSE) give their shadows' light to it
+						if (writes && PBRShaders::ShadowContrastCompiledIn() && !strcmp(Template.Name, "ObjectTemplate")) {
+							bool diffuse = false;
+							for (int d = 0; d < 63 && Template.Defines[d].Name; d++) if (!strcmp(Template.Defines[d].Name, "DIFFUSE")) diffuse = true;
+							if (diffuse) CapturedNormals::NoteContrastWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+						}
 					}
 					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.

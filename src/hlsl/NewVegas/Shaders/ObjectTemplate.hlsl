@@ -342,6 +342,34 @@
     // and MoreLampsPerObject on) one temp register over ps_3_0's 32, and its interior record failed to compile.
     #define POINT_SHADOW_SCALAR
     #include "includes/PointShadowForward.hlsl"
+
+#ifndef SHADOW_CONTRAST_ON
+    #define SHADOW_CONTRAST_ON 0
+#endif
+#if SHADOW_CONTRAST_ON
+// UNOFFICIAL 2026-10-29 ShadowContrast ([Shaders.ShadowsInteriors.Forward] ShadowContrast, effects/PBR.cpp; ROOTPLAN round 5 step 14).
+// A forward lamp shadow takes away only its own lamp's light, so where the other light (the ambient, lamps without a shadow) is a large
+// share of the pixel the shadow comes out grey and specked (cpucheck / ROOTPLAN step 12: the P80 look needed lamps 23-51 % brighter).
+// Here every shadowed lamp's light is split into what it keeps and what its shadow takes (SC_SPLIT; in the one-pass lamp shader in
+// Includes/ManyLightsDirect.hlsl); in a pass that has the ambient (the one-pass shader, the game's base passes with lamps) the rest of
+// the pixel's light is then darkened right there by the share
+// of the pixel's would-be light that the shadows took: lighting x (1 - strength x lost / (lit + lost)). Fully lit pixels (lost 0) are
+// untouched, so rooms keep their brightness; a pixel deep in a lamp's shadow loses that share of its fill light too.
+// UNOFFICIAL 2026-10-29 (round 6 step 17, the game's passes: ManyLampsOnePass off): an added lamp pass (DIFFUSE) cannot dim the rest
+// of the pixel, so it adds the light its shadows took to MaterialBuffer's alpha instead (core/CapturedNormals.h binds it for those
+// passes, alpha only); one full-screen step after the main list then does the same darkening (ShadowContrastApply).
+// Compiled in only when ShadowContrast > 0 at startup (ShaderRecord::BuildDefines); then live, x 0 = exactly no change. c207: free in
+// every template.
+float4 TESR_ShadowContrast : register(c207);	// x strength indoors this frame (0 outdoors / off)
+#define SC_SPLIT(TERM, SH) { const float3 scTerm = (TERM); const float3 scShadow = (SH); lighting += scTerm * scShadow; scLost += scTerm * (1.0f - scShadow); }
+float ShadowContrastKeep(float3 lit, float3 lost) {
+    const float3 w = float3(0.2126f, 0.7152f, 0.0722f);
+    const float l = dot(max(lost, 0.0f), w);
+    const float share = l / max(dot(max(lit, 0.0f), w) + l, 1.0e-5f);
+    return saturate(1.0f - TESR_ShadowContrast.x * share);
+}
+#endif
+
     // UNOFFICIAL 2026-10-13: blood on the first-person weapon and gloves (c218-c219, set per draw; off for every other draw).
     #include "includes/HandBlood.hlsl"
     // UNOFFICIAL 2026-10-14: rain on the first-person weapon (Wet World HudDrops, includes/HudRain.hlsl, c221-c222 set per draw;
@@ -1091,6 +1119,9 @@ struct PS_OUTPUT {
 
 
 PS_OUTPUT main(PS_INPUT IN) {
+    #if SHADOW_CONTRAST_ON
+        float3 scLost = 0.0f;	// UNOFFICIAL ShadowContrast: the light the lamps' shadows take here (SC_SPLIT)
+    #endif
     PS_OUTPUT OUT;
     
 #ifdef LINEAR_LIGHTING
@@ -1311,19 +1342,31 @@ PS_OUTPUT main(PS_INPUT IN) {
             const float foldAtt0 = LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir);
             lighting = 0.0f;
             LAMP_IF(foldAtt0)
+#if SHADOW_CONTRAST_ON
+                { lighting = 0.0f; SC_SPLIT(getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal), POINT_SHADOW(0, foldAtt0)) }
+#else
                 lighting = getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, SHADOWED(PSLightColor[0].rgb, 0, foldAtt0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+#endif
             float foldReach = foldAtt0;
         #endif
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
             const float foldAtt2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
             LAMP_IF(foldAtt2)
+#if SHADOW_CONTRAST_ON
+                SC_SPLIT(getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal), POINT_SHADOW(1, foldAtt2))
+#else
                 lighting += getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, SHADOWED(PSLightColor[1].rgb, 1, foldAtt2), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+#endif
             foldReach = max(foldReach, foldAtt2);
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
             const float foldAtt3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
             LAMP_IF(foldAtt3)
+#if SHADOW_CONTRAST_ON
+                SC_SPLIT(getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal), POINT_SHADOW(2, foldAtt3))
+#else
                 lighting += getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, SHADOWED(PSLightColor[2].rgb, 2, foldAtt3), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+#endif
             foldReach = max(foldReach, foldAtt3);
         #endif
         // fp16 target: kept finite where the colour is (almost) black; the texture pass then multiplies it by (almost) nothing.
@@ -1345,11 +1388,21 @@ PS_OUTPUT main(PS_INPUT IN) {
         float skyValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
             float att2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
+#if SHADOW_CONTRAST_ON
+            float3 light2Color = PSLightColor[1].rgb;
+            const float3 scShadow2 = POINT_SHADOW(1, att2);
+#else
             float3 light2Color = SHADOWED(PSLightColor[1].rgb, 1, att2);
+#endif
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
             float att3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
+#if SHADOW_CONTRAST_ON
+            float3 light3Color = PSLightColor[2].rgb;
+            const float3 scShadow3 = POINT_SHADOW(2, att3);
+#else
             float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
+#endif
         #endif
         float3 lighting;
         [branch] if (getMetalStrength() > 0.0f) {
@@ -1380,11 +1433,19 @@ PS_OUTPUT main(PS_INPUT IN) {
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
                 LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                    SC_SPLIT(getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic), scShadow2)
+#else
                     lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+#endif
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
                 LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                    SC_SPLIT(getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic), scShadow3)
+#else
                     lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+#endif
             #endif
         }
         else {
@@ -1395,11 +1456,19 @@ PS_OUTPUT main(PS_INPUT IN) {
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
                 LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                    SC_SPLIT(getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness), scShadow2)
+#else
                     lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+#endif
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
                 LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                    SC_SPLIT(getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness), scShadow3)
+#else
                     lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+#endif
             #endif
         }
     #else
@@ -1420,7 +1489,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #else
             FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                { lighting = 0.0f; SC_SPLIT(getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness), POINT_SHADOW(0, att0)) }
+#else
                 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+#endif
         #endif
     #endif
     
@@ -1448,7 +1521,11 @@ PS_OUTPUT main(PS_INPUT IN) {
             }
         #else
             LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                SC_SPLIT(getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness), POINT_SHADOW(1, att2))
+#else
                 lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+#endif
         #endif
     #endif
 
@@ -1462,7 +1539,11 @@ PS_OUTPUT main(PS_INPUT IN) {
             }
         #else
             LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+#if SHADOW_CONTRAST_ON
+                SC_SPLIT(getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness), POINT_SHADOW(2, att3))
+#else
                 lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+#endif
         #endif
     #endif
 
@@ -1489,6 +1570,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(DIFFUSE) && !defined(POINT)
         // UNOFFICIAL: the sun focused through each rain drop into a bright spot on its far side (includes/HudRain.hlsl).
         lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
+    #endif
+    #if SHADOW_CONTRAST_ON && !defined(DIFFUSE) && !defined(POINT)
+        lighting *= ShadowContrastKeep(lighting, scLost);	// UNOFFICIAL ShadowContrast: a base pass has the ambient: darkened here
     #endif
     float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space
     #if defined(ONLY_LIGHT)
@@ -1589,6 +1673,10 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.capturedPad1 = 0.0f;
     #endif
     OUT.capturedPad2 = CapturedMaterialOut(roughness);	// UNOFFICIAL 2026-10-29 MaterialBuffer (0 without it)
+    #if SHADOW_CONTRAST_ON && defined(DIFFUSE)
+        // UNOFFICIAL ShadowContrast: an added lamp pass gives the light its shadows took (alpha only: core/CapturedNormals.h masks rgb off)
+        OUT.capturedPad2 = float4(0.0f, 0.0f, 0.0f, dot(max(scLost, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)));
+    #endif
     // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map. The added lamp and highlight passes write
     // none (they are masked off anyway); nor does the slot-tight six-lamp shader (the depth-rebuilt normal stays in use there).
     #if defined(DIFFUSE) || defined(ONLY_SPECULAR) || defined(NVR_SLOT_TIGHT)
@@ -1694,29 +1782,6 @@ struct PS_INPUT {
     #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), (p))
 #else
     #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
-#endif
-
-#ifndef SHADOW_CONTRAST_ON
-    #define SHADOW_CONTRAST_ON 0
-#endif
-#if SHADOW_CONTRAST_ON
-// UNOFFICIAL 2026-10-29 ShadowContrast ([Shaders.ShadowsInteriors.Forward] ShadowContrast, effects/PBR.cpp; ROOTPLAN round 5 step 14).
-// A forward lamp shadow takes away only its own lamp's light, so where the other light (the ambient, lamps without a shadow) is a large
-// share of the pixel the shadow comes out grey and specked (cpucheck / ROOTPLAN step 12: the P80 look needed lamps 23-51 % brighter).
-// Here, in the one-pass lamp shader (ManyLampsOnePass, the six-lamp interior pass), every shadowed lamp's light is split into what it
-// keeps and what its shadow takes (Includes/ManyLightsDirect.hlsl SC_SPLIT); the rest of the pixel's light is then darkened by the share
-// of the pixel's would-be light that the shadows took: lighting x (1 - strength x lost / (lit + lost)). Fully lit pixels (lost 0) are
-// untouched, so rooms keep their brightness; a pixel deep in a lamp's shadow loses that share of its fill light too.
-// Compiled in only when ShadowContrast > 0 at startup (ShaderRecord::BuildDefines); then live, x 0 = exactly no change. c207: free in
-// every template.
-float4 TESR_ShadowContrast : register(c207);	// x strength indoors this frame (0 outdoors / off)
-#define SC_SPLIT(TERM, SH) { const float3 scTerm = (TERM); const float3 scShadow = (SH); lighting += scTerm * scShadow; scLost += scTerm * (1.0f - scShadow); }
-float ShadowContrastKeep(float3 lit, float3 lost) {
-    const float3 w = float3(0.2126f, 0.7152f, 0.0722f);
-    const float l = dot(max(lost, 0.0f), w);
-    const float share = l / max(dot(max(lit, 0.0f), w) + l, 1.0e-5f);
-    return saturate(1.0f - TESR_ShadowContrast.x * share);
-}
 #endif
 
 struct PS_OUTPUT {
