@@ -137,3 +137,19 @@ nothing here is pushed, released or installed unless the user says so.
 - Side job: rt-test-7 swap package H:\_NVR-pkgt-test-7-fix-587f0ac8 (claude/rt-test-7-fix = 4fe32674 + e7f56980 + a5e04304),
   smoke PASS (1070 064310-slotC, iGPU 064526-slotC).
 - DLL CRC32 7F06CF91, NvrRtHelper FC94590F (protocol 3), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-d4a2439c\`.
+
+## Round 8b (2026-10-30 08:00, e777f57f)
+
+- Merged claude/tester-fixes-1029 35657ae4 (dxvk-fork-2's tester fixes, all slot-checked on their branch):
+  - sky horizon tint fix bb46a26d: the red band in the sky and the water (the hook overwrote SKY.pso's horizon tint, c20 -> c32);
+  - SunsetGlareFix c63334d7 (on): the god rays' sun glare at sunset;
+  - SunShadows stage-3 cache binds 492526d1;
+  - NvrDxvkMixCheck (diagnostic, off) up to 03646a10;
+  - Pip-Boy HueSafeClip tonemap fix 603d8f85 (shader only);
+  - WeatherFogColor 35657ae4 (on, 1.0): NVR fog takes the weather's fog colour again (macintroll's report).
+- Conflicts: include lists in Render.cpp / RenderManager.cpp / AmbientLight.cpp and Render.cpp's frame start (ObjectMotion +
+  MixCheck): both sides kept. No line-ending churn.
+- Bench PASS: 1070 RT off (20261030-073237-slotC) vs round 8: interiors at noise level; outdoors the pink horizon band is gone
+  (intended) + bush/NPC motion. iGPU Goodsprings (074428-slotC, rtm-igpu-ext5): every RT effect changes the picture as in round 7,
+  helper by LUID, no stale-arena warnings, no crash.
+- DLL CRC32 A0BDCFF8, NvrRtHelper FC94590F (unchanged), fork-0033c D58B4425. Package `H:\_NVR-pkgt-test-e777f57f\`.
