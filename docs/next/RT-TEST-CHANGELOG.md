@@ -241,3 +241,7 @@ nothing here is pushed, released or installed unless the user says so.
   errors, no crash. LeafCards stays off in this list (rt-ao-sky's own bench covered it).
 - DLL CRC32 7B09B501, NvrRtHelper C8D088CE (protocol 4, source unchanged), fork-0033c D58B4425. Package
   `H:\_NVR-pkgt-test-92a85dab\`.
+- LeafCards check (rt-ao-sky's list rtleaf-5, shrub view, iGPU, 20261030-200623-slotC, from the outdoor start): PASS; LeafCards 2:
+  54.8 leaf meshes traced a frame, 3: 243.3; picture change vs LeafCards 0: shrub view 6.0 / 6.3 %, RT sun 4.2 % (repeat noise 11 %:
+  wind / clouds), RT AO 14.5 % (repeat 3.7 %); shrubs darken under their own traced leaves, no garbage. (A first try 200234-slotA
+  started inside Lucky 38: the setpos landed in the wrong cell, 0 instances, not counted.)
