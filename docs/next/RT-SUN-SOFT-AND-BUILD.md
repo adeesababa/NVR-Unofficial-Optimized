@@ -65,7 +65,7 @@ List `rtsun-33`: soft A/B (SunAngle 0.53 + Denoise vs + Penumbra), DebugView 4 o
 view at the player's feet (contact); then ActorStillSkip on/off and ActorRebuildInterval 60 with the RT CORE log lines
 (posed / still-skipped partitions, refits / full builds) and the F10 "Ray tracing" timer; Compact on for the whole run.
 
-## Results (2026-10-31, iGPU Radeon 780M-class, 1280x720, Goodsprings 10:00 clear; helper fb92e174 = bench\deep-roadmap\rtsun\extra-p4f, fork-0033c)
+## Results (2026-10-31, iGPU "AMD Radeon(TM) Graphics", 1280x720, Goodsprings 10:00 clear; helper fb92e174 = bench\deep-roadmap\rtsun\extra-p4f, fork-0033c)
 
 Runs: rtsun-33 20261031-024258-slotC (full size, 5x5: hit the self-test limit at 6 fps), 20261031-030308-slotC (half size,
 limit again), **20261031-032300-slotC PASS** (actors, compaction), **rtsun-33b 20261031-035434-slotC PASS** (Penumbra).
