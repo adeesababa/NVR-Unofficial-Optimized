@@ -10,8 +10,10 @@
 //   - with it on at startup, every land shader with lamps is compiled for 24 (LAND_ALL_LAMPS; its loop runs to the count anyway);
 //   - before each land draw (ForPass) the piece's own active lamps are listed (its lighting property's list +0x60, filtered as
 //     GetNumberOfActiveNonShadowLights, as ManyLamps reads it) with its world -> object matrix;
-//   - after every pixel-constant write into c39-c88 while a land shader is bound (ConstantFilter's pixel hook: VPT's writes), the lamps
-//     VPT did not write (no entry within 1 unit) are added after its own, up to 24, and the count raised.
+//   - after the pixel-constant write that sets the count (c88) while a land shader is bound (ConstantFilter's pixel hook: VPT's writes),
+//     the lamps VPT did not write (no entry within 1 unit) are added after its own, up to 24, and the count raised. (v1 acted on every
+//     write into c39-c88: VPT writes the colours, positions and count separately, so it compared against the last piece's positions,
+//     46 % matched, run 20261030-201640-slotA; the self-check refused it.) The first land draw's writes are logged once (their order).
 // Self-check (F10 profile): VPT's own entries are matched to the piece's lamps by position, and their colours compared with the ones this
 // code would write; a LAND LAMPS line gives the matched share and the largest colour difference. Under 90 % matched: nothing is added
 // (the positions are not in the space assumed here), logged once.
@@ -35,6 +37,7 @@ namespace LandLamps {
 	inline unsigned StatFrames = 0;
 	inline unsigned long long StatDraws = 0, StatAdded = 0, StatVpt = 0, StatMatched = 0, StatFull = 0;
 	inline float StatColourDiff = 0.0f;
+	inline int WritesLogged = 0;		// the first land draw's constant writes, logged once
 
 	inline bool CompiledIn() {
 		if (Wanted < 0) Wanted = TheSettingManager->GetSettingI("Main.Main.Misc", "LandAllLamps") != 0;
@@ -85,7 +88,9 @@ namespace LandLamps {
 
 	// ConstantFilter's pixel hook, after every upload (Render.cpp's PixelWriteAfter dispatcher).
 	inline void AfterPixelWrite(UINT start, UINT count) {
-		if (OwnUpload || !Bound || !Pass || Own.empty() || start > CountReg || start + count <= ColourReg) return;
+		if (OwnUpload || !Bound || !Pass || start > CountReg || start + count <= ColourReg) return;
+		if (WritesLogged < 12) Logger::Log("LandAllLamps: land write %d: c%u-c%u (%u own lamps listed)", ++WritesLogged, start, start + count - 1, (unsigned)Own.size());
+		if (Own.empty() || start + count <= CountReg) return;	// only once the count is written
 		IDirect3DDevice9* d = TheRenderManager->device;
 		float n4[4] = {};
 		if (FAILED(d->GetPixelShaderConstantF(CountReg, n4, 1))) return;
