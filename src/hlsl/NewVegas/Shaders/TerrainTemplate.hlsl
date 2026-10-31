@@ -27,6 +27,12 @@
 #if defined(NUM_PT_LIGHTS) && (NUM_PT_LIGHTS > 24)
     #define NUM_PT_LIGHTS 24
 #endif
+// UNOFFICIAL 2026-10-30 LandAllLamps (core/LandLamps.h): NVR adds the piece's other lamps after Vanilla Plus Terrain's, so every land
+// shader with lamps has room for 24 (the loop runs to PointLightCount as before).
+#if defined(LAND_ALL_LAMPS) && defined(NUM_PT_LIGHTS)
+    #undef NUM_PT_LIGHTS
+    #define NUM_PT_LIGHTS 24
+#endif
 
 #include "includes/Helpers.hlsl"
 // UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]): the land lights in linear space while it is on.
