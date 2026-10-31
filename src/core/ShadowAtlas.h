@@ -194,16 +194,16 @@ namespace ShadowAtlas {
 			const HRESULT a = save(Surface, "NVR-Unofficial-Optimized-Logs/atlas_dump.raw");
 			for (int s = 0; s < PointShadowForward::SlotCount; s++) {
 				const PointShadowForward::Slot& slot = PointShadowForward::Slots[s];
-				if (slot.slot != 0 || !slot.cube) continue;
+				if (slot.slot > 3 || !slot.cube) continue;
 				HRESULT b = S_OK;
 				for (int f = 0; f < 6; f++) {
 					IDirect3DSurface9* face = nullptr;
 					char file[96];
-					sprintf_s(file, "NVR-Unofficial-Optimized-Logs/atlas_cube0_%d.raw", f);
+					sprintf_s(file, "NVR-Unofficial-Optimized-Logs/atlas_cube%d_%d.raw", slot.slot, f);
 					if (SUCCEEDED(slot.cube->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &face))) { const HRESULT r = save(face, file); if (FAILED(r)) b = r; face->Release(); }
 				}
-				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot 0 light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
-					(unsigned)a, (unsigned)b, slot.position.x, slot.position.y, slot.position.z, slot.radius, slot.tile[0], slot.tile[1], slot.tile[2], Size);
+				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot %d light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
+					(unsigned)a, (unsigned)b, slot.slot, slot.position.x, slot.position.y, slot.position.z, slot.radius, slot.tile[0], slot.tile[1], slot.tile[2], Size);
 			}
 		}
 		for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[i] != wantS[i]) d->SetSamplerState(0, kSS[i], savedS[i]);
