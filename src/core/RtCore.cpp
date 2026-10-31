@@ -208,6 +208,8 @@ namespace {
 		bool		farLodOn = false;					// [Main.Main.RayTracing] FarObjectLOD (live)
 		float		farRadius = 40000.0f;				// FarRadius: the far ring's outer edge (game units)
 		UInt32		farInstances = 0;					// far LOD instances (the scene log)
+		UInt32		farWalk[8] = {};					// the far walk's fates (the scene log): seen, culled, out of the ring, geometries, faded, nodes,
+														// switch nodes, root missing frames
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
@@ -1529,6 +1531,17 @@ namespace {
 			// test land either). The loaded grid limits it (a few quads a cell).
 			if (land && !lod && object) { landWalk[0]++; if (object->m_flags & NiAVObject::NiFlags::APP_CULLED) landWalk[1]++; }
 			// LOD land keeps the reach test (big quads with real bounds); its quads where the full land is loaded are APP_CULLED
+			if (walkingFar && object) {	// UNOFFICIAL 2026-10-31: the far walk's fates (why FarObjectLOD finds what it finds)
+				farWalk[0]++;
+				if (object->m_flags & NiAVObject::NiFlags::APP_CULLED) farWalk[1]++;
+				else if (!inReach(object)) farWalk[2]++;
+				else if (object->IsGeometry()) farWalk[3]++;
+				else if (NiNode* n = object->IsNiNode()) {
+					farWalk[5]++;
+					if (n->IsFadeNode() && static_cast<BSFadeNode*>(n)->FadeAlpha <= 0.0f) farWalk[4]++;
+					if (n->IsKindOf<NiSwitchNode>()) farWalk[6]++;
+				}
+			}
 			if (!object || (object->m_flags & NiAVObject::NiFlags::APP_CULLED) || ((!land || lod) && !inReach(object))) continue;
 			if (object->IsGeometry()) {
 				NiGeometry* g = static_cast<NiGeometry*>(object);
@@ -1687,6 +1700,7 @@ namespace {
 			if (farLodOn) {
 				walkingFar = true;
 				const UInt32 before = record->instanceCount;
+				if (!BGSTerrainManager::GetRootObjectLODNode()) farWalk[7]++;
 				Walk(BGSTerrainManager::GetRootObjectLODNode(), false, true);
 				farInstances += record->instanceCount - before;
 				walkingFar = false;
@@ -1899,9 +1913,15 @@ namespace {
 				for (int k = 0; k < 9; k++) if (k != 8) c.leafFate[k] = 0;
 			}
 			if (c.farLodOn)	// UNOFFICIAL 2026-10-31 FarObjectLOD
-				Logger::Log("RT CORE: far object LOD on: %.1f instances a frame in the ring %.0f .. %.0f (mask 0x80)",
-					c.farInstances / (float)(n == 60 ? 60 : n == 600 ? 540 : 600), c.radius, c.farRadius);
+			{
+				const float frames = (float)(n == 60 ? 60 : n == 600 ? 540 : 600);
+				Logger::Log("RT CORE: far object LOD on: %.1f instances a frame in the ring %.0f .. %.0f (mask 0x80); walk a frame: %.1f objects seen, "
+					"%.1f culled, %.1f out of the ring, %.1f geometries, %.1f nodes (%.1f faded, %.1f switch); root missing %u frames",
+					c.farInstances / frames, c.radius, c.farRadius, c.farWalk[0] / frames, c.farWalk[1] / frames, c.farWalk[2] / frames,
+					c.farWalk[3] / frames, c.farWalk[5] / frames, c.farWalk[4] / frames, c.farWalk[6] / frames, c.farWalk[7]);
+			}
 			c.farInstances = 0;
+			for (UInt32& v : c.farWalk) v = 0;
 			if (c.actorsOn && Player) {	// (2026-10-30) the player in the traced scene: the third-person body (walked always), the view model (never)
 				const NiNode* body = Player->GetNode();
 				Logger::Log("RT CORE: player: %s person; body node %s; %.1f body instances a frame; first-person node %s (not traced)",
