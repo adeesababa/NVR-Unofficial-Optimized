@@ -20,6 +20,9 @@
 // With the RT lamp shadows running (an RT GPU), they own the buffer and this pass does nothing.
 #include "GpuProfiler.h"
 #include "RtLampShadows.h"
+#include "RenderRect.h"
+#include <atomic>
+#include <thread>
 
 namespace CapsuleShadows {
 
@@ -228,6 +231,7 @@ float4 C : register(c5);           // x actors, y capsule strength, z self margi
 float4 K : register(c6);           // x contact length, y steps, z thickness, w contact strength
 float4 O : register(c7);           // x p11, y p22, z start offset, w start offset per unit
 float4 R : register(c8);           // x RankBy, y contact bias per unit, z capsule lamp size scale, w the contact's screen-edge fade
+float4 Rect : register(c9);        // xy the render rect (RenderScale below 1: depth and normals fill the top-left xy of their textures)
 
 float4 Lamp(float s, float i) { return tex2Dlod(Table, float4((4.0f * s + i + 0.5f) / 256.0f, 0.5f, 0.0f, 0.0f)); }
 float4 Cap(float a, float i) { return tex2Dlod(Caps, float4((i + 0.5f) / 64.0f, (a + 0.5f) / 16.0f, 0.0f, 0.0f)); }
@@ -295,7 +299,7 @@ float ContactVis(float3 o, float3 lamp, float stop, float2 pixel) {
         if (z < 1.0f) break;
         float2 uv = float2(dot(x, Right.xyz) * O.x * O.x / z, -dot(x, Up.xyz) * O.y * O.y / z) * 0.5f + 0.5f;
         if (any(uv < 0.0f) || any(uv > 1.0f)) break;
-        float sz = tex2Dlod(Depth, float4(uv, 0.0f, 0.0f)).r * Forward.w;
+        float sz = tex2Dlod(Depth, float4(uv * Rect.xy, 0.0f, 0.0f)).r * Forward.w;
         float dz = z - sz;
         if (dz > R.y * z + 0.25f && dz < K.z) {
             float edge = saturate(min(min(uv.x, uv.y), min(1.0f - uv.x, 1.0f - uv.y)) * R.w);
@@ -308,11 +312,11 @@ float ContactVis(float3 o, float3 lamp, float stop, float2 pixel) {
 
 float4 main(float2 uv : TEXCOORD0) : COLOR0 {
     const float none = 1023.0f;
-    float lin = tex2Dlod(Depth, float4(uv, 0.0f, 0.0f)).r;
+    float lin = tex2Dlod(Depth, float4(uv * Rect.xy, 0.0f, 0.0f)).r;
     float viewZ = lin * Forward.w;
     if (!(lin > 0.0f) || lin >= 0.9999f || viewZ < 1.0f) return float4(none + 1024.0f * none, none, 0.0f, 0.0f);
     float3 pos = (Forward.xyz + Right.xyz * (2.0f * uv.x - 1.0f) - Up.xyz * (2.0f * uv.y - 1.0f)) * viewZ;
-    float3 n = tex2Dlod(Normals, float4(uv, 0.0f, 0.0f)).xyz * 2.0f - 1.0f;
+    float3 n = tex2Dlod(Normals, float4(uv * Rect.xy, 0.0f, 0.0f)).xyz * 2.0f - 1.0f;
     float3 normal = normalize(normalize(Right.xyz) * n.x + normalize(Up.xyz) * n.y + Forward.xyz * n.z);
     float3 o = pos + normal * (O.z + O.w * viewZ);
 
@@ -341,33 +345,53 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
             else { w2 = w; s2 = s; }
         }
     }
-    float3 slot = float3(s0, s1, s2);
+    // (a real loop over the three, not unrolled: the unrolled pass took the D3DX compiler 9.4 s)
     float3 entry = none;
-    [unroll] for (int k = 0; k < 3; k++) {
-        [branch] if (slot[k] >= 0.0f) {
-            float4 a = Lamp(slot[k], 0.0f), b = Lamp(slot[k], 1.0f), e = Lamp(slot[k], 3.0f);
-            float3 lamp = float3(a.xy, b.x);
-            float vis = 1.0f;
-            [branch] if (P.z > 0.5f) vis *= CapsuleVis(o, lamp, e.y * R.z, e.x);
-            [branch] if (P.w > 0.5f && vis > 0.0f) vis *= ContactVis(o, lamp, e.x, uv * Size.xy);
-            entry[k] = slot[k] + 64.0f * floor(15.0f * saturate(vis) + 0.5f);
-        }
+    [loop] for (int k = 0; k < 3; k++) {
+        float sl = k == 0 ? s0 : (k == 1 ? s1 : s2);
+        if (sl < 0.0f) break;
+        float4 a = Lamp(sl, 0.0f), b = Lamp(sl, 1.0f), e = Lamp(sl, 3.0f);
+        float3 lamp = float3(a.xy, b.x);
+        float vis = 1.0f;
+        [branch] if (P.z > 0.5f) vis *= CapsuleVis(o, lamp, e.y * R.z, e.x);
+        [branch] if (P.w > 0.5f && vis > 0.0f) vis *= ContactVis(o, lamp, e.x, uv * Size.xy);
+        float value = sl + 64.0f * floor(15.0f * saturate(vis) + 0.5f);
+        entry = k == 0 ? float3(value, entry.yz) : (k == 1 ? float3(entry.x, value, entry.z) : float3(entry.xy, value));
     }
     float code = clamp(floor(log2(viewZ) * P.y + 0.5f), 1.0f, 4095.0f);
     return float4(entry.x + 1024.0f * entry.y, entry.z + 1024.0f * code, 0.0f, 0.0f);
 }
 )";
 
+	// The pass shader is compiled on a worker thread (D3DX only, no device), started on the first frame with the feature compiled in,
+	// and made on the render thread once it is done; until then the pass does not run (the buffer stays unused: the lamp maps). On the
+	// render thread the first compile stalled the game 9.4 s the moment Capsules was switched on (run 20261031-013358).
+	inline std::atomic<int> CompileState{ 0 };	// 0 not started, 1 compiling, 2 done (CompileCode or CompileErrors set)
+	inline ID3DXBuffer* CompileCode = nullptr;
+	inline ID3DXBuffer* CompileErrors = nullptr;
+	inline double CompileSeconds = 0.0;
 	inline bool Ensure(IDirect3DDevice9* d) {
 		if (PS) return true;
 		if (Failed) return false;
-		ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
-		const bool ok = SUCCEEDED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL)) && code &&
-			SUCCEEDED(d->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &PS));
-		if (!ok) Logger::Log("[ERROR] CapsuleShadows: the pass shader failed (%s): off for the session (the lamp maps as before)", errors ? (const char*)errors->GetBufferPointer() : "?");
-		else Logger::Log("UNOFFICIAL CapsuleShadows: pass shader compiled (%u bytes)", code ? (unsigned)code->GetBufferSize() : 0u);
-		if (code) code->Release();
-		if (errors) errors->Release();
+		int state = CompileState.load();
+		if (state == 0) {
+			CompileState = 1;
+			std::thread([] {
+				const DWORD start = GetTickCount();
+				if (FAILED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_3_0", 0, &CompileCode, &CompileErrors, NULL)) && CompileCode) {
+					CompileCode->Release(); CompileCode = nullptr;
+				}
+				CompileSeconds = (GetTickCount() - start) / 1000.0;
+				CompileState = 2;
+			}).detach();
+			return false;
+		}
+		if (state != 2) return false;
+		const bool ok = CompileCode && SUCCEEDED(d->CreatePixelShader((const DWORD*)CompileCode->GetBufferPointer(), &PS));
+		if (!ok) Logger::Log("[ERROR] CapsuleShadows: the pass shader failed (%s): off for the session (the lamp maps as before)", CompileErrors ? (const char*)CompileErrors->GetBufferPointer() : "?");
+		else Logger::Log("UNOFFICIAL CapsuleShadows: pass shader compiled on a worker thread in %.1f s (%u bytes)", CompileSeconds, (unsigned)CompileCode->GetBufferSize());
+		if (CompileCode) { CompileCode->Release(); CompileCode = nullptr; }
+		if (CompileErrors) { CompileErrors->Release(); CompileErrors = nullptr; }
 		if (!ok) { Failed = true; PS = nullptr; }
 		return ok;
 	}
@@ -375,7 +399,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 	// ShaderManager, right after RtCore::Frame (the depth and normals exist): the buffer for the next frame's object shaders
 	inline void Render(IDirect3DDevice9* d) {
 		using namespace RtLampShadows;
-		if (!CompiledIn() || !ScreenSourceFrame || LampCount <= 0 || !Ensure(d)) return;
+		if (!CompiledIn() || !Ensure(d) || !ScreenSourceFrame || LampCount <= 0) return;	// (Ensure first: the compile starts at load)
 		static GpuTimer timer("Capsule + contact shadows");
 		GpuProfileScope gpu(timer, d);
 		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
@@ -403,7 +427,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
 		static UInt32 frame = 0;
 		frame++;
-		float c[9][4] = {};
+		float c[10][4] = {};
 		c[0][0] = (float)w; c[0][1] = (float)h; c[0][2] = 1.0f / w; c[0][3] = 1.0f / h;
 		c[1][0] = view._13; c[1][1] = view._23; c[1][2] = view._33; c[1][3] = cameraData->y;
 		c[2][0] = view._11 / proj._11; c[2][1] = view._21 / proj._11; c[2][2] = view._31 / proj._11;
@@ -427,6 +451,9 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 		c[8][1] = (std::max)(TheSettingManager->GetSettingF(kSection, "ContactBias"), 0.0f);
 		c[8][2] = 1.0f;
 		c[8][3] = 20.0f;
+		// RenderScale below 1 (RenderRect.h): this pass's output stays screen-sized (the object shaders reproject into the whole screen),
+		// its depth and normal reads take the drawn top-left part (run 20261031-013358: the top-left 2/3 x 2/3 never matched)
+		c[9][0] = RenderRect::Active() ? RenderRect::ScaleX : 1.0f; c[9][1] = RenderRect::Active() ? RenderRect::ScaleY : 1.0f;
 
 		NiDX9RenderState* state = TheRenderManager->renderState;
 		IDirect3DVertexShader9* vs = nullptr; IDirect3DPixelShader9* ps = nullptr; IDirect3DVertexDeclaration9* decl = nullptr; DWORD fvf = 0;
@@ -444,8 +471,8 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 		DWORD savedS[4][sizeof(kSS) / sizeof(kSS[0])];
 		for (int s = 0; s < 4; s++)
 			for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) { if (FAILED(d->GetSamplerState(s, kSS[i], &savedS[s][i]))) savedS[s][i] = wantS[i]; if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], wantS[i]); }
-		float savedPS[9][4] = {};
-		d->GetPixelShaderConstantF(0, &savedPS[0][0], 9);
+		float savedPS[10][4] = {};
+		d->GetPixelShaderConstantF(0, &savedPS[0][0], 10);
 
 		d->SetRenderTarget(0, ResultSurface);
 		d->SetDepthStencilSurface(NULL);
@@ -455,7 +482,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 		state->SetPixelShader(PS, false);
 		d->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
 		d->SetTexture(0, depth); d->SetTexture(1, normals); d->SetTexture(2, TableTexture); d->SetTexture(3, CapsuleTexture);
-		d->SetPixelShaderConstantF(0, &c[0][0], 9);
+		d->SetPixelShaderConstantF(0, &c[0][0], 10);
 		struct V { float x, y, z, w, u, v; };
 		const float x1 = w - 0.5f, y1 = h - 0.5f;
 		const V quad[4] = { { -0.5f, -0.5f, 0, 1, 0, 0 }, { x1, -0.5f, 0, 1, 1, 0 }, { -0.5f, y1, 0, 1, 0, 1 }, { x1, y1, 0, 1, 1, 1 } };
@@ -464,7 +491,7 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 		for (int s = 0; s < 4; s++)
 			for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[s][i] != wantS[i]) d->SetSamplerState(s, kSS[i], savedS[s][i]);
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], savedRS[i]);
-		d->SetPixelShaderConstantF(0, &savedPS[0][0], 9);
+		d->SetPixelShaderConstantF(0, &savedPS[0][0], 10);
 		if (rt0) { d->SetRenderTarget(0, rt0); rt0->Release(); }
 		d->SetDepthStencilSurface(zs); if (zs) zs->Release();
 		d->SetViewport(&vp);
