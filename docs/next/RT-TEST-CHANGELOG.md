@@ -311,3 +311,13 @@ nothing here is pushed, released or installed unless the user says so.
 - DLL CRC32 63CE882A, NvrRtHelper 8ECC9D2D (protocol 4, includes the REBUILD flag), NvrDlssHelper ED0C3219, d3d9 D0F5B553
   (unchanged). Package `H:/_NVR-pkg/rt-test-aa9b3080` (all 7 changed .spv + PointShadowForward.hlsl + TerrainTemplate.hlsl
   checked equal to the tree; new switches checked off in its toml); DLSS add-on `H:/_NVR-pkg/rt-test-dlss-addon-aa9b3080`. No zips.
+
+## RT-test-9 release build (2026-10-31, round 14 aa9b3080)
+- Package `H:/_NVR-pkg/rt-test-9-aa9b3080` = round 14's package with the RT-test-8 tester defaults in its defaults toml only
+  (AlphaTested, Compact, MaterialBuffer true, PoolLamps 64, ShadowContrast 0.5; ObjectMotion / OwnGlassDistance 24 /
+  WeatherFogColor 1.0 already default; every round-14 switch off) and README-RT-TEST.txt for round 14 (new switches with
+  their iGPU costs; known issues keep the DebugView line, drop the "no DLSS files" line).
+- Zip `H:/_NVR-pkg/NVR-Unofficial-Optimized-RT-test-9.zip` (2164 entries, 58,390,174 bytes, CRC32 3C6A4D2F): DLL 63CE882A,
+  NvrRtHelper 8ECC9D2D, d3d9 D0F5B553. DLSS add-on `H:/_NVR-pkg/NVR-Unofficial-Optimized-RT-test-9-DLSS-addon.zip`
+  (7 entries, 31,025,688 bytes, CRC32 2938AE38): NvrDlssHelper ED0C3219 + nvngx_dlss.dll 1034282A + NVIDIA notices.
+- Not in this release: ManyLights ec324f05 and DenoiseBackbone 87375305 (round 15).
