@@ -93,3 +93,23 @@ not test ManyLights: its first shot turned ManyLights off before the RT helper s
 **Verdict**: works, picture right and stable, but 3-6x the trace cost for a small visible change on these spots. Keep it off
 (default off). Next: one pass over the table (top 2 and reservoirs together, no dynamic arrays), the table in a buffer instead
 of shared memory, the lamp count logged on the second trace; then re-measure.
+
+## Cost pass (run rtlamp-many-3, 20261031-040215-slotA, PASS; build 919794f3, DLL 1FDCBB72)
+Changes: one pass over the table (a lamp pushed out of, or never in, the top two goes to the reservoirs), no dynamically indexed
+arrays, one ray call site for all rays, ManyLightsRestStride (2: the rest ray on one pixel of each 2 x 2 a frame, in turn), and
+the collected-lamps log (3rd ManyLights trace in each cell, then every 1200th; up to 16 of the lamps without a cube slot listed).
+- **Cost (GPU ms a trace run, iGPU)**: Lucky 38 82-94 -> **70.7** (today's RtLampTrace 25.7: 2.8x); Vault 21 140 -> **89.5**
+  (today 23.1: 3.9x). RestStride 1 vs 2: **the same** (70.8 vs 70.7, 89.6 vs 89.5).
+- Why RestStride saves nothing: a wave (32/64 pixels) runs a ray if any of its pixels needs one, and every 2 x 2 has a pixel that
+  traces, so every wave still traces the rest ray. The stride has to be per group (whole 8 x 8 groups in turn, the frame
+  history filling the others) to cut work. The rest ray itself is the expensive one: it goes to a random, mostly far lamp
+  (long, incoherent rays), while the two exact rays go to each pixel's nearest strong lamps.
+- **Collected lamps (log)**: Lucky 38: 24 lamps, all with a cube slot, 0 others (every lamp the draws used there has a slot).
+  Vault 21: 214 in the table = 24 cube slot + 190 others, and **166 more refused** past ManyLightsMax 254: the draws there used
+  about 380 lamps. The others are the lobby's ceiling lamps (reach 320-510, intensity 0.7, fade 1).
+- **Picture**: unchanged from v1 and as stable: many vs repeat 0.18 / 0.24 (rt vs repeat 0.17 / 0.23); many vs RestStride 1
+  0.18 / 0.24; many vs today's trace 0.17 / 0.35 (V21 slightly darker, the extra lamps shadowed).
+
+**Verdict**: 15-35 % cheaper than v1, still 2.8-3.9x today's trace: keep off. Next (one more run): RestStride per 8 x 8 group
+(cuts the rest rays' wave work by 4), and the rest lamp drawn from nearby lamps first (a reach-weighted cap on the rest ray's
+length), then re-measure.
