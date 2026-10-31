@@ -64,3 +64,24 @@ Cost expected: 1 extra R16F copy-out + one 32-tap pass, instead of 3 a-trous pas
 List `rtsun-33`: soft A/B (SunAngle 0.53 + Denoise vs + Penumbra), DebugView 4 of each, DebugView 11, a downward
 view at the player's feet (contact); then ActorStillSkip on/off and ActorRebuildInterval 60 with the RT CORE log lines
 (posed / still-skipped partitions, refits / full builds) and the F10 "Ray tracing" timer; Compact on for the whole run.
+
+## Results (2026-10-31, iGPU Radeon 780M-class, 1280x720, Goodsprings 10:00 clear; helper fb92e174 = bench\deep-roadmap\rtsun\extra-p4f, fork-0033c)
+
+Runs: rtsun-33 20261031-024258-slotC (full size, 5x5: hit the self-test limit at 6 fps), 20261031-030308-slotC (half size,
+limit again), **20261031-032300-slotC PASS** (actors, compaction), **rtsun-33b 20261031-035434-slotC PASS** (Penumbra).
+
+- **Penumbra works.** Same frame, DebugView 4: the old soft path (a-trous) blurs every edge alike; with Penumbra the shadows are
+  crisp where the caster meets the ground (windmill legs, car tyres, posts) and soften toward the far end of long shadows. The pass
+  draws every frame (S_OK, 640x360 at HalfResolution, tan 0.00463 = 0.53 deg, max radius 16 px traced). Lone noise specks stay in
+  lit areas far from any blocker (the filter skips pixels with no blocker near; the temporal history alone is left there).
+  DebugView 11 / 12 were not checked: the shot tool resets every setting to the run toml before each shot, so those shots ran with
+  Penumbra off (the lists are fixed: each shot names all its settings).
+- **Cost.** The denoiser for RT sun: 3.85 ms (temporal + 3 a-trous, 3x3, half size) -> 1.07 ms temporal only with Penumbra; the
+  penumbra pass itself was not separately timed (its timer needs 120 frames on; it was on ~100). Full size with the 5x5 kernel the
+  old soft path costs **25 ms** of denoising on this iGPU: SunAngle > 0 at full size is not usable there today.
+- **Actors.** Goodsprings, ~14 posed partitions a frame (ActorUpdateInterval 2: half the frames between poses). ActorStillSkip 0.05:
+  1.9 skipped (builds 0.90 -> 0.77 ms); 0.5: 2.0 skipped (0.89 -> 0.79 ms). Idle animation (breathing) keeps most bodies "moving";
+  the skip helps with the dead, the seated and the player standing. ActorRebuildInterval 30: full builds 30 -> 114 over the window,
+  builds back to 0.88-0.94 ms (the rebuild costs about what the skip saves). Keep both off by default; they are there for crowded
+  towns (to measure there).
+- **Compaction** (Compact, existing switch): 473 structures 227 MB -> 46 MB (-80 % of the BLAS memory), no frame cost seen.
