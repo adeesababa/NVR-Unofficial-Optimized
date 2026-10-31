@@ -68,5 +68,28 @@ Lucky 38 + Vault 21 (the RT lamp spots), iGPU env as FORK-RT-LAMPS.md, Actors on
 difference ManyLights vs today and vs its repeat, R's view, the trace's GPU time, the shader load lines (does any forward record
 grow past the GPU's limit: refused counts).
 
-## Results
-(below, after the run)
+## Results (run rtlamp-many-2, 20261031-034115-slotB, PASS; build b56706eb, DLL 9B6677DA)
+Lucky 38 + Vault 21, iGPU (AMD Radeon Graphics) 1280x720, fork-r13 + extra-r13b. Run rtlamp-many-1 (20261031-021702-slotA) did
+not test ManyLights: its first shot turned ManyLights off before the RT helper started, so no history images were made (the
+"needs a restart" rule seen from the other side). rtlamp-many-2 runs the ManyLights shots first.
+- **It runs**: helper 26 shared images (2 more than round 13b), "RT lamp shadows traced, ManyLights", no compile errors, no
+  refused records. The rest view (DebugView 4) in Lucky 38 shows R on most surfaces, with the stair and rail shadows of the
+  lamps past each pixel's two strongest: lamps the cube maps or nothing shadowed before are now traced. In Vault 21 R shows
+  on fewer surfaces (where each pixel's two strongest lamps are all its lamps, there is no rest).
+- **Picture** (mean |diff| of 255, share of pixels off by more than 16):
+  - repeats: many vs many-b 0.20 / 0.02 % (L38), 0.23 / 0.01 % (V21); the same as rt vs rt-b (0.19, 0.22): R's history leaves no
+    visible noise in still shots;
+  - many vs today's trace: 0.20 / 0.03 % (L38), 0.36 / 0.14 % (V21, slightly darker: luma 31.2 vs 31.3, the extra lamps now
+    shadowed); ManyLightsRays 2 vs 1: 0.22 / 0.04 %.
+  - So the change is real but small on these spots: few pixels get much light from lamps past their two strongest.
+- **Cost (GPU, ms a trace run on the iGPU)**: today's RtLampTrace 25.7 (L38) / 23.0 (V21); RtLampTraceMany 82-94 (L38, 3.2-3.7x)
+  / 139.7 (V21, 6x). Too costly as built. Most of it is not the one extra ray: L38 has the same 24 lamps in the table. Likely
+  causes, for the next step: the dynamically indexed arrays (chosen[4], entry[2], bestOf[2]) go to scratch memory on AMD; the
+  8 KB of shared lamp table + group arrays cut occupancy; the two passes over the table per pixel (top 2, then reservoirs)
+  scale with the lamp count (V21).
+- The table's lamp count past the cube slots is unconfirmed: the log line prints every 600 traces, and trace 1 (the only one
+  printed) comes before any draw noted a lamp (0 others). Vault 21's higher cost suggests the others were added.
+
+**Verdict**: works, picture right and stable, but 3-6x the trace cost for a small visible change on these spots. Keep it off
+(default off). Next: one pass over the table (top 2 and reservoirs together, no dynamic arrays), the table in a buffer instead
+of shared memory, the lamp count logged on the second trace; then re-measure.
