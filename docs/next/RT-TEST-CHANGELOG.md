@@ -273,3 +273,20 @@ nothing here is pushed, released or installed unless the user says so.
   NVIDIA nvngx_dlss.dll + licences kept OUT of the zip: `H:/_NVR-pkg/rt-test-8-dlss-addon-40d6d42a` (NvrDlssHelper 94A9344E).
 - DLL CRC32 42463A46, NvrRtHelper 2CA26AD1 (protocol 4), d3d9 D0F5B553.
 - Next: claude/dlss-rr-2 b0146f54 (DLSS top-left small picture fix) as 13b once READY.
+
+## Round 13b (2026-10-31 01:30, 01a9a623)
+- Merged on round 13 (c2497206): claude/dlss-rr-2 b0146f54 (DLSS never the small picture in the corner: the helper copies the
+  render rectangle into exact-size inputs, [Shaders.TAA.DLSS] HelperExactInputs = 1; HelperFailTest = 0 test switch; the DLL
+  and NvrDlssHelper ship together) and claude/motion-ring-fix head 6abc287b (ShadowAtlas, INTERIOR-SHADOWS-MODERN step 1,
+  [Shaders.ShadowsInteriors.Atlas] Enabled = false, restart; 2eeeac12 fixes the skin lamp-shadow shaders that 0af1b129 broke;
+  PointShadowForward.hlsl changed, in the package with TerrainTemplate.hlsl). No conflicts. 01a9a623 restores CRLF in
+  PointShadowForward.h (the branch's tap script wrote LF).
+- Bench (one bulk run, all PASS, no crash, 0 shader compile errors, X3557 warnings as before; SKIN*.pso compile and bind with
+  the atlas off): iGPU lucky22 + Vault 21 (20261031-011853-slotA, rtm-igpu-int3) helper ready in 3 s, each RT toggle changes
+  the picture vs the cube maps (lamp 0.6-0.8 %, GI 25 %, AO 3.6 %, reflections 0.1-0.3 %, all 4.6 %), off again = 0.04 %;
+  1070 RT off (011954-slotC) vs round 13: Vault 21 lamp shot 0.5 % of pixels (pools intact), Goodsprings 11 % (clouds,
+  bushes, NPCs as before); 1070 dlssrr-turn (012135-slotB, pass-through as DLAA): every frame exchanged, 0 stall lines,
+  helper response 0.03-0.07 ms avg.
+- DLL CRC32 54E3449E, NvrRtHelper 63C95421 (protocol 4), NvrDlssHelper 20010E5E (this tree's build of b0146f54), d3d9
+  D0F5B553 (unchanged). Package `H:/_NVR-pkg/rt-test-01a9a623` (plain defaults, no tester edits, no README-RT-TEST); DLSS
+  add-on `H:/_NVR-pkg/rt-test-dlss-addon-01a9a623` (same NVIDIA notices as RT-test-8's, README updated). No zips.
