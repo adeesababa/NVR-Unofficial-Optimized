@@ -677,17 +677,24 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	// (2026-10-31) RadianceCache (docs/next/FORK-RT-GAPS.md section 4): the cache's update pass before the GI, and the GI's off-screen
 	// hits read it. The grid is fixed in the world: the camera's cell and where in it the camera is go to the passes (camera-relative
 	// scene space, as everything else). The GI passes' constants are full, so they take 7 lamps and the grid in lamp slot 7.
-	const bool cacheOn = rt.RadianceCache && rt.CacheStrength > 0.0f && (giPass || merged) && RtImageCache >= 0 && RtCacheShader >= 0;
+	// (2026-10-31 b) interiors only unless CacheExteriors (outdoors: its own rays and spread). DebugView 7 (every bounce hit lit as off
+	// screen) rides on lamp slot 7 too (lampColor[7].w + 16), with or without the cache.
+	const bool exterior = TheShaderManager->GameState.isExterior;
+	const bool cacheOn = rt.RadianceCache && rt.CacheStrength > 0.0f && (giPass || merged) && RtImageCache >= 0 && RtCacheShader >= 0 &&
+		(rt.CacheExteriors || !exterior);
+	const bool offscreenView = rt.DebugView == 7 && (giPass || merged);
+	const int cacheRays = exterior ? rt.CacheRaysExterior : rt.CacheRays, cacheSpread = exterior ? rt.CacheSpreadExterior : rt.CacheSpread;
 	RtAmbient::CacheConstants cc = {};
-	if (cacheOn) {
+	if (cacheOn || offscreenView) {
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
 		const double size = rt.CacheCellSize;
 		const double cell[3] = { floor(camera.x / size), floor(camera.y / size), floor(camera.z / size) };
 		cc.cacheA = D3DXVECTOR4((float)(camera.x - cell[0] * size), (float)(camera.y - cell[1] * size), (float)(camera.z - cell[2] * size), (float)size);
-		cc.cacheB = D3DXVECTOR4((float)cell[0], (float)cell[1], (float)cell[2], rt.CacheStrength);
+		cc.cacheB = D3DXVECTOR4((float)cell[0], (float)cell[1], (float)cell[2], cacheOn ? rt.CacheStrength : 0.0f);
 		c.gi.z = (std::min)(c.gi.z, (float)(RtAmbient::GILampsMax - 1));
 		c.lampPos[RtAmbient::GILampsMax - 1] = cc.cacheA;
 		c.lampColor[RtAmbient::GILampsMax - 1] = cc.cacheB;
+		if (offscreenView) c.lampColor[RtAmbient::GILampsMax - 1].w += 16.0f;	// (the cache pass's own cacheB keeps the plain strength)
 	}
 	RtAmbient::GIConstants g = {};
 	if (reuse && (giPass || merged)) {
@@ -751,7 +758,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const bool mergedNow = merged && c.gi3.z > 0.5f;
 	const bool cacheNow = cacheOn && (giPass || mergedNow);
 	bool cacheReset = false;
-	if (cacheOn && !cacheNow) { c.lampColor[RtAmbient::GILampsMax - 1] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f); g.lampColor[RtAmbient::GILampsMax - 1] = c.lampColor[RtAmbient::GILampsMax - 1]; }
+	if (cacheOn && !cacheNow) { c.lampColor[RtAmbient::GILampsMax - 1] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, offscreenView ? 16.0f : 0.0f); g.lampColor[RtAmbient::GILampsMax - 1] = c.lampColor[RtAmbient::GILampsMax - 1]; }
 	if (cacheNow) {
 		cc.origin = c.origin;
 		cc.gi = c.gi;
@@ -762,12 +769,13 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		memcpy(cc.lampColor, c.lampColor, sizeof(cc.lampColor));
 		cc.gi2 = c.gi2;
 		// A new image or cell size: every cell traced and started over this frame. When the light changes (the reuse's history cut,
-		// giCap back to 1) the cells may lean on 2 frames only, growing back to CacheFrames by one every 4 frames (a cell's turn).
+		// giCap back to 1) the cells may lean on 2 frames only, growing back to CacheFrames by one every CacheSpread frames (a cell's turn).
 		cacheReset = !RtCacheValid || RtCacheCellSize != rt.CacheCellSize;
-		RtCacheCap = cacheReset || giCap <= 1.0f ? 2.0f : (std::min)(RtCacheCap + 0.25f, (float)rt.CacheFrames);
-		const UINT div = cacheReset ? 1u : RtAmbient::CacheUpdateDiv;
-		cc.cacheC = D3DXVECTOR4((float)rt.CacheRays, cacheReset ? -RtCacheCap : (std::min)(RtCacheCap, (float)rt.CacheFrames),
+		const UINT div = cacheReset ? 1u : (UINT)cacheSpread;
+		RtCacheCap = cacheReset || giCap <= 1.0f ? 2.0f : (std::min)(RtCacheCap + 1.0f / (float)div, (float)rt.CacheFrames);
+		cc.cacheC = D3DXVECTOR4((float)cacheRays, cacheReset ? -RtCacheCap : (std::min)(RtCacheCap, (float)rt.CacheFrames),
 			(float)(TheFrameRateManager->FrameNumber % div), (float)div);
+		cc.cacheD = D3DXVECTOR4((float)((TheFrameRateManager->FrameNumber / div) % 4096u), (float)RtAmbient::CacheLazyPeriod, 2.5f, 0.0f);
 	}
 	const int cur = giParity & 1, prev = cur ^ 1;
 	// (2026-10-30) the glow atlas as image 11 (binding 15): the merged pass's last; the plain AO pass binds 6-10 too then (not used there:
@@ -799,9 +807,9 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	if (cacheNow) {
 		static bool cacheLogged = false;
 		if (!cacheLogged || cacheReset) {
-			Logger::Log("UNOFFICIAL RT AO: radiance cache %s (32 x 32 x 16 cells of %.0f units, %d rays a cell, 1 in %d cells a frame, up to %d frames; camera cell %.0f %.0f %.0f; %s).",
-				cacheReset ? "started over" : "on", rt.CacheCellSize, rt.CacheRays, (int)cc.cacheC.w, rt.CacheFrames, cc.cacheB.x, cc.cacheB.y, cc.cacheB.z,
-				mergedNow ? "read by the merged AO + GI pass" : "read by the GI pass");
+			Logger::Log("UNOFFICIAL RT AO: radiance cache %s (32 x 32 x 16 cells of %.0f units, %d rays a cell, 1 in %d cells a frame, up to %d frames, lazy cells 1 visit in %u; %s; camera cell %.0f %.0f %.0f; %s).",
+				cacheReset ? "started over" : "on", rt.CacheCellSize, cacheRays, cacheSpread, rt.CacheFrames, RtAmbient::CacheLazyPeriod, exterior ? "exterior" : "interior",
+				cc.cacheB.x, cc.cacheB.y, cc.cacheB.z, mergedNow ? "read by the merged AO + GI pass" : "read by the GI pass");
 			cacheLogged = true;
 		}
 	}

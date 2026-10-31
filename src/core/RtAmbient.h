@@ -26,7 +26,8 @@ namespace RtAmbient {
 		int		SkyRays = 16;		// 8 or 16 (one or two rings round the normal + straight up)
 		float	SkyDistance = 800.0f;	// [64-8000] sky ray length (Skylighting's Distance: 800)
 		int		DebugView = 0;		// 1 RT visibility (before strength), 2 RT sky visibility, 3 rays that started inside something / hit distance,
-									// 4 / 5 the helper's input (view distance / 2000, normal up), test only
+									// 4 / 5 the helper's input (view distance / 2000, normal up), test only, 6 the GI bounce light alone,
+									// 7 (2026-10-31) as 6 with every bounce hit lit as if off screen (RadianceCache's whole share shows)
 		// UNOFFICIAL 2026-10-29 (rt-ao-gi) one-bounce diffuse GI: one ray per half-resolution pixel and frame, GIDistance long; at the
 		// hit the light it sends back = its albedo (the core's per-instance record) x (the sun with a shadow ray + the ambient + the
 		// nearest lamps); into AmbientLight's bounce light (ComputeGI's accumulate and apply), strength GIStrength. AmbientLight only.
@@ -54,8 +55,15 @@ namespace RtAmbient {
 		bool	RadianceCache = false;
 		float	CacheStrength = 1.0f;	// [0-2] the cache's light at a bounce hit
 		float	CacheCellSize = 128.0f;	// [32-512] world units a cell (the grid: 32 x 32 x 16 of them)
-		int		CacheRays = 8;			// [1-32] rays a cell when it is updated (a quarter of the cells a frame)
+		int		CacheRays = 8;			// [1-32] rays a cell when it is updated
 		int		CacheFrames = 16;		// [1-32] the frames of samples a cell's light averages at most (the lag when the light changes)
+		// (2026-10-31 b) the cost (rt-rc-1: 3.1 ms Lucky 38 / 7.8 ms Goodsprings a frame with 8 rays and a quarter of the cells): interiors
+		// only unless CacheExteriors; 1 in CacheSpread cells a frame (1, 2, 4, 8, 16 or 32); outdoors its own rays and spread; settled
+		// cells far from every surface or inside something traced 1 visit in 8 (RtAOTrace.comp).
+		bool	CacheExteriors = false;
+		int		CacheSpread = 8;
+		int		CacheRaysExterior = 4;
+		int		CacheSpreadExterior = 8;
 	};
 	inline Settings Current;
 
@@ -67,7 +75,7 @@ namespace RtAmbient {
 		Current.Sky = TheSettingManager->GetSettingI(s, "Sky") != 0;
 		Current.SkyRays = TheSettingManager->GetSettingI(s, "SkyRays") <= 8 ? 8 : 16;
 		Current.SkyDistance = std::clamp(TheSettingManager->GetSettingF(s, "SkyDistance"), 64.0f, 8000.0f);
-		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 6);
+		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 7);
 		Current.GI = TheSettingManager->GetSettingI(s, "GI") != 0;
 		Current.GIDistance = std::clamp(TheSettingManager->GetSettingF(s, "GIDistance"), 100.0f, 8000.0f);
 		Current.GIStrength = std::clamp(TheSettingManager->GetSettingF(s, "GIStrength"), 0.0f, 4.0f);
@@ -88,6 +96,11 @@ namespace RtAmbient {
 		Current.CacheCellSize = std::clamp(TheSettingManager->GetSettingF(s, "CacheCellSize"), 32.0f, 512.0f);
 		Current.CacheRays = std::clamp(TheSettingManager->GetSettingI(s, "CacheRays"), 1, 32);
 		Current.CacheFrames = std::clamp(TheSettingManager->GetSettingI(s, "CacheFrames"), 1, 32);
+		auto pow2 = [](int v) { int p = 1; while (p * 2 <= v && p < 32) p *= 2; return p; };	// (the cells split into whole 64-thread groups)
+		Current.CacheExteriors = TheSettingManager->GetSettingI(s, "CacheExteriors") != 0;
+		Current.CacheSpread = pow2(std::clamp(TheSettingManager->GetSettingI(s, "CacheSpread"), 1, 32));
+		Current.CacheRaysExterior = std::clamp(TheSettingManager->GetSettingI(s, "CacheRaysExterior"), 1, 32);
+		Current.CacheSpreadExterior = pow2(std::clamp(TheSettingManager->GetSettingI(s, "CacheSpreadExterior"), 1, 32));
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -145,9 +158,10 @@ namespace RtAmbient {
 		D3DXVECTOR4	cacheA;			// xyz the camera's world position minus its cell's corner, w the cell size
 		D3DXVECTOR4	cacheB;			// xyz the camera's cell (world cell coordinates), w CacheStrength
 		D3DXVECTOR4	cacheC;			// x CacheRays, y the frames of history at most (negative: all cells start over), z this frame's turn, w 1 in this many cells a frame
+		D3DXVECTOR4	cacheD;			// (2026-10-31 b) x the visit (frame / cacheC.w, mod 4096), y lazy cells' period, z "far" in cells
 	};
 	static_assert(sizeof(CacheConstants) <= 512, "RtCore: 512 bytes of constants a pass");
-	inline constexpr UINT CacheCells = 32 * 32 * 16, CacheUpdateDiv = 4;	// RtAOTrace.comp CacheGrid; the image: 256 x 256 (4 texels a cell)
+	inline constexpr UINT CacheCells = 32 * 32 * 16, CacheLazyPeriod = 8;	// RtAOTrace.comp CacheGrid; the image: 256 x 256 (4 texels a cell)
 
 	// The RT core (RtCore.h) runs: the helper is ready on a GPU with ray tracing. Off = NVR's own passes.
 	inline bool CoreReady() { return RtCore::Running(); }

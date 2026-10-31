@@ -59,6 +59,8 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     vec4 cacheB;        // (as lampColor[7]) xyz the camera's cell (world cell coordinates), w CacheStrength (> 0: on)
     vec4 cacheC;        // x rays a cell, y the frames of history at most (negative: every cell starts over: a new image or cell size),
                         // z this frame's turn (0 .. w-1), w the cells updated: 1 in w a frame
+    vec4 cacheD;        // (2026-10-31 b) x this cell's visit (frame / w, mod 4096), y lazy cells' period (a settled cell far from every surface
+                        // or inside something: traced 1 visit in y), z "far": no hit nearer than z cells
 } cb;
 #else
 layout(set = 0, binding = 1, std140) uniform Constants {
@@ -254,6 +256,8 @@ vec3 HitNormal(uint instance, uint prim, mat4x3 toScene, vec3 d) {
 #define CACHE_A cb.lampPos[7]
 #define CACHE_B cb.lampColor[7]
 #endif
+// (2026-10-31 b) CACHE_B.w 16 and up: DebugView 7 (every bounce hit lit as off screen: the cache's whole share shows); the strength is the rest
+#define CACHE_STRENGTH (CACHE_B.w >= 16.0 ? CACHE_B.w - 16.0 : CACHE_B.w)
 const ivec3 CacheGrid = ivec3(32, 32, 16);
 
 // A cell's slot texel (k = 0) and its stamp, for a cell given relative to the camera's cell.
@@ -270,7 +274,7 @@ ivec2 CacheTexel(ivec3 local, out vec3 stamp) {
 // inside something. 0 where no cell is usable (outside the grid, a fresh area).
 vec3 CacheIrradiance(vec3 p, vec3 n) {
     float size = CACHE_A.w;
-    if (!(CACHE_B.w > 0.0) || !(size > 0.0)) return vec3(0.0);
+    if (!(CACHE_STRENGTH > 0.0) || !(size > 0.0)) return vec3(0.0);
     vec3 g = (p + n * (0.5 * size) + CACHE_A.xyz) / size - 0.5;   // the cell centres at whole numbers (relative to the camera's cell)
     vec3 base = floor(g), f = g - base;
     ivec3 half_ = CacheGrid / 2;
@@ -283,9 +287,9 @@ vec3 CacheIrradiance(vec3 p, vec3 n) {
         vec3 stamp;
         ivec2 t = CacheTexel(local, stamp);
         vec4 head = imageLoad(cacheImage, t + ivec2(3, 0));
-        float m = floor(head.w);
+        float hw = abs(head.w), m = floor(hw);   // (2026-10-31 b: negative = far from every surface, still valid)
         if (!(m >= 1.0) || any(greaterThan(abs(head.xyz - stamp), vec3(0.25)))) continue;
-        float inside = (head.w - m) / 0.9;
+        float inside = (hw - m) / 0.9;
         vec3 tri = mix(1.0 - f, f, vec3(o));
         vec3 toCell = (vec3(local) + 0.5) * size - CACHE_A.xyz - p;
         float facing = 0.5 + 0.5 * dot(toCell, n) * inversesqrt(max(dot(toCell, toCell), 1.0e-4));
@@ -361,7 +365,7 @@ vec3 Shade(uint instance, uint prim, vec2 bary, vec3 hit, vec3 n, float t, float
         // at the hit, only the lit parts (rt-sun-core d40b6645), in place of the whole mesh's brightness-gated colour
         if (cb.sunColor.w > 0.5) glow = rtHitGlow(instance, prim, bary) * cb.ambient.w;
     }
-    vec3 cached = CACHE_B.w > 0.0 ? CacheIrradiance(hit, n) * CACHE_B.w : vec3(0.0);
+    vec3 cached = CACHE_STRENGTH > 0.0 ? CacheIrradiance(hit, n) * CACHE_STRENGTH : vec3(0.0);
     return Clamped(albedo * (e * cb.gi2.x + cached) + glow);
 }
 
@@ -379,7 +383,7 @@ vec4 Bounce(vec3 start, vec3 d, float tMin, float xi) {
     vec3 n = HitNormal(instance, prim, rayQueryGetIntersectionObjectToWorldEXT(q, true), d);
     vec3 hit = start + d * t;
     vec4 seen = ScreenLight(hit);
-    if (seen.a > 0.5) return vec4(Clamped(seen.rgb), t / cb.gi.x);
+    if (seen.a > 0.5 && CACHE_B.w < 16.0) return vec4(Clamped(seen.rgb), t / cb.gi.x);   // (DebugView 7: Shade everywhere)
     return vec4(Shade(instance, prim, rayQueryGetIntersectionBarycentricsEXT(q, true), hit, n, t, xi), t / cb.gi.x);
 }
 #endif
@@ -682,16 +686,20 @@ void main() {
     vec3 stamp;
     ivec2 t = CacheTexel(local, stamp);
     vec4 head = imageLoad(cacheImage, t + ivec2(3, 0));
-    float m = floor(head.w);
+    float hw = abs(head.w), m = floor(hw);
     bool same = cb.cacheC.y > 0.0 && m >= 1.0 && m <= 64.0 && !any(greaterThan(abs(head.xyz - stamp), vec3(0.25)));
     vec4 oldR = same ? imageLoad(cacheImage, t) : vec4(0.0);
     vec4 oldG = same ? imageLoad(cacheImage, t + ivec2(1, 0)) : vec4(0.0);
     vec4 oldB = same ? imageLoad(cacheImage, t + ivec2(2, 0)) : vec4(0.0);
-    float oldInside = same ? (head.w - m) / 0.9 : 0.0;
+    float oldInside = same ? (hw - m) / 0.9 : 0.0;
     if (any(isnan(oldR)) || any(isnan(oldG)) || any(isnan(oldB)) || any(isinf(oldR)) || any(isinf(oldG)) || any(isinf(oldB))) {
         same = false; oldR = oldG = oldB = vec4(0.0); oldInside = 0.0;
     }
     if (!same) m = 0.0;
+    // (2026-10-31 b) Lazy cells: settled (full history), and far from every surface (no lookup reaches them: outdoors, the air above) or
+    // mostly inside something (lookups weigh them out): traced 1 visit in cacheD.y, so the rays go where the light is read.
+    if (cb.cacheC.y > 0.0 && same && m >= cb.cacheC.y && (head.w < 0.0 || oldInside > 0.4) &&
+        (int(cb.cacheD.x + 0.5) + index) % max(int(cb.cacheD.y + 0.5), 1) != 0) return;
 
     float size = cb.cacheA.w;
     vec3 centre = (vec3(local) + 0.5) * size - cb.cacheA.xyz;   // scene space
@@ -699,7 +707,7 @@ void main() {
     float frame = cb.origin.w;
     vec2 turn = fract(vec2(Ign(vec2(index & 255, index >> 8) + 13.0), Ign(vec2(index >> 8, index & 255) + 29.0)) + frame * vec2(0.618034, 0.754878));
     vec4 r = vec4(0.0), g = vec4(0.0), b = vec4(0.0);
-    float inside = 0.0;
+    float inside = 0.0, nearest = 1.0e30;
     for (int i = 0; i < rays; i++) {
         float z = 1.0 - 2.0 * fract((float(i) + turn.x) / float(rays));
         float phi = 6.2831853 * fract(float(i) * 0.618034 + turn.y);
@@ -709,8 +717,9 @@ void main() {
         rayQueryInitializeEXT(q, scene, 0u, RT_CULL, centre + cb.origin.xyz, 0.0, d, cb.gi.x);
         Proceed(q);
         if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionTriangleEXT) continue;
-        if (!rayQueryGetIntersectionFrontFaceEXT(q, true)) { inside += 1.0; continue; }
         float th = rayQueryGetIntersectionTEXT(q, true);
+        nearest = min(nearest, th);
+        if (!rayQueryGetIntersectionFrontFaceEXT(q, true)) { inside += 1.0; continue; }
         uint instance = rayQueryGetIntersectionInstanceIdEXT(q, true), prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
         vec3 n = HitNormal(instance, prim, rayQueryGetIntersectionObjectToWorldEXT(q, true), d);
         vec3 light = Shade(instance, prim, rayQueryGetIntersectionBarycentricsEXT(q, true), centre + d * th, n, th,
@@ -727,6 +736,7 @@ void main() {
     imageStore(cacheImage, t, mix(oldR, r * scale, alpha));
     imageStore(cacheImage, t + ivec2(1, 0), mix(oldG, g * scale, alpha));
     imageStore(cacheImage, t + ivec2(2, 0), mix(oldB, b * scale, alpha));
-    imageStore(cacheImage, t + ivec2(3, 0), vec4(stamp, m + 0.9 * insideNew));
+    bool far = nearest > cb.cacheD.z * size;   // (from this visit's rays: a near surface they missed makes it lazy for a while, no more)
+    imageStore(cacheImage, t + ivec2(3, 0), vec4(stamp, (far ? -1.0 : 1.0) * (m + 0.9 * insideNew)));
 }
 #endif
