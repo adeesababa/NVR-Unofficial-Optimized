@@ -155,6 +155,19 @@ namespace ShadowAtlas {
 			}
 		}
 
+		// [Shaders.ShadowsInteriors.Atlas] Dump (diagnostic, live, set back to 0 here): the atlas and the first live slot's cube map to the
+		// log folder as DDS (R16F / the cube's own format), with that slot's light and tile in the log.
+		if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "Dump") != 0) {
+			TheSettingManager->SetSetting("Shaders.ShadowsInteriors.Atlas", "Dump", (int)0);
+			const HRESULT a = D3DXSaveTextureToFileA(".\NVR-Unofficial-Optimized-Logs\atlas_dump.dds", D3DXIFF_DDS, Texture, NULL);
+			for (int s = 0; s < PointShadowForward::SlotCount; s++) {
+				const PointShadowForward::Slot& slot = PointShadowForward::Slots[s];
+				if (slot.slot != 0 || !slot.cube) continue;
+				const HRESULT b = D3DXSaveTextureToFileA(".\NVR-Unofficial-Optimized-Logs\atlas_cube0.dds", D3DXIFF_DDS, slot.cube, NULL);
+				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot 0 light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
+					(unsigned)a, (unsigned)b, slot.position.x, slot.position.y, slot.position.z, slot.radius, slot.tile[0], slot.tile[1], slot.tile[2], Size);
+			}
+		}
 		for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) if (savedS[i] != wantS[i]) d->SetSamplerState(0, kSS[i], savedS[i]);
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], savedRS[i]);
 		d->SetPixelShaderConstantF(0, savedPS, 1);
