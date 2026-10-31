@@ -198,6 +198,40 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 - Bench: `bench/foundations/lists/rtrefl-split.txt` (any GPU), `rtrefl-1.txt` (iGPU, with the helper);
   run toml `bench/deep-roadmap/evidence/rtrefl/rtrefl.toml`.
 
+## Round 14 plan (2026-10-31, claude/rt-refl-3 on rt-test-merge 01a9a623): glossy reflections and far reach
+Main's gaps against modern RT games: (1) rough / glossy RT reflections that converge (not mirror-only), output a denoiser or DLSS
+Ray Reconstruction can use; (2) a longer reach for skyline reflections, with far object LOD beyond SceneRadius 8192
+(FORK-RT-GAPS.md section 2). Everything off by default; one bulk bench run; READY line for the merge session.
+
+**What is already there.** The rays are GGX-sampled from the visible normals (VNDF, Heitz 2018), at half resolution, one per pixel
+(RoughShare: one per 2x2 block above roughness 0.3), and a reflection rougher than MaxRoughness (0.5) gets no ray at all (cube and
+grid). Denoising is the old SSR chain: temporal history (0.85) and a blur that widens with roughness and hit distance. So rough
+surfaces either get no RT, or one noisy sample a block that the blur smears.
+
+**(1) Glossy: ray reuse (`[Shaders.Reflections.RT] RayReuse`, 0 = off; `MaxRoughness` may go up to 1).** The stochastic-SSR
+resolve (Stachowiak, "Stochastic Screen-Space Reflections", Frostbite 2015): a rough pixel reuses its neighbours' ray hits as extra
+samples. For each of 4 neighbours (a rotating pattern, the spread growing with roughness), its hit point is re-seen from this
+pixel and shaded the same way as the pixel's own hit (screen at the hit, the cube toward it, or the estimate with the hit's albedo,
+normal, sun and lamps), and weighted by this pixel's GGX lobe toward it over the neighbour's own sampling pdf (the ratio estimator:
+unbiased for the lobe, so no colour shift), with depth / normal edge stops so nothing bleeds across edges. Five samples a pixel
+for the cost of one ray: rough reflections converge in a frame or two instead of smearing. Cost: up to four extra hit shadings on
+rough pixels only (half resolution); no extra rays.
+- RR-friendly: the resolve already writes the hit distance's share (Spread); the per-pixel reflected hit distance and roughness
+  are what DLSS Ray Reconstruction / NRD-style denoisers take as their specular guide. Left for the dlss-ray-reconstruction session
+  to pick up (the images are there).
+
+**(2) Far reach: far object LOD (`[Main.Main.RayTracing] FarObjectLOD`, off; `FarRadius` 40000).** The core walks the cells
+within SceneRadius only; beyond it a reflection ray meets nothing and takes the cube (which holds the skyline only as far as the
+camera saw it). With FarObjectLOD the core also walks the game's object LOD tree (BGSTerrainManager::GetRootObjectLODNode, the
+distant buildings and rocks the game draws past the loaded grid), in a ring from SceneRadius to FarRadius only (inside it the full
+objects stand; the game also culls the LOD there). Their instances get a new mask bit, NVR_RT_MASK_FAR = 0x80: every existing
+ray mask (0xFF minus bits) sees them; a ray that should not (an AO ray, a short shadow ray) can drop 0x80. Reflection rays get
+`Distance` up to FarRadius when on. Cost: more instances and triangles (LOD meshes are coarse), built once; measured.
+
+**Bench (one bulk run, iGPU 720p, helper extra-p3e for protocol 4):** RayReuse at lucky22 and luxe (rough tiles; MaxRoughness 0.8,
+RayReuse 1 vs 0, reflection alone, noise pairs, cost), FarObjectLOD at noon (the skyline in wet ground: on vs off, the RT CORE
+instance and triangle counts, helper cost).
+
 ## Results
 
 ### 2026-10-30 16:30 RT reflections on the first-person weapon (claude/rt-refl-weapon, on the installed motion-ring-fix aee0046c)
