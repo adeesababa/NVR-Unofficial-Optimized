@@ -257,7 +257,15 @@ namespace {
 		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
 		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
 		ID3D9NvrExtPipeline* pipeline = PenumbraPipeline();
-		if (!pipeline || !depth || !normals || !cameraData || !hitThisFrame || !hitTexture || !DxvkCompute::PointClamp()) return false;
+		static int told = 0;
+		if (!pipeline || !depth || !normals || !cameraData || !hitThisFrame || !hitTexture || !DxvkCompute::PointClamp()) {
+			if (told < 3) {
+				told++;
+				Logger::Log("UNOFFICIAL NVR DXVK: RT sun Penumbra not run: pipeline %d depth %d normals %d camera %d blockers this frame %d blocker texture %d sampler %d",
+					pipeline ? 1 : 0, depth ? 1 : 0, normals ? 1 : 0, cameraData ? 1 : 0, hitThisFrame ? 1 : 0, hitTexture ? 1 : 0, DxvkCompute::PointClamp() ? 1 : 0);
+			}
+			return false;
+		}
 		const UINT w = textureWidth, h = textureHeight;
 		static UINT pw = 0, ph = 0;
 		if (!penumbraTexture || pw != w || ph != h) {
@@ -274,7 +282,7 @@ namespace {
 		push.params[0] = tanf(0.5f * S.sunAngle * 0.0174532925f);
 		push.params[1] = cameraData->y;
 		push.params[2] = S.penumbraMaxRadius / (S.halfResolution ? 2.0f : 1.0f);	// the setting is in full-size pixels
-		push.params[3] = S.debugView == 11 ? 1.0f : 0.0f;
+		push.params[3] = S.debugView == 11 ? 1.0f : S.debugView == 12 ? 2.0f : 0.0f;	// 12: a flat 0.25 (the pass' output reaches the screen)
 		push.size[0] = 1.0f / w; push.size[1] = 1.0f / h; push.size[2] = (float)h; push.size[3] = TheRenderManager->projMatrix._22;
 		push.extra[0] = 0.75f;
 		NVR_EXT_RESOURCE_BINDING bindings[5] = {};
@@ -289,7 +297,13 @@ namespace {
 		draw.pBindings = bindings;
 		draw.pPushData = &push;
 		draw.PushDataSize = sizeof(push);
-		return SUCCEEDED(DxvkCompute::Extension()->Draw(&draw));
+		const HRESULT hr = DxvkCompute::Extension()->Draw(&draw);
+		if (told < 6) {
+			told++;
+			Logger::Log("UNOFFICIAL NVR DXVK: RT sun Penumbra: pass %ux%u, tan %.5f, farZ %.0f, max radius %.1f px, debug %.0f: %s (0x%08X)", w, h, push.params[0],
+				push.params[1], push.params[2], push.params[3], SUCCEEDED(hr) ? "drawn" : "Draw FAILED", (UInt32)hr);
+		}
+		return SUCCEEDED(hr);
 	}
 
 	ID3D9NvrExtPipeline* CombinePipeline(int which) {
@@ -407,7 +421,7 @@ namespace RtSunShadows {
 		Device->SetRenderTarget(0, sunShadows->scratchSurface[0]);	// a pass may not draw into the device's current target
 		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { 1.0f, 0, 1, 0 };
 		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
-		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = S.debugView == 4 || S.debugView == 11 ? signalTexture : visibilityTexture;
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = S.debugView == 4 || S.debugView >= 11 ? signalTexture : visibilityTexture;
 		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
 		NVR_EXT_DRAW_DESC draw = {};
 		draw.pPipeline = pipeline;

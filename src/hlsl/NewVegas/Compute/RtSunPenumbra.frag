@@ -16,7 +16,7 @@ layout(set = 1, binding = 2) uniform texture2D t_depth;        // TESR_DepthBuff
 layout(set = 1, binding = 3) uniform texture2D t_normals;      // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5 (full size)
 
 layout(push_constant) uniform Push {
-    vec4 params;   // x tan(the sun's half-angle), y farZ, z the largest radius (traced pixels), w debug (1: radius / largest as grey)
+    vec4 params;   // x tan(the sun's half-angle), y farZ, z the largest radius (traced pixels), w debug (1: radius / largest as grey, 2: a flat 0.25)
     vec4 size;     // x 1 / width, y 1 / height, z height (traced), w projection[1][1]
     vec4 extra;    // x the smallest radius that filters (pixels)
     uint samplerIndex;
@@ -36,6 +36,7 @@ vec2 vogel(int i, float turn) {
 }
 
 void main() {
+    if (pc.params.w > 1.5) { o_color = vec4(0.25, 0.0, 0.0, 0.0); return; }   // DebugView 12: the pass' own output, flat
     const float center = textureLod(sampler2D(t_visibility, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).r;
     const float d01 = textureLod(sampler2D(t_depth, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).r;
     const float z = d01 * pc.params.y;
