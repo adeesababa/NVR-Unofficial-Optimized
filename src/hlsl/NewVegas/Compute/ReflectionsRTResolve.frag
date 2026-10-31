@@ -13,6 +13,35 @@
 
 layout(location = 1) out vec4 o_spread;   // 2026-10-29: R16F, the hit's distance share (0 contact .. 1 far / unknown) for the blur passes
 
+// 2026-10-31: one RT hit's colour as seen along the reflection (the screen at the hit when it is visible there, else the cube toward
+// it when it is out of view, else the estimate), and which source it came from (x screen, y cube share; the rest the estimate).
+vec3 RtHitColour(vec3 hitW, vec4 hitData, vec4 shade, vec3 worldR, float roughness, out vec2 source) {
+    uint hitFlags = uint(hitData.y + 0.5);
+    vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
+    vec2 at = ToScreen(hitV);
+    bool inView = hitV.z > nearZ && all(greaterThan(at, vec2(0.0))) && all(lessThan(at, vec2(1.0)));
+    if (inView && abs(readDepthLod(at) - hitV.z) < max(hitV.z * RtTolerance, 8.0) && !IsWeapon(at)) {
+        source = vec2(1.0, 0.0);
+        return linearize(textureLod(sampler2D(t_rendered, LINEAR_S), at, 0.0).rgb);
+    }
+    vec4 env = !inView && CubeOn > 0.0 ? EnvAlong(normalize(hitW), roughness) : vec4(0.0);
+    vec3 hitNormal = (hitFlags & 4u) != 0u ? OctDecode(hitData.zw) : -worldR;
+    int keyLamp = int(hitFlags >> 4u) - 1;   // -1: none (outdoors by day shade.a is the sun's)
+    vec3 shaded = RtShadeHit(hitW, hitNormal, shade.rgb, shade.a, keyLamp);
+    // 2026-10-29: a glowing draw (the core's record flag: emissive material) gives its own light too (neon, lit glass).
+    if ((hitFlags & 8u) != 0u) shaded += shade.rgb * rtc.rt3.w;
+    source = vec2(0.0, env.a);
+    return env.rgb * env.a + shaded * (1.0 - env.a);
+}
+
+// 2026-10-31 RayReuse: the GGX distribution (a = roughness^2) and the pdf a direction was sampled with (normal-distribution
+// sampling: D(h) n.h / (4 v.h); the VNDF pdf differs by a factor near 1 at these roughnesses).
+float GgxD(float NoH, float a) { float a2 = a * a; float d = NoH * NoH * (a2 - 1.0) + 1.0; return a2 / (3.14159265 * d * d + 1.0e-7); }
+float GgxPdf(vec3 N, vec3 V, vec3 L, float a) {
+    vec3 H = normalize(V + L);
+    return GgxD(saturate(dot(N, H)), a) * saturate(dot(N, H)) / (4.0 * max(dot(V, H), 1.0e-3));
+}
+
 void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
     vec2 vpos = floor(gl_FragCoord.xy);
@@ -67,23 +96,51 @@ void main() {
             o_spread = vec4(saturate(hitData.x / (hitData.x + ray.x * rtc.rt3.z)), 0.0, 0.0, 0.0);
             rtInstance = float(hitFlags & 15u);   // (RT DebugView 4: a colour per flag combination: land, albedo known, normal known)
             vec3 hitW = borrowed ? borrowHitW : surfaceW + worldR * hitData.x;
-            vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
-            vec2 at = ToScreen(hitV);
-            bool inView = hitV.z > nearZ && all(greaterThan(at, vec2(0.0))) && all(lessThan(at, vec2(1.0)));
-            if (inView && abs(readDepthLod(at) - hitV.z) < max(hitV.z * RtTolerance, 8.0) && !IsWeapon(at)) {
-                rtScreenShare = missing;
-                sum += linearize(textureLod(sampler2D(t_rendered, LINEAR_S), at, 0.0).rgb) * missing;
-            } else {
-                vec4 env = !inView && CubeOn > 0.0 ? EnvAlong(normalize(hitW), roughness) : vec4(0.0);
-                rtCubeShare = missing * env.a;
-                rtGuessShare = missing - rtCubeShare;
-                vec3 hitNormal = (hitFlags & 4u) != 0u ? OctDecode(hitData.zw) : -worldR;
-                int keyLamp = int(hitFlags >> 4u) - 1;   // -1: none (outdoors by day shade.a is the sun's)
-                vec3 shaded = RtShadeHit(hitW, hitNormal, shade.rgb, shade.a, keyLamp);
-                // 2026-10-29: a glowing draw (the core's record flag: emissive material) gives its own light too (neon, lit glass).
-                if ((hitFlags & 8u) != 0u) shaded += shade.rgb * rtc.rt3.w;
-                sum += env.rgb * rtCubeShare + shaded * rtGuessShare;
+            vec2 source;
+            vec3 hitColour = RtHitColour(hitW, hitData, shade, worldR, roughness, source);
+            rtScreenShare = missing * source.x;
+            rtCubeShare = missing * (1.0 - source.x) * source.y;
+            rtGuessShare = missing - rtScreenShare - rtCubeShare;
+            // 2026-10-31 RayReuse (rt4.y, from roughness rt4.z): a rough pixel takes its neighbours' hits as more samples of its own
+            // lobe (stochastic SSR's ratio estimator: each hit re-seen from here, weighted by this pixel's GGX lobe toward it over the
+            // pdf the neighbour drew it with), with depth / normal stops. Four more samples for the cost of shading them; no rays.
+            if (rtc.rt4.y > 0.5 && roughness >= rtc.rt4.z && !weaponRay) {
+                vec3 N = ViewToWorldDir(ViewNormal(pixelUV));
+                vec3 V = -normalize(surfaceW);
+                float a = max(roughness * roughness, 1.0e-3);
+                vec3 total = hitColour;   // the own sample: its own lobe over its own pdf = 1
+                float weights = 1.0;
+                // (with RoughShare only one pixel a 2x2 block casts, the same one in every block: even steps land on other blocks' casters)
+                int spread = rtc.rt3.y > 0.0 && roughness > rtc.rt3.y ? 2 * (1 + int(roughness * 1.5)) : 1 + int(roughness * 3.0 + 0.5);
+                int turn = int(NoiseFrame) & 1;
+                for (int k = 0; k < 4; k++) {
+                    ivec2 o = turn == 0 ? ivec2(k < 2 ? (k == 0 ? 1 : -1) : 0, k < 2 ? 0 : (k == 2 ? 1 : -1))
+                                        : ivec2(k == 0 || k == 3 ? 1 : -1, k < 2 ? 1 : -1);
+                    ivec2 nb = texel + o * spread;
+                    vec2 nRay = texelFetch(sampler2D(t_rtRay, POINT_S), nb, 0).xy;
+                    if (nRay.x <= 0.0 || nRay.y < 1.5 || nRay.y > 3.5) continue;   // no own ray there this frame (or a weapon / borrower)
+                    if (abs(nRay.x - ray.x) > ray.x * 0.05 + 4.0) continue;        // another surface (depth stop)
+                    vec4 nHit = texelFetch(sampler2D(t_rtHit, POINT_S), nb, 0);
+                    if (nHit.x <= 0.0) continue;
+                    vec2 nUV = (vec2(nb) + 0.5) * LowTexel - 0.5 * (LowTexel - cb.reciprocalResolution.xy);
+                    vec3 nN = ViewToWorldDir(ViewNormal(nUV));
+                    if (dot(nN, N) < 0.85) continue;                               // another facing (normal stop)
+                    vec3 nSurface = ViewToWorldDir(ViewPosition(nUV, nRay.x));
+                    vec3 nDir = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), nb, 0).xy);
+                    vec3 nHitW = nSurface + nDir * nHit.x;
+                    vec3 L = normalize(nHitW - surfaceW);
+                    if (dot(L, N) <= 0.0) continue;
+                    float nRough = nRay.y - 2.0;
+                    float nA = max(nRough * nRough, 1.0e-3);
+                    float w = GgxPdf(N, V, L, a) / max(GgxPdf(nN, -normalize(nSurface), nDir, nA), 1.0e-6);
+                    w = min(w, 4.0);   // no single neighbour takes over (fireflies)
+                    vec2 nSource;
+                    total += RtHitColour(nHitW, nHit, texelFetch(sampler2D(t_rtShade, POINT_S), nb, 0), L, roughness, nSource) * w;
+                    weights += w;
+                }
+                hitColour = total / max(weights, 1.0e-6);
             }
+            sum += hitColour * missing;
             confidence += missing;
         }
         else { rtT = 0.0; rtOpen = rtFade >= 1.0; }
