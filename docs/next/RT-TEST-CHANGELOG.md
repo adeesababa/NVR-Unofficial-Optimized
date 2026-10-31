@@ -245,3 +245,13 @@ nothing here is pushed, released or installed unless the user says so.
   54.8 leaf meshes traced a frame, 3: 243.3; picture change vs LeafCards 0: shrub view 6.0 / 6.3 %, RT sun 4.2 % (repeat noise 11 %:
   wind / clouds), RT AO 14.5 % (repeat 3.7 %); shrubs darken under their own traced leaves, no garbage. (A first try 200234-slotA
   started inside Lucky 38: the setpos landed in the wrong cell, 0 instances, not counted.)
+
+## Round 12b (2026-10-30 20:40, c5164de1)
+- + claude/motion-ring-fix f314b83e (replaces cc568c00 on main's word): [_Main.Main.Misc] LandAllLamps false (restart; the land lit by all
+  of its own active lamps, added after Vanilla Plus Terrain's; TerrainTemplate.hlsl changed, in the package), LAMP CAPS census (F10
+  overlay only), round 12 results doc. No conflicts, no line-ending churn.
+- Check (one iGPU run, 20261030-202838-slotC, rtm-igpu-ext5 Goodsprings): verdict PASS, 0 shader compile errors (X3557 warnings as
+  in round 12), helper ready in 0.45 s, each RT toggle changes the picture vs off (sun 2-6 %, AO+GI 16 %, reflections 8 %, all on
+  20 %), no crash. Camera spot differed from round 12's run: no cross-round A/B.
+- DLL CRC32 D855A6BB, NvrRtHelper C8D088CE (round 12's build, source unchanged), fork-0033c D58B4425. Package
+  `H:\_NVR-pkgt-test-c5164de1\`.
