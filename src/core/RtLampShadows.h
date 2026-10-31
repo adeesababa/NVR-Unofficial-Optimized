@@ -143,6 +143,8 @@ namespace RtLampShadows {
 	struct ManyId { int id; float reach; };
 	inline std::unordered_map<const void*, ManyId> PendingIds, TracedIds;	// light -> id: this frame's table / the newest result's
 	inline int ExtraCount = 0;				// lamps noted at ids 64+ this frame
+	inline int RefusedCount = 0;			// lamps the draws used past ManyLightsMax this frame (no id: cube map or unshadowed)
+	inline UInt32 ManyTraces = 0, ManyLogCell = 0, ManyCellTraces = 0;	// the collected-lamps log (Record)
 	inline bool ManyNoting = false;			// this frame's draws note their lamps (Submit: ManyLights on, indoors)
 	inline bool ManyReady() { return CompiledIn && manyShader >= 0 && imageHistory[0] >= 0 && imageHistory[1] >= 0; }
 	inline bool ManyOn() { return ManyReady() && TheSettingManager->GetSettingI(kSection, "ManyLights") != 0 && !TheShaderManager->GameState.isExterior; }
@@ -161,7 +163,11 @@ namespace RtLampShadows {
 	inline void NoteLamp(const void* light, const SlotLamp& data) {
 		if (!Noting(light)) return;
 		const int limit = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "ManyLightsMax"), 64), ManyIds);
-		if (64 + ExtraCount >= limit || LampCount >= ManyIds) return;
+		if (64 + ExtraCount >= limit || LampCount >= ManyIds) {
+			PendingIds.emplace(light, ManyId{ -1, data.reach });	// counted once (ManyIdOf: -1, no id)
+			RefusedCount++;
+			return;
+		}
 		const int id = 64 + ExtraCount++;
 		Lamps[LampCount] = data;
 		Lamps[LampCount].slot = id;
@@ -222,6 +228,7 @@ namespace RtLampShadows {
 		LampCount = 0;
 		LampsThisFrame = false;
 		PendingIds.clear();
+		RefusedCount = 0;
 		ExtraCount = 0;
 		ManyNoting = false;
 		if (!CompiledIn) return;
@@ -558,6 +565,7 @@ namespace RtLampShadows {
 			memcpy(c.reproject, Reproject, sizeof(Reproject));
 			c.many2[0] = (float)(frame & 0xFFFFFF);
 			c.many2[1] = 0.05f;
+			c.many2[2] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "ManyLightsRestStride"), 1), 2);
 			const int manyImages[6] = { imageDepth, imageNormals, imageResult, imageTable, imageHistory[HistoryParity], imageHistory[1 - HistoryParity] };
 			if (!RtCore::AddPass(manyShader, manyImages, 6, 0x24, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 			HistoryParity = 1 - HistoryParity;
@@ -568,10 +576,26 @@ namespace RtLampShadows {
 			memset(TracedLampWorld, 0, sizeof(TracedLampWorld));
 			TracedIds.swap(PendingIds);
 			TracedMany = true;
-			if ((FramesTraced % 600) == 1 && FramesTraced <= 6001)
-				Logger::Log("UNOFFICIAL RT lamp shadows: ManyLights trace %u: %d lamps in the table (%d with a cube slot, %d others), cube redraws skipped %u since the last line",
-					FramesTraced, LampCount, LampCount - ExtraCount, ExtraCount, SkippedCubes);
-			if ((FramesTraced % 600) == 1) SkippedCubes = 0;
+			// The collected lamps: on the 3rd ManyLights trace in each cell (the draws have noted their lamps by then) and every
+			// 1200th; the others listed (up to 16) with where they are, so a run's log says which lamps the trace took
+			const UInt32 cell = Player && Player->parentCell ? Player->parentCell->refID : 0;
+			if (cell != ManyLogCell) { ManyLogCell = cell; ManyCellTraces = 0; }
+			ManyCellTraces++;
+			if ((ManyCellTraces == 3 || (++ManyTraces % 1200) == 0) && ManyTraces <= 24000) {
+				char list[1024] = "";
+				int listed = 0;
+				for (int i = 0; i < LampCount && listed < 16; i++) {
+					const SlotLamp& l = Lamps[i];
+					if (l.slot < 64) continue;
+					char one[96];
+					snprintf(one, sizeof(one), "%s %d (%.0f %.0f %.0f) reach %.0f int %.2f fade %.2f", listed ? ";" : "", l.slot, l.position.x, l.position.y, l.position.z, l.reach, l.intensity, l.fade);
+					strncat_s(list, one, _TRUNCATE);
+					listed++;
+				}
+				Logger::Log("UNOFFICIAL RT lamp shadows: ManyLights trace %u (cell %08X): %d lamps in the table (%d with a cube slot, %d others, %d more refused past ManyLightsMax), cube redraws skipped %u since the last line; others:%s%s",
+					FramesTraced, cell, LampCount, LampCount - ExtraCount, ExtraCount, RefusedCount, SkippedCubes, listed ? list : " none", ExtraCount > listed ? " ..." : "");
+				SkippedCubes = 0;
+			}
 			if (FramesTraced++ == 0)
 				Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced, ManyLights (%ux%u, %d lamps).", w, h, LampCount);
 			return;
