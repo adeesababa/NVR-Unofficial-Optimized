@@ -60,6 +60,8 @@ public:
 		float	RtContactSpread;	// 2026-10-29: a hit this share of the eye's distance from the surface counts as half 'far'
 		float	RtGlowBrightness;	// 2026-10-29: glowing hits (the core's emissive flag) add their colour x this as light
 		bool	RtHitAmbientGrid;	// 2026-10-30: a hit's ambient from the light grid at the hit (AmbientLight's), else the cube near the camera
+		bool	RtRayReuse;			// 2026-10-31: rough pixels reuse their neighbours' ray hits as samples of their own lobe (stochastic SSR resolve)
+		float	RtReuseRoughness;	// 2026-10-31: from this roughness on (RayReuse)
 		float	RtWeapon;			// 2026-10-30: the first-person weapon reflects the RT scene, this strong (0 off)
 		float	RtWeaponRoughness;	// 2026-10-30: the weapon's roughness where no material data says (MaterialAware / MaterialBuffer)
 		float	RtWeaponMetal;		// 2026-10-30: the weapon's metal guessed from its colour (grey = metal) x this, without material data

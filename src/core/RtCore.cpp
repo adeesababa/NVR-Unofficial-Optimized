@@ -204,6 +204,10 @@ namespace {
 		ID3D9NvrExtRtSeq*		rtSeq = nullptr;	// fork patch 0034 (the arena's sequence texel, 2026-10-30); null without it
 		bool		actorsOn = false;					// [Main.Main.RayTracing] Actors (read at each helper start)
 		bool		walkingPlayer = false;				// Gather's walk of the player's own node (NVR_RT_MASK_PLAYER on its rigid parts)
+		bool		walkingFar = false;					// UNOFFICIAL 2026-10-31: Gather's walk of the far object LOD (FarObjectLOD; NVR_RT_MASK_FAR)
+		bool		farLodOn = false;					// [Main.Main.RayTracing] FarObjectLOD (live)
+		float		farRadius = 40000.0f;				// FarRadius: the far ring's outer edge (game units)
+		UInt32		farInstances = 0;					// far LOD instances (the scene log)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
@@ -1372,6 +1376,7 @@ namespace {
 		instance.mask = MaskHook ? (MaskHook(geo, land) & 0xFFu) : (land ? 0x01u : 0x02u);	// default: bit 0 land, bit 1 objects
 		if (alphaTested) instance.mask = NVR_RT_MASK_ALPHA;	// only rays that test alpha (RtAlpha.glsl) see it
 		else if (walkingPlayer) instance.mask = NVR_RT_MASK_PLAYER;	// the player's rigid parts: every ray sees them but the gun's (rt-refl)
+		else if (walkingFar) instance.mask = NVR_RT_MASK_FAR;	// UNOFFICIAL 2026-10-31: far object LOD (the skyline for reflections)
 		instance.flags = 0x1u;	// both faces (the game's two-sided and one-sided meshes alike: shadows need the back faces too)
 	}
 
@@ -1508,6 +1513,10 @@ namespace {
 			const NiBound* b = o->m_kWorldBound;
 			if (!b) return true;
 			const float dx = b->Center.x - camera.x, dy = b->Center.y - camera.y, dz = b->Center.z - camera.z;
+			if (walkingFar) {	// UNOFFICIAL 2026-10-31 FarObjectLOD: the ring past SceneRadius (inside it the full objects stand) out to FarRadius
+				const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+				return d + b->Radius >= radius && d - b->Radius <= farRadius;
+			}
 			const float reach = radius + b->Radius;
 			return dx * dx + dy * dy + dz * dz <= reach * reach;
 		};
@@ -1652,6 +1661,8 @@ namespace {
 		grassMax = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "GrassMaxTufts"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
+		farLodOn = TheSettingManager->GetSettingI("Main.Main.RayTracing", "FarObjectLOD") != 0;	// UNOFFICIAL 2026-10-31
+		farRadius = (std::max)(radius, TheSettingManager->GetSettingF("Main.Main.RayTracing", "FarRadius"));
 		arenaUsed = 0;
 		waiting = 0;
 		atlasThisFrame = 0;
@@ -1671,6 +1682,15 @@ namespace {
 			// screen is LOD terrain). With the full land there, LOD land stays out: its coarse quads stand above the real ground and cast
 			// false shadows on it (rtsun-9 at og-goodsprings: black slabs on the road and the house front).
 			if (skips[1][kTaken] == landBefore) Walk(BGSTerrainManager::GetRootLandLODNode(), true, true);
+			// UNOFFICIAL 2026-10-31 FarObjectLOD (rt-reflections, FORK-RT-GAPS.md 2): the game's distant object LOD (buildings, rocks, the
+			// skyline past the loaded grid), in the ring SceneRadius .. FarRadius only, mask NVR_RT_MASK_FAR: reflections reach the skyline.
+			if (farLodOn) {
+				walkingFar = true;
+				const UInt32 before = record->instanceCount;
+				Walk(BGSTerrainManager::GetRootObjectLODNode(), false, true);
+				farInstances += record->instanceCount - before;
+				walkingFar = false;
+			}
 		}
 		else if (Player) WalkCell(Player->parentCell);
 		treeProbe = false;
@@ -1878,6 +1898,10 @@ namespace {
 					f[7] / frames, f[8], (unsigned)c.leafCards.size(), f[1], f[2], f[3], f[5], f[6], f[4]);
 				for (int k = 0; k < 9; k++) if (k != 8) c.leafFate[k] = 0;
 			}
+			if (c.farLodOn)	// UNOFFICIAL 2026-10-31 FarObjectLOD
+				Logger::Log("RT CORE: far object LOD on: %.1f instances a frame in the ring %.0f .. %.0f (mask 0x80)",
+					c.farInstances / (float)(n == 60 ? 60 : n == 600 ? 540 : 600), c.radius, c.farRadius);
+			c.farInstances = 0;
 			if (c.actorsOn && Player) {	// (2026-10-30) the player in the traced scene: the third-person body (walked always), the view model (never)
 				const NiNode* body = Player->GetNode();
 				Logger::Log("RT CORE: player: %s person; body node %s; %.1f body instances a frame; first-person node %s (not traced)",

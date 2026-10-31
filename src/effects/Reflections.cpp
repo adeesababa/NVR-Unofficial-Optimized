@@ -74,6 +74,8 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtGlowBrightness = std::clamp(TheSettingManager->GetSettingF(rt, "GlowBrightness"), 0.0f, 16.0f);
 	Settings.RtHitTextures = TheSettingManager->GetSettingI(rt, "HitTextures") != 0;	// UNOFFICIAL 2026-10-29
 	Settings.RtHitAmbientGrid = TheSettingManager->GetSettingI(rt, "HitAmbientGrid") != 0;	// UNOFFICIAL 2026-10-30
+	Settings.RtRayReuse = TheSettingManager->GetSettingI(rt, "RayReuse") != 0;	// UNOFFICIAL 2026-10-31
+	Settings.RtReuseRoughness = std::clamp(TheSettingManager->GetSettingF(rt, "ReuseRoughness"), 0.0f, 1.0f);
 	Settings.RtWeapon = std::clamp(TheSettingManager->GetSettingF(rt, "Weapon"), 0.0f, 2.0f);	// UNOFFICIAL 2026-10-30
 	Settings.RtWeaponRoughness = std::clamp(TheSettingManager->GetSettingF(rt, "WeaponRoughness"), 0.02f, 1.0f);
 	Settings.RtWeaponMetal = std::clamp(TheSettingManager->GetSettingF(rt, "WeaponMetal"), 0.0f, 1.0f);
@@ -238,7 +240,10 @@ bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* tar
 		const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
 		const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.SunDir;
-		RtPending.size = D3DXVECTOR4((float)RtWidth(), (float)RtHeight(), Settings.RtDistance, Settings.RtSunShadows ? 1.0f : 0.0f);
+		// (2026-10-31: with the core's FarObjectLOD the rays reach the far ring's edge: the skyline past SceneRadius)
+		const float reach = TheSettingManager->GetSettingI("Main.Main.RayTracing", "FarObjectLOD") != 0 ?
+			(std::max)(Settings.RtDistance, TheSettingManager->GetSettingF("Main.Main.RayTracing", "FarRadius")) : Settings.RtDistance;
+		RtPending.size = D3DXVECTOR4((float)RtWidth(), (float)RtHeight(), reach, Settings.RtSunShadows ? 1.0f : 0.0f);
 		RtPending.forward = D3DXVECTOR4(view._13, view._23, view._33, 0.0f);
 		RtPending.right = D3DXVECTOR4(view._11 / proj._11, view._21 / proj._11, view._31 / proj._11, 1.0f / WeaponFovScale());	// w: the weapon's
 		RtPending.up = D3DXVECTOR4(view._12 / proj._22, view._22 / proj._22, view._32 / proj._22, 0.0f);
@@ -891,7 +896,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
 		rtu.rt2.w = (float)RtLampCount;	// UNOFFICIAL 2026-10-29: the lamps at the hits
 		rtu.rt3 = D3DXVECTOR4(Settings.RtVndf ? 1.0f : 0.0f, Settings.RtRoughShare, Settings.RtContactSpread, Settings.RtGlowBrightness);
-		rtu.rt4 = D3DXVECTOR4(Settings.RtHitAmbientGrid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-30
+		rtu.rt4 = D3DXVECTOR4(Settings.RtHitAmbientGrid ? 1.0f : 0.0f, Settings.RtRayReuse ? 1.0f : 0.0f, Settings.RtReuseRoughness, 0.0f);	// UNOFFICIAL 2026-10-30 / 31
 		memcpy(rtu.lamps, RtLampData, sizeof(RtLampData));
 		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
 		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {
