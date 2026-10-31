@@ -115,6 +115,25 @@ GPU, a GTX 1070 included, that NVR's RR side reaches the helper.
 
 The logs are NvrDlssHelper-selftest.log, -selftest-dlss.log, -selftest-rr.log and -selftest-dlss-rr.log.
 
+2026-10-30 (tester report: with DLSS on, the render-scaled picture stayed small in the top-left corner): every self-test fills
+the colour input outside the render rectangle green and FAILS if green reaches the output, the small picture in the corner.
+`--selftest dlss` on an RTX card checks that for real DLSS too. Add `subrect` to run the child the old way (`--inputs subrect`).
+
+## Start options (from NVR's settings)
+
+- `--inputs exact` ([Shaders.TAA.DLSS] HelperExactInputs 1, the default): with RenderScale below 1, NVR's colour, depth and
+  motion are screen-sized pictures with the frame in their top-left render rectangle. The helper copies that rectangle into
+  images of exactly the render size each frame (about 0.1 ms at 1080p), and DLSS and the pass-through read those whole: the
+  input size is the render size, the plainest way to use DLSS. `--inputs subrect` (HelperExactInputs 0, as before): DLSS is
+  told the rectangle and reads it in place. If DLSS read the whole picture anyway (an nvngx_dlss.dll without dynamic
+  resolution, a driver-side DLSS override), the frame showed small in the corner.
+- `--fail-test report|hang` (HelperFailTest 2 / 3, TEST ONLY): from frame 120 the helper reports a failure as a failed DLSS
+  evaluation does, or stops answering (NVR's watchdog ends it after 3 seconds). HelperFailTest 1 is NVR's own: it ends the
+  helper process. Each must leave FSR 2 upscaling the whole screen.
+- At each DLSS feature creation the log gives DLSS's own optimal render size and dynamic range for the mode, next to NVR's
+  RenderScale size ("NGX: DLSS's optimal settings ..."). A size outside that range points at a DLSS override in the NVIDIA
+  App or NVIDIA Profile Inspector.
+
 On the GTX 1070 (2026-10-27): probe = "DLSS not available" (no tensor cores), self-test PASSED (helper GPU work 0.04 ms,
 response 0.05-0.07 ms average), `--selftest dlss` PASSED (gives up in 0.3 s with "NGX: DLSS not available on this GPU").
 Protocol 2 (2026-10-30): `--selftest rr` and the presets have not been run yet. RR itself can only be tried on an RTX card.

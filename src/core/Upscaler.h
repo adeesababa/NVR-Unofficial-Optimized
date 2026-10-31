@@ -68,7 +68,13 @@ namespace Upscaler {
 	// HelperWait 1 (the helper waits on the CPU for the game's inputs, then submits with no GPU wait in it; 0 = its submission waits on the
 	// GPU, as before) and HelperGpuPriority 1 (the helper's queue and process at the high GPU priority; 0 = normal). Both are the helper's
 	// start options: a change starts it again.
-	void		DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait = true, bool HelperHighPriority = true);
+	// UNOFFICIAL 2026-10-30 (tester report: with DLSS on, the render-scaled picture stayed small in the top-left corner): HelperExactInputs 1
+	// (the helper copies the render rectangle into images of exactly its size, DLSS reads those whole; 0 = DLSS reads the rectangle out of the
+	// screen-sized images, as before) and HelperFailTest (TEST ONLY: 1 NVR ends the helper at its 120th frame, 2 the helper reports a failure
+	// there, 3 it stops answering there; every one must leave FSR 2 upscaling the whole screen). Start options too; a HelperFailTest change
+	// also starts a helper that turned itself off again.
+	void		DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait = true, bool HelperHighPriority = true, bool HelperExactInputs = true,
+				int HelperFailTest = 0);
 
 	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run),
 	// 2 FSR 3.1 ([Shaders.TAA.FSR] Enabled + Version 1; FSR 2 from its first failure on, logged once).
