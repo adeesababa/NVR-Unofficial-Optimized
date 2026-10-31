@@ -21,7 +21,8 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 range;         // x RT range (view distance), y fade length, z cull mask, w debug (1: hit distance / 4096 instead of visibility,
 	                    // 2: state codes, 3: a primary camera ray's hit distance / 8192: FORK-RT-SUN.md "Debug views")
 	vec4 alpha;         // x 1: test alpha-tested casters (the core's AlphaTested; binding 5 is the alpha atlas), 0: binding 5 is a stand-in;
-	                    // y the frame (jitter), z tan(the sun disc's half-angle): 0 = one hard ray toward the sun's centre
+	                    // y the frame (jitter), z tan(the sun disc's half-angle): 0 = one hard ray toward the sun's centre,
+	                    // w 1: write each pixel's blocker distance into binding 7 (2026-10-31 Penumbra; 0: binding 7 is a stand-in, untouched)
 	vec4 full;          // xy the full screen size (depth and normals are full size; size is the traced one: half with HalfResolution)
 	// UNOFFICIAL 2026-10-30 CloudShadows ([Shaders.ShadowsExteriors.RT]): the volumetric clouds' shadow map (binding 6), as
 	// VolumetricClouds.fx.hlsl CloudShadowAt reads it; cloud.x 0 = none (binding 6 is a stand-in)
@@ -35,6 +36,7 @@ layout(set = 0, binding = 3, rgba16f) uniform readonly image2D normalImage;  // 
 layout(set = 0, binding = 4, r16f) uniform writeonly image2D visibilityImage;
 layout(set = 0, binding = 5, r16f) uniform readonly image2D alphaAtlas;          // RtCore::AlphaAtlasImage() (or a stand-in, alpha.x 0)
 layout(set = 0, binding = 6, rgba16f) uniform readonly image2D cloudImage;       // the clouds' shadow map, red = sunlight let through (cloud.x > 0)
+layout(set = 0, binding = 7, r16f) uniform writeonly image2D hitImage;          // 2026-10-31 Penumbra: the blocker's distance (units), 0 = free / not traced
 #define RT_ALPHA_ATLAS alphaAtlas
 #include "RtAlpha.glsl"
 
@@ -64,6 +66,7 @@ void main() {
 		return;
 
 	float result = 1.0;
+	float blocker = 0.0;	// 2026-10-31 Penumbra: the hit's distance along the sun ray (0: free, or not traced)
 	// the full-size pixel this traced pixel stands for (the same one at full resolution)
 	const ivec2 source = ivec2((vec2(pixel) + 0.5) * p.full.xy * p.size.zw);
 	float linear01 = imageLoad(depthImage, source).r;
@@ -126,6 +129,7 @@ void main() {
 					rayQueryConfirmIntersectionEXT(q);
 			bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 			state = hit ? 0.6 : 0.8;
+			if (hit) blocker = max(rayQueryGetIntersectionTEXT(q, true), 1.0);
 			if (debug == 1)
 				result = hit ? clamp(rayQueryGetIntersectionTEXT(q, true) / 4096.0, 0.0, 1.0) : 1.0;
 			else
@@ -155,4 +159,5 @@ void main() {
 		if (facing > 0.0) result *= mix(1.0, cloudTransmittance(position), p.cloud.x * facing);
 	}
 	imageStore(visibilityImage, pixel, vec4(debug == 2 ? state : result, 0.0, 0.0, 0.0));
+	if (p.alpha.w > 0.5) imageStore(hitImage, pixel, vec4(min(blocker, 60000.0), 0.0, 0.0, 0.0));
 }
