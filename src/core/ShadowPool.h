@@ -29,6 +29,7 @@ namespace ShadowPool {
 		float x = 0.0f, y = 0.0f, z = 0.0f, radius = 0.0f;
 		const void* cell = nullptr;
 		bool valid = false;
+		UInt32 drawn = 0;			// UNOFFICIAL 2026-10-30 ShadowAtlas: counts the draws of this entry (its atlas tile is converted again after one)
 		UInt32 used = 0;			// frame last published
 		double since = 0.0;			// when it was first published (FadeIn)
 	};

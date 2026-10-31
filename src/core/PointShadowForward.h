@@ -56,7 +56,8 @@ namespace PointShadowForward {
 	// where an OPT floor piece met its neighbour (the TOPS rope shadows, whole pieces lit or dark against the next one).
 	inline int FirstShaderLight(const RenderPassView* pass) { return pass->passEnum == 0xCA || pass->passEnum == 0xD1 ? 1 : 0; }
 
-	struct Slot { const ShadowSceneLight* light; D3DXVECTOR3 position; float radius; IDirect3DCubeTexture9* cube; int slot; float fade; };
+	struct Slot { const ShadowSceneLight* light; D3DXVECTOR3 position; float radius; IDirect3DCubeTexture9* cube; int slot; float fade;
+		float tile[3]; };	// UNOFFICIAL 2026-10-30 ShadowAtlas: u, v of the tile's first texel centre, its span (0: none), set by ShadowAtlas::Update
 
 	inline bool CompiledIn = false;			// an Interior record was compiled with INTERIOR_SHADOWS
 	inline int CompiledCount = 0;
@@ -148,6 +149,9 @@ namespace PointShadowForward {
 											// w the face resolution (TexelFilter, POINT_SHADOW_TEXEL)
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
+	// UNOFFICIAL 2026-10-30 ShadowAtlas (core/ShadowAtlas.h; PointShadowForward.hlsl POINT_SHADOW_ATLAS): the records read the atlas on s8,
+	// each light's tile in its tint register. Set by ShadowAtlas (null: the cube maps as before).
+	inline IDirect3DTexture9* AtlasTexture = nullptr;
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
 
 	// B42 Optics (PIP scopes, through JIP's ProjectExtraCamera): the scope's picture is the world drawn from another
@@ -515,7 +519,8 @@ namespace PointShadowForward {
 			}
 			RtLampShadows::Submit(traced, SlotCount);
 		}
-		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
+		{ const int want = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "TraceSlot");	// UNOFFICIAL 2026-10-30 (test): DebugView 3 on another live slot
+		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == want) { Focus = s; break; } }
 		// DebugView 3: the focus lamp and what its cube maps hold, every 2 seconds (with the draws of the period before).
 		static double lastTrace = 0.0;
 		if (forward.DebugView >= 3 && now - lastTrace >= 2.0) {
@@ -666,6 +671,10 @@ namespace PointShadowForward {
 						{ 0.6f, 1, 0.3f }, { 1, 0.45f, 0.6f }, { 0.4f, 0.8f, 1 } };	// by cube slot
 					// red for cube slot 0 alone (DebugView 3's lamp); the other slots share the other ten colours
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
+					if (AtlasTexture) {	// UNOFFICIAL 2026-10-30 ShadowAtlas: the tile instead of the debug colour; no tile, no shadow
+						if (!(Slots[s].tile[2] > 0.0f)) { constants[k][0] = constants[k][1] = constants[k][2] = constants[k][3] = 0.0f; constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f; break; }
+						memcpy(constants[8 + k], Slots[s].tile, 3 * sizeof(float));
+					}
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
 					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
 					matched++;
@@ -693,6 +702,7 @@ namespace PointShadowForward {
 				constants[14][2] = Slots[Focus].position.z - camera.z;
 				constants[14][3] = 1.0f / Slots[Focus].radius;
 				bound[5] = Slots[Focus].cube;
+				if (AtlasTexture) memcpy(constants[13], Slots[Focus].tile, 3 * sizeof(float));	// UNOFFICIAL 2026-10-30 ShadowAtlas: light 5's tint = the focus tile
 				if (!force) { TraceDraws++; if (focusIndex >= 0) TraceDrawsWithLamp++; }
 			}
 		}
@@ -703,6 +713,11 @@ namespace PointShadowForward {
 		if (rtStage) bound[5] = RtLampShadows::Stage15Texture();
 		for (int k = 0; k < 6; k++) {
 			if (ExteriorActive && k < 5) continue;	// outdoors the RT-only records have no cube stages (s8, s11-s14 are the sun's there)
+			// UNOFFICIAL 2026-10-30 ShadowAtlas: the atlas on s8 (2D), no cube stages (s15 still RT's when compiled in)
+			if (AtlasTexture && !ExteriorActive) {
+				if (k == 0 && (force || TheRenderManager->renderState->GetTexture(Stage[0]) != AtlasTexture)) Bind(Stage[0], AtlasTexture, force, false);
+				if (k < 5 || !rtStage) continue;
+			}
 			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force, rtStage && k == 5);
 		}
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {

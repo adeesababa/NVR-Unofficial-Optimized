@@ -233,6 +233,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-30 LandAllLamps (core/LandLamps.h, TerrainTemplate.hlsl): every land shader with lamps compiled for 24. Defined only
 	// when on at startup, so that otherwise the land shaders (and the cache's keys) are exactly as before.
 	if (LandLamps::CompiledIn()) AppendDefine("LAND_ALL_LAMPS", "1");
+	// UNOFFICIAL 2026-10-30 ShadowAtlas (core/ShadowAtlas.h, PointShadowForward.hlsl): the lamp shadows read from one octahedral atlas.
+	// Defined only when on at startup (otherwise the shaders and the cache's keys are as before).
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "Enabled")) AppendDefine("POINT_SHADOW_ATLAS", "1");
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
