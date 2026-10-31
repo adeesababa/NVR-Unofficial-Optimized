@@ -519,7 +519,8 @@ namespace PointShadowForward {
 			}
 			RtLampShadows::Submit(traced, SlotCount);
 		}
-		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
+		{ const int want = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "TraceSlot");	// UNOFFICIAL 2026-10-30 (test): DebugView 3 on another live slot
+		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == want) { Focus = s; break; } }
 		// DebugView 3: the focus lamp and what its cube maps hold, every 2 seconds (with the draws of the period before).
 		static double lastTrace = 0.0;
 		if (forward.DebugView >= 3 && now - lastTrace >= 2.0) {

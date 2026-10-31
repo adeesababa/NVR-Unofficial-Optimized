@@ -1527,6 +1527,7 @@ DebugView = 0                        # 1: the light a shadow takes away is drawn
 [_Shaders.ShadowsInteriors.Atlas]
 Enabled = false                      # UNOFFICIAL (2026-10-30), needs a restart, off by default (an EXPERIMENT, docs/next/INTERIOR-SHADOWS-MODERN.md step 1): every lamp shadow indoors (the live LightPoints lamps and the PoolLamps lamps' still maps) is read from ONE octahedral shadow atlas instead of six cube maps per object. Same shadows, resampled; with PoolLamps raised every lamp past the live slots gets its still shadow. Off = the cube maps, as before.
 Size = 8192                          # [2048, 4096, 8192] The atlas's size (R16F: 8192 = 128 MB of video memory). The live lamps get tiles of Size / 8, the pool's lamps Size / 16.
+TraceSlot = 0                        # Test: the live slot [Shaders.ShadowsInteriors.Forward] DebugView 3 traces (0 = as before).
 WorldStartConvert = false            # Test: the live lamps' tiles converted again as the world scene starts.
 Dump = 0                             # Diagnostic: 1 writes the atlas and the first live lamp's cube map to the log folder (DDS) once, then goes back to 0.
 
