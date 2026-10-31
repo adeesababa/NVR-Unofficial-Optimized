@@ -331,7 +331,7 @@ namespace {
 		bool	IsOff() const { return state == Off; }
 		// a frame went to FSR 2 by the setting: DLSS's history is stale (and FSR 2's textures are freed again once DLSS has run 600 frames)
 		void	MarkUnused() { dlssNeedsReset = true; runningFrames = 0; fsrFreed = false; watch.Gap(); }
-		void	SetOptions(bool test, int jitterFlip, bool cpuWait, bool highPriority) {
+		void	SetOptions(bool test, int jitterFlip, bool cpuWait, bool highPriority, bool exactInputs, int failTest) {
 			if (test != passThrough && state != Idle) {
 				// Another mode: the helper is started again (FSR 2 in between). UNOFFICIAL 2026-10-30: also after the other mode turned
 				// itself off for the session (real DLSS on a GTX card gives up: the pass-through test can still run there).
@@ -345,8 +345,21 @@ namespace {
 					(highPriority ? "HelperGpuPriority turned on" : "HelperGpuPriority turned off"));
 				state = Idle;
 			}
+			// UNOFFICIAL 2026-10-30 (top-left picture report): HelperExactInputs as the two above; HelperFailTest (test only) also from Off,
+			// so a test list can fail the helper in each way in turn.
+			if (exactInputs != helperExactInputs && state != Idle && state != Off) {
+				Stop(exactInputs ? "HelperExactInputs turned to 1 (the helper copies the render rectangle)" : "HelperExactInputs turned to 0 (DLSS reads the rectangle in place)");
+				state = Idle;
+			}
+			if (failTest != helperFailTest) {
+				if (state != Idle && state != Off) Stop("HelperFailTest changed");
+				else if (state == Off) Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper: HelperFailTest %d: the helper is tried again.", failTest);
+				state = Idle;
+			}
 			helperCpuWait = cpuWait;
 			helperHighPriority = highPriority;
+			helperExactInputs = exactInputs;
+			helperFailTest = failTest;
 			passThrough = test;
 			flipX = (jitterFlip & 1) != 0;
 			flipY = (jitterFlip & 2) != 0;
@@ -396,6 +409,8 @@ namespace {
 		bool		passThrough = false;
 		bool		flipX = false, flipY = false;
 		bool		helperCpuWait = true, helperHighPriority = true;	// UNOFFICIAL 2026-10-30: the helper's start options (DlssOptions)
+		bool		helperExactInputs = true;	// UNOFFICIAL 2026-10-30 (top-left picture report): HelperExactInputs
+		int			helperFailTest = 0;			// ... and HelperFailTest (test only: 1 NVR ends the helper, 2 it reports a failure, 3 it hangs)
 		bool		usedSelf = false;			// this frame's Output() is the helper's (else FSR 2's)
 		bool		fsrNeedsReset = false;		// FSR 2's history is stale after DLSS frames
 		bool		dlssNeedsReset = true;
@@ -599,6 +614,10 @@ namespace {
 		// UNOFFICIAL 2026-10-30 (DLAA stall report): HelperWait / HelperGpuPriority (NvrDlssHelper.cpp's header says what they do)
 		cmdLine += helperCpuWait ? L" --wait cpu" : L" --wait gpu";
 		cmdLine += helperHighPriority ? L" --gpu-priority high" : L" --gpu-priority normal";
+		// UNOFFICIAL 2026-10-30 (top-left picture report): HelperExactInputs / HelperFailTest 2 and 3 (1 is NVR's own: Exchange)
+		cmdLine += helperExactInputs ? L" --inputs exact" : L" --inputs subrect";
+		if (helperFailTest == 2) cmdLine += L" --fail-test report";
+		else if (helperFailTest == 3) cmdLine += L" --fail-test hang";
 		STARTUPINFOW si = { sizeof(si) };
 		PROCESS_INFORMATION pi = {};
 		if (!CreateProcessW(exe.c_str(), &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS, nullptr, helperDir.c_str(), &si, &pi)) {
@@ -680,9 +699,12 @@ namespace {
 		startTick = GetTickCount64();
 		state = Starting;
 		lastSerial = 0;
-		Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper started (%s, %ls): inputs %ux%u, display %ux%u, GPU %s; HelperWait %d (%s), HelperGpuPriority %d; "
-			"FSR 2 runs until it is ready.", passThrough ? "pass-through test" : "DLSS", exe.c_str(), inputWidth, inputHeight, displayWidth, displayHeight,
-			info.DeviceName, helperCpuWait ? 1 : 0, helperCpuWait ? "the helper waits on the CPU" : "the GPU waits", helperHighPriority ? 1 : 0);
+		Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper started (%s, %ls): inputs %ux%u, display %ux%u, GPU %s; HelperWait %d (%s), HelperGpuPriority %d, "
+			"HelperExactInputs %d%s; FSR 2 runs until it is ready.", passThrough ? "pass-through test" : "DLSS", exe.c_str(), inputWidth, inputHeight, displayWidth,
+			displayHeight, info.DeviceName, helperCpuWait ? 1 : 0, helperCpuWait ? "the helper waits on the CPU" : "the GPU waits", helperHighPriority ? 1 : 0,
+			helperExactInputs ? 1 : 0, helperFailTest == 1 ? ", HelperFailTest 1 (TEST: NVR ends the helper at its 120th frame)" :
+			helperFailTest == 2 ? ", HelperFailTest 2 (TEST: the helper reports a failure at its 120th frame)" :
+			helperFailTest == 3 ? ", HelperFailTest 3 (TEST: the helper stops answering at its 120th frame)" : "");
 		return true;
 	}
 
@@ -893,6 +915,12 @@ namespace {
 		// FSR 2's own textures (about 190 MB at 1920x1080) were made for the second or so the helper needed to start; while DLSS runs
 		// they only take video memory (an 8 GB card plays at its limit). Freed after 600 good frames; FSR 2 makes them again on its
 		// first frame should DLSS stop (logged).
+		// UNOFFICIAL 2026-10-30 TEST ONLY (HelperFailTest 1): the helper process ended from here, as a crash would end it (the watchdog sees it,
+		// releases this frame's wait and NVR goes to FSR 2 for the session).
+		if (helperFailTest == 1 && runningFrames == 119 && process) {
+			Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper: HelperFailTest 1: NVR ends the helper process now (test).");
+			TerminateProcess(process, 3);
+		}
 		if (!fsrFreed && ++runningFrames >= 600) {
 			fsrFreed = true;
 			Upscaler::Fsr2()->ReleaseResources();
@@ -996,8 +1024,8 @@ namespace {
 namespace Upscaler {
 	IUpscaler* Dlss() { return &TheDlss; }
 
-	void DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait, bool HelperHighPriority) {
-		TheDlss.SetOptions(PassThroughTest, JitterFlip, HelperCpuWait, HelperHighPriority);
+	void DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait, bool HelperHighPriority, bool HelperExactInputs, int HelperFailTest) {
+		TheDlss.SetOptions(PassThroughTest, JitterFlip, HelperCpuWait, HelperHighPriority, HelperExactInputs, HelperFailTest);
 	}
 
 	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (Upscaler.h): the same helper, semaphores and frame counter as Dlss().

@@ -101,8 +101,12 @@ void TAAEffect::UpdateSettings() {
 	SettingManager::Configuration::ConfigNode helperNode;
 	const bool helperCpuWait = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperWait") ? helperNode.FloatValue != 0.0f : true;
 	const bool helperHighPriority = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperGpuPriority") ? helperNode.FloatValue != 0.0f : true;
+	// UNOFFICIAL 2026-10-30 (tester report: the render-scaled DLSS picture stayed small in the top-left corner): HelperExactInputs, 1 when the
+	// key is missing, and HelperFailTest (test only, 0 when missing).
+	const bool helperExactInputs = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperExactInputs") ? helperNode.FloatValue != 0.0f : true;
 	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
-		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3), helperCpuWait, helperHighPriority);
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3), helperCpuWait, helperHighPriority, helperExactInputs,
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperFailTest"), 0, 3));
 	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (TAAFSR.cpp RayReconstruct, docs/next/FORK2-DLSS-RR.md) and DLSS SR's preset. A missing
 	// key reads as 0 / false: RR off, no preset hint (the DLL's own choice, as before), the guides' defaults. RRRoughness is the one where 0
 	// is a real value (a mirror), so only a key that is there at all replaces its default.

@@ -25,6 +25,13 @@
 //                                    VK_EXT/KHR_global_priority HIGH where the driver allows it, and its process at the WDDM scheduling
 //                                    priority class HIGH (D3DKMTSetProcessSchedulingPriorityClass; CPU priority is not GPU priority);
 //                                    --gpu-priority normal: neither.
+//                                    UNOFFICIAL 2026-10-30 (tester report: with DLSS on, the render-scaled picture stayed small in the
+//                                    top-left corner), from [Shaders.TAA.DLSS] HelperExactInputs / HelperFailTest: --inputs exact (the
+//                                    default): the render rectangle of colour, depth and motion is copied into images of exactly the
+//                                    render size each frame, and DLSS and the pass-through read those whole (RecordExactInputs);
+//                                    --inputs subrect: DLSS reads the rectangle out of the screen-sized images (before 2026-10-30).
+//                                    --fail-test report|hang, TEST ONLY: from frame 120 the helper reports a failure as a failed DLSS
+//                                    evaluation does (report), or stops answering (hang: NVR's watchdog ends it after 3 s).
 //   NvrDlssHelper.exe --probe        prints the GPU, the Vulkan interop support and whether DLSS (and Ray Reconstruction) is
 //                                    available, then exits
 //   NvrDlssHelper.exe --selftest     (or --selftest dlss: the child in DLSS mode; without DLSS it must give up cleanly) the whole cross-process exchange without the game: this process plays NVR's part
@@ -32,6 +39,10 @@
 //                                    of itself in pass-through mode and checks the pixels and the order of 300 frames
 //   NvrDlssHelper.exe --selftest rr  the same with the RR exchange: eight images, every frame an RR frame, the four guides
 //                                    drawn as thumbnails by the pass-through child (--selftest dlss rr: the child in DLSS mode)
+//                                    UNOFFICIAL 2026-10-30: every self-test fills the colour input outside the render rectangle green
+//                                    and fails if green reaches the output (the small picture in the corner); --selftest ... subrect
+//                                    runs the child with --inputs subrect (and ... subrect edges also checks its last column and row,
+//                                    where the old stretch's bilinear tap reaches past the rectangle: it fails, proving the check works).
 // Only runs on NVIDIA GPUs (vendor 0x10DE): NVIDIA's licence for the DLSS SDK covers systems with NVIDIA GPUs only.
 
 #define WIN32_LEAN_AND_MEAN
@@ -70,6 +81,10 @@ namespace {
 	// UNOFFICIAL 2026-10-30 (DLAA stall report): --wait cpu / --gpu-priority high (the helper's start options; see the header)
 	bool				g_cpuWait = false;
 	bool				g_highPriority = false;
+	// UNOFFICIAL 2026-10-30 (top-left picture report): --inputs exact|subrect, --fail-test report|hang (test only; see the header)
+	bool				g_exactInputs = true;
+	int					g_failTest = 0;		// 0 none, 1 report, 2 hang
+	bool				g_strictEdges = false;	// --selftest ... edges: the last column / row checked with --inputs subrect too
 	std::wstring		g_exeDir;
 
 	void Log(const char* format, ...) {
@@ -613,6 +628,11 @@ namespace {
 		uint32_t		imageCount = NVR_DLSS_IMAGE_COUNT_SR;
 		bool			rrWanted = false;		// NVR_DLSS_FEATURE_RR with the eight images
 		bool			loggedFirstRr = false;
+		// UNOFFICIAL 2026-10-30 --inputs exact (RecordExactInputs): colour, depth and motion at exactly the render size, the helper's own
+		SharedImage		exact[3];
+		uint32_t		exactW = 0, exactH = 0;
+		bool			exactFailed = false;
+		bool			failTestDone = false;	// --fail-test report: the failure was reported
 #ifndef NVR_DLSS_NO_SDK
 		bool			ngxInit = false;
 		bool			dlssAvailable = false;
@@ -841,6 +861,30 @@ namespace {
 		return true;
 	}
 
+	// UNOFFICIAL 2026-10-30 (top-left picture report): NVIDIA's NGX_DLSS_GET_OPTIMAL_SETTINGS (nvsdk_ngx_helpers.h, which also pulls in the D3D
+	// and CUDA helpers), the same steps on the generic parameter API: DLSS's optimal render size and dynamic range for a mode and display.
+	NVSDK_NGX_Result DlssOptimalSettings(NVSDK_NGX_Parameter* params, unsigned int width, unsigned int height, NVSDK_NGX_PerfQuality_Value quality,
+		unsigned int& optW, unsigned int& optH, unsigned int& maxW, unsigned int& maxH, unsigned int& minW, unsigned int& minH) {
+		void* callback = nullptr;
+		NVSDK_NGX_Parameter_GetVoidPointer(params, NVSDK_NGX_Parameter_DLSSOptimalSettingsCallback, &callback);
+		if (!callback) return NVSDK_NGX_Result_FAIL_OutOfDate;
+		NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_Width, width);
+		NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_Height, height);
+		NVSDK_NGX_Parameter_SetI(params, NVSDK_NGX_Parameter_PerfQualityValue, quality);
+		NVSDK_NGX_Parameter_SetI(params, NVSDK_NGX_Parameter_RTXValue, false);	// (NVIDIA's helper: some older DLSS DLLs still expect it)
+		const NVSDK_NGX_Result r = ((PFN_NVSDK_NGX_DLSS_GetOptimalSettingsCallback)callback)(params);
+		if (NVSDK_NGX_FAILED(r)) return r;
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_OutWidth, &optW);
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_OutHeight, &optH);
+		maxW = minW = optW;	// older DLSS DLLs without dynamic resolution leave these unset
+		maxH = minH = optH;
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width, &maxW);
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height, &maxH);
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width, &minW);
+		NVSDK_NGX_Parameter_GetUI(params, NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height, &minH);
+		return r;
+	}
+
 	// DLSS's quality mode from render / display width (NVR's RenderScale; DLSS's own ratios: Quality 0.667, Balanced 0.58,
 	// Performance 0.5, Ultra Performance 0.333, DLAA 1). NVR sends quality 0 = "pick it here".
 	NVSDK_NGX_PerfQuality_Value QualityFor(uint32_t renderWidth, uint32_t displayWidth) {
@@ -871,6 +915,20 @@ namespace {
 		if (preset != NVR_DLSS_PRESET_DEFAULT) h.srPresetHints = true;
 		if (h.srPresetHints)
 			for (int mode = 0; mode < 6; mode++) NVSDK_NGX_Parameter_SetUI(h.ngxParams, kSrPresetKeys[mode], kSrPresetHints[preset][mode]);
+		// UNOFFICIAL 2026-10-30 (top-left picture report): the size DLSS itself would render at for this mode and display (optimal and
+		// dynamic range; a DLSS override in the NVIDIA App or NVIDIA Profile Inspector changes these), next to NVR's RenderScale size. Log only.
+		{
+			unsigned int optW = 0, optH = 0, maxW = 0, maxH = 0, minW = 0, minH = 0;
+			const NVSDK_NGX_Result o = DlssOptimalSettings(h.ngxParams, out.width, out.height, (NVSDK_NGX_PerfQuality_Value)quality,
+				optW, optH, maxW, maxH, minW, minH);
+			if (NVSDK_NGX_FAILED(o)) Log("NGX: DLSS's optimal settings for quality mode %u at %ux%u: not available (%s)", quality, out.width, out.height, NgxResultString(o).c_str());
+			else {
+				const bool inside = f.renderWidth >= minW && f.renderWidth <= maxW && f.renderHeight >= minH && f.renderHeight <= maxH;
+				Log("NGX: DLSS's optimal settings for quality mode %u at %ux%u: render %ux%u, dynamic range %ux%u .. %ux%u; NVR renders %ux%u%s",
+					quality, out.width, out.height, optW, optH, minW, minH, maxW, maxH, f.renderWidth, f.renderHeight,
+					inside ? "" : " (outside that range: a DLSS override in the NVIDIA App or NVIDIA Profile Inspector? NVR keeps its own size)");
+			}
+		}
 		NVSDK_NGX_DLSS_Create_Params create = {};
 		create.Feature.InWidth = f.renderWidth;
 		create.Feature.InHeight = f.renderHeight;
@@ -959,9 +1017,122 @@ namespace {
 		vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 	}
 
+	// UNOFFICIAL 2026-10-30 (tester report: with DLSS on, the render-scaled picture stayed small in the top-left corner) --inputs exact:
+	// NVR's colour, depth and motion are screen-sized images with the frame in their top-left render rectangle, and DLSS was told that
+	// rectangle (InRenderSubrectDimensions). Anything that has DLSS read the whole image instead (an nvngx_dlss.dll without dynamic
+	// resolution, a driver-side DLSS override) shows the small frame 1:1 in the corner. Here the rectangle is copied into images of exactly
+	// the render size (the helper's own, made again when the size changes) and DLSS and the pass-through read those whole, as in the
+	// plainest DLSS integration (input size = render size, no subrect). Three copies a frame, about 0.1 ms at 1080p. Also no bilinear
+	// tap past the rectangle's edge in the pass-through stretch. --inputs subrect: the shared images' rectangle, as before.
+	const uint32_t kExactInputs[3] = { NVR_DLSS_IMAGE_COLOR, NVR_DLSS_IMAGE_DEPTH, NVR_DLSS_IMAGE_MOTION };
+
+	void DestroyExact(Helper& h) {
+		for (SharedImage& e : h.exact) {
+			if (e.view) vkDestroyImageView(h.vk.device, e.view, nullptr);
+			if (e.image) vkDestroyImage(h.vk.device, e.image, nullptr);
+			if (e.memory) vkFreeMemory(h.vk.device, e.memory, nullptr);
+			e = SharedImage();
+		}
+		h.exactW = h.exactH = 0;
+	}
+
+	bool MakeExact(Helper& h, uint32_t w, uint32_t ht) {
+		if (h.exact[0].image && h.exactW == w && h.exactH == ht) return true;
+		if (h.exact[0].image) vkDeviceWaitIdle(h.vk.device);	// frames in flight may still read them (as EnsureDlss before a re-creation)
+		DestroyExact(h);
+		for (uint32_t k = 0; k < 3; k++) {
+			const SharedImage& s = h.images[kExactInputs[k]];
+			SharedImage& e = h.exact[k];
+			VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+			info.imageType = VK_IMAGE_TYPE_2D;
+			info.format = s.format;
+			info.extent = { w, ht, 1 };
+			info.mipLevels = 1;
+			info.arrayLayers = 1;
+			info.samples = VK_SAMPLE_COUNT_1_BIT;
+			info.tiling = VK_IMAGE_TILING_OPTIMAL;
+			info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+			info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkResult r = vkCreateImage(h.vk.device, &info, nullptr, &e.image);
+			VkMemoryRequirements req = {};
+			if (r == VK_SUCCESS) vkGetImageMemoryRequirements(h.vk.device, e.image, &req);
+			const int32_t type = r == VK_SUCCESS ? FindMemoryType(h.vk, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) : -1;
+			if (r == VK_SUCCESS && type < 0) r = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+			if (r == VK_SUCCESS) {
+				VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+				alloc.allocationSize = req.size;
+				alloc.memoryTypeIndex = (uint32_t)type;
+				r = vkAllocateMemory(h.vk.device, &alloc, nullptr, &e.memory);
+			}
+			if (r == VK_SUCCESS) r = vkBindImageMemory(h.vk.device, e.image, e.memory, 0);
+			if (r == VK_SUCCESS) {
+				VkImageViewCreateInfo view = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+				view.image = e.image;
+				view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				view.format = s.format;
+				view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+				r = vkCreateImageView(h.vk.device, &view, nullptr, &e.view);
+			}
+			if (r != VK_SUCCESS) {
+				Log("--inputs exact: the %ux%u image for input %u could not be made (%s)", w, ht, kExactInputs[k], VkResultName(r));
+				DestroyExact(h);
+				return false;
+			}
+			e.format = s.format;
+			e.width = w;
+			e.height = ht;
+		}
+		h.exactW = w;
+		h.exactH = ht;
+		Log("--inputs exact: colour, depth and motion are copied into %ux%u images each frame (the render size; the shared inputs are %ux%u)",
+			w, ht, h.images[NVR_DLSS_IMAGE_COLOR].width, h.images[NVR_DLSS_IMAGE_COLOR].height);
+		return true;
+	}
+
+	// This frame's render rectangle of the three inputs into the exact images: true. False: nothing to copy (render size = the inputs'),
+	// --inputs subrect, or the images could not be made (logged; the shared images' rectangle from then on, as before).
+	bool RecordExactInputs(Helper& h, VkCommandBuffer cmd, uint32_t rw, uint32_t rh) {
+		const SharedImage& colour = h.images[NVR_DLSS_IMAGE_COLOR];
+		rw = std::max(1u, std::min(rw, colour.width));
+		rh = std::max(1u, std::min(rh, colour.height));
+		if (!g_exactInputs || h.exactFailed || (rw == colour.width && rh == colour.height)) return false;
+		if (!MakeExact(h, rw, rh)) {
+			h.exactFailed = true;
+			Log("--inputs exact: off for this start; DLSS reads the render rectangle of the shared images (--inputs subrect)");
+			return false;
+		}
+		for (uint32_t k = 0; k < 3; k++) {
+			const SharedImage& s = h.images[kExactInputs[k]];
+			const SharedImage& e = h.exact[k];
+			Barrier(cmd, s.image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			// (UNDEFINED: the copy rewrites the whole image; the stage mask orders it after last frame's reads)
+			Barrier(cmd, e.image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			VkImageCopy region = {};
+			region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.extent = { rw, rh, 1 };
+			vkCmdCopyImage(cmd, s.image, VK_IMAGE_LAYOUT_GENERAL, e.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+			Barrier(cmd, e.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+			Barrier(cmd, s.image, VK_ACCESS_TRANSFER_READ_BIT, 0, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		}
+		return true;
+	}
+
+	// The image input i is read from this frame: the exact one after RecordExactInputs, else the shared one (the output always).
+	const SharedImage& InputImage(const Helper& h, uint32_t i, bool exact) {
+		for (uint32_t k = 0; exact && k < 3; k++) if (kExactInputs[k] == i) return h.exact[k];
+		return h.images[i];
+	}
+
 	// Pass-through: the colour input's render rectangle stretched (bilinear) over the whole output, plus the marker boxes.
-	void RecordPassThrough(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, uint64_t frame) {
-		const SharedImage& in = h.images[NVR_DLSS_IMAGE_COLOR];
+	// (UNOFFICIAL 2026-10-30 exact: from the exact colour image, RecordExactInputs)
+	void RecordPassThrough(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, uint64_t frame, bool exact) {
+		const SharedImage& in = InputImage(h, NVR_DLSS_IMAGE_COLOR, exact);
 		const SharedImage& out = h.images[NVR_DLSS_IMAGE_OUTPUT];
 		const uint32_t rw = std::max(1u, std::min(f.renderWidth, in.width)), rh = std::max(1u, std::min(f.renderHeight, in.height));
 		Barrier(cmd, in.image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
@@ -995,8 +1166,8 @@ namespace {
 	// stretch and marker, then the four guides' render rectangles as thumbnails along the bottom edge (GuideThumbnail), so a look
 	// at the game shows that NVR's guides arrive. The blits convert the formats: roughness (R16F) shows as red, and the normals'
 	// negative parts as black.
-	void RecordPassThroughRR(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, uint64_t frame) {
-		RecordPassThrough(h, cmd, f, frame);
+	void RecordPassThroughRR(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, uint64_t frame, bool exact) {
+		RecordPassThrough(h, cmd, f, frame, exact);
 		const SharedImage& out = h.images[NVR_DLSS_IMAGE_OUTPUT];
 		const SharedImage& in = h.images[NVR_DLSS_IMAGE_COLOR];
 		const uint32_t rw = std::max(1u, std::min(f.renderWidth, in.width)), rh = std::max(1u, std::min(f.renderHeight, in.height));
@@ -1029,11 +1200,12 @@ namespace {
 	// guides come after OUTPUT and are not DLSS SR's.
 	const uint32_t kSrInputs[3] = { NVR_DLSS_IMAGE_COLOR, NVR_DLSS_IMAGE_DEPTH, NVR_DLSS_IMAGE_MOTION };
 
-	bool RecordDlss(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f) {
+	// (UNOFFICIAL 2026-10-30 exact: the inputs are the exact images, RecordExactInputs; DLSS is given no subrect, the whole of them)
+	bool RecordDlss(Helper& h, VkCommandBuffer cmd, const NvrDlssFrame& f, bool exact) {
 		if (!EnsureDlss(h, cmd, f)) return false;
 		const VkImageLayout read = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		for (uint32_t i : kSrInputs)
-			Barrier(cmd, h.images[i].image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, read,
+			Barrier(cmd, InputImage(h, i, exact).image, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, read,
 				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1041,7 +1213,7 @@ namespace {
 		const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 		NVSDK_NGX_Resource_VK res[NVR_DLSS_IMAGE_COUNT] = {};
 		for (uint32_t i = 0; i < NVR_DLSS_IMAGE_COUNT_SR; i++) {
-			const SharedImage& s = h.images[i];
+			const SharedImage& s = InputImage(h, i, exact);
 			res[i] = NVSDK_NGX_Create_ImageView_Resource_VK(s.view, s.image, range, s.format, s.width, s.height, i == NVR_DLSS_IMAGE_OUTPUT);
 		}
 		NVSDK_NGX_VK_DLSS_Eval_Params eval = {};
@@ -1051,8 +1223,8 @@ namespace {
 		eval.pInMotionVectors = &res[NVR_DLSS_IMAGE_MOTION];
 		eval.InJitterOffsetX = f.jitterX;
 		eval.InJitterOffsetY = f.jitterY;
-		eval.InRenderSubrectDimensions.Width = f.renderWidth;
-		eval.InRenderSubrectDimensions.Height = f.renderHeight;
+		eval.InRenderSubrectDimensions.Width = exact ? 0 : f.renderWidth;	// 0: the whole input (exact: the render size)
+		eval.InRenderSubrectDimensions.Height = exact ? 0 : f.renderHeight;
 		eval.InReset = f.reset ? 1 : 0;
 		eval.InMVScaleX = f.mvScaleX;
 		eval.InMVScaleY = f.mvScaleY;
@@ -1062,7 +1234,7 @@ namespace {
 		if (g_shared) g_shared->ngxResult = (int32_t)r;
 
 		for (uint32_t i : kSrInputs)
-			Barrier(cmd, h.images[i].image, VK_ACCESS_SHADER_READ_BIT, 0, read, VK_IMAGE_LAYOUT_GENERAL,
+			Barrier(cmd, InputImage(h, i, exact).image, VK_ACCESS_SHADER_READ_BIT, 0, read, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 		Barrier(cmd, h.images[NVR_DLSS_IMAGE_OUTPUT].image, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -1204,6 +1376,24 @@ namespace {
 			use.renderHeight = f.renderHeight ? f.renderHeight : h.images[NVR_DLSS_IMAGE_COLOR].height;
 			use.reset = 1;
 		}
+		// UNOFFICIAL 2026-10-30 TEST ONLY (--fail-test, [Shaders.TAA.DLSS] HelperFailTest 2 / 3): from frame 120 on, hang: this frame is
+		// never submitted (NVR's watchdog ends the helper after 3 s, the game's GPU wait is released); report: a failure is reported as
+		// a failed DLSS evaluation reports it, and this and the frames in flight are stretched (NVR goes to FSR 2).
+		if (g_failTest && frame >= 120) {
+			if (g_failTest == 2) {
+				Log("--fail-test hang: frame %llu is never submitted", (unsigned long long)frame);
+				while (WaitForSingleObject(parent, 250) != WAIT_OBJECT_0 && !g_shared->quit) {}
+				return false;
+			}
+			if (!h.failTestDone) {
+				h.failTestDone = true;
+				Status("--fail-test report: a failure reported at frame %llu (test), as a failed DLSS evaluation reports one", (unsigned long long)frame);
+				SetState(NVR_DLSS_STATE_FAILED);
+#ifndef NVR_DLSS_NO_SDK
+				h.dlssFailed = true;
+#endif
+			}
+		}
 		const uint32_t slot = (uint32_t)(frame % kCmdRing);
 		if (!WaitSlot(h, slot, parent)) return false;
 		VkCommandBuffer cmd = h.cmd[slot];
@@ -1216,6 +1406,9 @@ namespace {
 			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, h.queries, slot * 2);
 		}
 		bool dlssRan = false;
+		// UNOFFICIAL 2026-10-30 --inputs exact: the render rectangle into images of its own size, read by DLSS SR and the pass-through
+		// (RR frames come at render size = input size only: nothing to copy then)
+		const bool exact = RecordExactInputs(h, cmd, use.renderWidth, use.renderHeight);
 		// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction: an RR frame (only possible with the eight images) goes to DLSS-D while RR is
 		// available, else to DLSS SR on the same colour (the picture stays whole; NVR stops sending RR frames once it sees
 		// rrAvailable 0). In the pass-through test it is the stretch plus the guide thumbnails. Either way the frame is submitted.
@@ -1233,7 +1426,7 @@ namespace {
 				}
 			}
 			if (!rrRan) {
-				dlssRan = RecordDlss(h, cmd, use);
+				dlssRan = RecordDlss(h, cmd, use, exact);
 				if (!dlssRan) {
 					h.dlssFailed = true;
 					SetState(NVR_DLSS_STATE_FAILED);	// NVR goes back to FSR 2; this and the frames in flight are stretched
@@ -1243,10 +1436,10 @@ namespace {
 #endif
 		if (!dlssRan && !rrRan) {
 			if (rrFrame && h.mode == NVR_DLSS_MODE_PASSTHROUGH) {
-				RecordPassThroughRR(h, cmd, use, frame);
+				RecordPassThroughRR(h, cmd, use, frame, exact);
 				rrRan = true;
 			}
-			else RecordPassThrough(h, cmd, use, frame);
+			else RecordPassThrough(h, cmd, use, frame, exact);
 		}
 		if (h.queries) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, h.queries, slot * 2 + 1);
 		VK_CHECK(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
@@ -1322,8 +1515,9 @@ namespace {
 		const char* const work = rrRan ? (h.mode == NVR_DLSS_MODE_DLSS ? "DLSS Ray Reconstruction" : "pass-through RR") : dlssRan ? "DLSS" : "pass-through";
 		if (!h.loggedFirst) {
 			h.loggedFirst = true;
-			Log("first frame %llu submitted (%s, render %ux%u -> %ux%u, %s)", (unsigned long long)frame, work,
-				use.renderWidth, use.renderHeight, h.images[NVR_DLSS_IMAGE_OUTPUT].width, h.images[NVR_DLSS_IMAGE_OUTPUT].height, use.hdr ? "HDR" : "LDR");
+			Log("first frame %llu submitted (%s, render %ux%u -> %ux%u, %s, %s)", (unsigned long long)frame, work,
+				use.renderWidth, use.renderHeight, h.images[NVR_DLSS_IMAGE_OUTPUT].width, h.images[NVR_DLSS_IMAGE_OUTPUT].height, use.hdr ? "HDR" : "LDR",
+				exact ? "inputs copied at the render size" : "inputs read in place");
 		}
 		if (rrRan && !h.loggedFirstRr) {
 			h.loggedFirstRr = true;
@@ -1375,8 +1569,10 @@ namespace {
 			Log("GPU priority: the process's GPU scheduling priority class HIGH: %s (NTSTATUS 0x%08lX)", status == 0 ? "set" : "not set",
 				(unsigned long)status);
 		}
-		Log("start options: %s, GPU priority %s", g_cpuWait ? "--wait cpu (the helper waits for the game's inputs on the CPU, then submits)" :
-			"--wait gpu (the submission waits on the GPU)", g_highPriority ? "high" : "normal");
+		Log("start options: %s, GPU priority %s, %s%s", g_cpuWait ? "--wait cpu (the helper waits for the game's inputs on the CPU, then submits)" :
+			"--wait gpu (the submission waits on the GPU)", g_highPriority ? "high" : "normal",
+			g_exactInputs ? "--inputs exact (a render rectangle below the inputs' size is copied into images of its own size)" : "--inputs subrect (DLSS reads the render rectangle in place)",
+			g_failTest == 1 ? ", --fail-test report (TEST: a failure at frame 120)" : g_failTest == 2 ? ", --fail-test hang (TEST: no answer from frame 120)" : "");
 		const std::wstring frameName = std::wstring(base) + NVR_DLSS_EVENT_FRAME_SUFFIX, statusName = std::wstring(base) + NVR_DLSS_EVENT_STATUS_SUFFIX;
 		HANDLE frameEvent = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, frameName.c_str());
 		g_statusEvent = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, statusName.c_str());
@@ -1703,6 +1899,8 @@ namespace {
 		std::wstring cmdLine = L"\"" + std::wstring(exe) + L"\" --shm " + base;
 		cmdLine += g_cpuWait ? L" --wait cpu" : L" --wait gpu";				// UNOFFICIAL 2026-10-30
 		cmdLine += g_highPriority ? L" --gpu-priority high" : L" --gpu-priority normal";
+		cmdLine += g_exactInputs ? L" --inputs exact" : L" --inputs subrect";
+		Log("selftest: the child runs with --inputs %s", g_exactInputs ? "exact" : "subrect");
 		STARTUPINFOW si = { sizeof(si) };
 		PROCESS_INFORMATION pi = {};
 		if (!CreateProcessW(exe, &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, g_exeDir.c_str(), &si, &pi)) {
@@ -1775,6 +1973,27 @@ namespace {
 			vkAllocateMemory(vk.device, &alloc, nullptr, &readMemory);
 			vkBindBufferMemory(vk.device, readback, readMemory, 0);
 		}
+		// UNOFFICIAL 2026-10-30 (top-left picture report) the colour input outside the render rectangle, green every frame (2.0, so it shows
+		// whatever the output does with it): green in the output = the picture read past its rectangle (small, in the corner, at worst).
+		VkBuffer leak = VK_NULL_HANDLE;
+		VkDeviceMemory leakMemory = VK_NULL_HANDLE;
+		{
+			VkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			info.size = readBytes;
+			info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+			vkCreateBuffer(vk.device, &info, nullptr, &leak);
+			VkMemoryRequirements req = {};
+			vkGetBufferMemoryRequirements(vk.device, leak, &req);
+			VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+			alloc.allocationSize = req.size;
+			alloc.memoryTypeIndex = (uint32_t)FindMemoryType(vk, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			vkAllocateMemory(vk.device, &alloc, nullptr, &leakMemory);
+			vkBindBufferMemory(vk.device, leak, leakMemory, 0);
+			uint16_t* px = nullptr;
+			vkMapMemory(vk.device, leakMemory, 0, readBytes, 0, (void**)&px);
+			for (size_t p = 0; p < (size_t)displayW * displayH; p++) { px[p * 4] = 0; px[p * 4 + 1] = 0x4000; px[p * 4 + 2] = 0; px[p * 4 + 3] = 0x3C00; }
+			vkUnmapMemory(vk.device, leakMemory);
+		}
 		// Initialise every image to GENERAL once (as the fork's initImage does).
 		{
 			VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -1816,6 +2035,16 @@ namespace {
 			color.float32[0] = level; color.float32[1] = 0.0f; color.float32[2] = 1.0f - level; color.float32[3] = 1.0f;
 			const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 			vkCmdClearColorImage(cmd, images[NVR_DLSS_IMAGE_COLOR].image, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+			// UNOFFICIAL 2026-10-30 the right and bottom strips outside the render rectangle green (the leak buffer)
+			Barrier(cmd, images[NVR_DLSS_IMAGE_COLOR].image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			VkBufferImageCopy strips[2] = {};
+			for (VkBufferImageCopy& s : strips) s.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			strips[0].imageOffset = { (int32_t)renderW, 0, 0 };
+			strips[0].imageExtent = { displayW - renderW, displayH, 1 };
+			strips[1].imageOffset = { 0, (int32_t)renderH, 0 };
+			strips[1].imageExtent = { renderW, displayH - renderH, 1 };
+			vkCmdCopyBufferToImage(cmd, leak, images[NVR_DLSS_IMAGE_COLOR].image, VK_IMAGE_LAYOUT_GENERAL, 2, strips);
 			Barrier(cmd, images[NVR_DLSS_IMAGE_COLOR].image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 			vkEndCommandBuffer(cmd);
@@ -1891,12 +2120,34 @@ namespace {
 			const double ms = (double)(done.QuadPart - written.QuadPart) * 1000.0 / (double)frequency.QuadPart;
 			roundTripMs += ms;
 			worstMs = std::max(worstMs, ms);
+			// UNOFFICIAL 2026-10-30 (top-left picture report): green near the output's right and bottom edges = the picture was read past its
+			// render rectangle (the strips outside it are green); inner points 4 pixels in (any upscaler), and in the pass-through with
+			// --inputs exact also the very last column and row (the subrect stretch's bilinear tap there reaches a little past the rectangle).
+			auto leaked = [&](const uint16_t* px, bool edges, char* where, size_t size) {
+				const uint32_t xs[3] = { displayW - 4, displayW / 2, displayW - 4 }, ys[3] = { displayH / 2, displayH - 4, displayH - 4 };
+				const uint32_t ex[2] = { displayW - 1, displayW / 2 }, ey[2] = { displayH / 2, displayH - 1 };
+				for (int i = 0; i < 3; i++) {
+					const float g = HalfToFloat(px[((size_t)ys[i] * displayW + xs[i]) * 4 + 1]);
+					if (g > 0.5f) { snprintf(where, size, "green %.3f at (%u, %u)", g, xs[i], ys[i]); return true; }
+				}
+				for (int i = 0; edges && i < 2; i++) {
+					const float g = HalfToFloat(px[((size_t)ey[i] * displayW + ex[i]) * 4 + 1]);
+					if (g > 0.01f) { snprintf(where, size, "green %.3f at the edge (%u, %u)", g, ex[i], ey[i]); return true; }
+				}
+				return false;
+			};
 			if (check && dlssMode) {
 				// UNOFFICIAL 2026-10-30 DLSS mode: the output is DLSS's own picture, not the pass-through's pattern: the frame came back,
-				// and the counters below say which feature ran it.
+				// and the counters below say which feature ran it; no green from outside the render rectangle in it.
 				checked++;
-				Log("selftest frame %llu: back (DLSS SR %u, Ray Reconstruction %u so far); round trip %.3f ms", (unsigned long long)n,
-					shared->dlssEvaluated, shared->rrEvaluated, ms);
+				const uint16_t* px = nullptr;
+				vkMapMemory(vk.device, readMemory, 0, readBytes, 0, (void**)&px);
+				char where[96] = "";
+				const bool leakSeen = !rrMode && leaked(px, false, where, sizeof(where));
+				vkUnmapMemory(vk.device, readMemory);
+				if (leakSeen) failures++;
+				Log("selftest frame %llu: back (DLSS SR %u, Ray Reconstruction %u so far); outside the render rectangle %s%s; round trip %.3f ms",
+					(unsigned long long)n, shared->dlssEvaluated, shared->rrEvaluated, leakSeen ? "REACHED the output: " : "kept out", where, ms);
 			}
 			else if (check) {
 				checked++;
@@ -1928,9 +2179,12 @@ namespace {
 				const bool picture = fabsf(r - level) < 0.01f && fabsf(b - (1.0f - level)) < 0.01f;
 				const bool marker = at(mx, 28, 0) > 3.5f && at(mx, 28, 1) < 0.5f && at(16 + 32 * 8 + 12, 28, 1) > 3.5f;
 				const bool notStale = !(at(other, 28, 0) > 3.5f && at(other, 28, 1) < 0.5f);
-				if (!picture || !marker || !notStale) failures++;
-				Log("selftest frame %llu: centre (%.3f, %.3f) want (%.3f, %.3f) %s; marker %s; old marker gone %s; round trip %.3f ms",
-					(unsigned long long)n, r, b, level, 1.0f - level, picture ? "ok" : "WRONG", marker ? "ok" : "WRONG", notStale ? "ok" : "WRONG", ms);
+				char where[96] = "";
+				const bool leakSeen = leaked(px, g_exactInputs || g_strictEdges, where, sizeof(where));	// UNOFFICIAL 2026-10-30
+				if (!picture || !marker || !notStale || leakSeen) failures++;
+				Log("selftest frame %llu: centre (%.3f, %.3f) want (%.3f, %.3f) %s; marker %s; old marker gone %s; outside the render rectangle %s%s; round trip %.3f ms",
+					(unsigned long long)n, r, b, level, 1.0f - level, picture ? "ok" : "WRONG", marker ? "ok" : "WRONG", notStale ? "ok" : "WRONG",
+					leakSeen ? "REACHED the output (WRONG): " : "kept out", where, ms);
 				vkUnmapMemory(vk.device, readMemory);
 			}
 		}
@@ -1971,6 +2225,8 @@ int wmain(int argc, wchar_t** argv) {
 			for (int j = i + 2; j + 1 < argc; j += 2) {
 				if (!wcscmp(argv[j], L"--wait")) g_cpuWait = !wcscmp(argv[j + 1], L"cpu");
 				else if (!wcscmp(argv[j], L"--gpu-priority")) g_highPriority = !wcscmp(argv[j + 1], L"high");
+				else if (!wcscmp(argv[j], L"--inputs")) g_exactInputs = wcscmp(argv[j + 1], L"subrect") != 0;	// UNOFFICIAL 2026-10-30
+				else if (!wcscmp(argv[j], L"--fail-test")) g_failTest = !wcscmp(argv[j + 1], L"report") ? 1 : !wcscmp(argv[j + 1], L"hang") ? 2 : 0;
 			}
 			return RunHelper(argv[i + 1]);
 		}
@@ -1983,10 +2239,12 @@ int wmain(int argc, wchar_t** argv) {
 				else if (!wcscmp(argv[j], L"rr")) rr = true;
 				else if (!wcscmp(argv[j], L"cpuwait")) g_cpuWait = true;		// UNOFFICIAL 2026-10-30: the child gets --wait cpu
 				else if (!wcscmp(argv[j], L"highprio")) g_highPriority = true;	// and --gpu-priority high
+				else if (!wcscmp(argv[j], L"subrect")) g_exactInputs = false;	// and --inputs subrect
+				else if (!wcscmp(argv[j], L"edges")) g_strictEdges = true;	// (the check of the last column / row with subrect too)
 			}
 			return RunSelfTest(dlss, rr);
 		}
 	}
-	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest [dlss] [rr] [cpuwait] [highprio] (the exchange without the game).\n");
+	printf("NvrDlssHelper: started by New Vegas Reloaded. By hand: --probe (is DLSS available here?) or --selftest [dlss] [rr] [cpuwait] [highprio] [subrect] (the exchange without the game).\n");
 	return 1;
 }

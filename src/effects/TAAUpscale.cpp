@@ -41,6 +41,12 @@
 D3DXVECTOR4 TAAEffect::RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 
 namespace {
+	// UNOFFICIAL 2026-10-30 (tester report: with DLSS on, the render-scaled picture stayed small in the top-left corner): a RenderScale v2
+	// frame whose upscale never ran (no image space after it; UpscaleBegin drops it) is shown as drawn: small, in its corner. Three in a
+	// row and v2 is off for the session: the upscale runs right after the world scene (v1, UpscaleWorld), which every frame reaches.
+	UInt32 DroppedInARow = 0;
+	bool V2Off = false;
+
 	enum UpscaleSkipReason {
 		SkipSecondWorld, SkipTaaOff, SkipGame, SkipFailed, SkipExtension, SkipResz, SkipPipBoy, SkipCamera, SkipPort, SkipScissor,
 		SkipTarget, SkipMsaa, SkipSize, SkipReasonCount
@@ -231,6 +237,11 @@ bool TAAEffect::UpscaleBegin(bool firstWorld) {
 		Up.HistoryValid = false;
 		UpscaleReleaseTargets();
 		Logger::Log("UNOFFICIAL RenderScale v2: a frame drawn small was never upscaled (no image space after it); dropped.");
+		if (++DroppedInARow >= 3 && !V2Off) {
+			V2Off = true;
+			Logger::Log("UNOFFICIAL RenderScale v2: %u frames in a row were never upscaled (each was shown small, in the top-left corner); LowResEffects is off "
+				"for this session: the world is upscaled right after it is drawn, before the weapon and NVR's effects.", DroppedInARow);
+		}
 	}
 	Up.Active = false;
 	UpscaleReleaseTargets();
@@ -580,7 +591,7 @@ void TAAEffect::UpscaleWorld() {
 		// UNOFFICIAL 2026-10-27 RenderScale v2 (LowResEffects): no upscale here; the weapon and NVR's pre-tonemap effects run in the
 		// same top-left rect and UpscaleAfterEffects upscales after them (the targets stay held until then). Needs the pre-tonemap
 		// chain (RenderPreTonemapping); else, or without its resources, v1 below.
-		if (ok && FSRSettings.LowResEffects && TheSettingManager->SettingsMain.Main.RenderPreTonemapping && UpscaleEnsureResources()) {
+		if (ok && FSRSettings.LowResEffects && !V2Off && TheSettingManager->SettingsMain.Main.RenderPreTonemapping && UpscaleEnsureResources()) {
 			Up.Active = false;
 			Up.Deferred = true;
 			return;
@@ -610,6 +621,7 @@ void TAAEffect::UpscaleBeginEffects() {
 void TAAEffect::UpscaleAfterEffects(IDirect3DSurface9* GameSurface) {
 	if (!Up.Deferred) return;
 	Up.Deferred = false;
+	DroppedInARow = 0;	// UNOFFICIAL 2026-10-30: this frame's upscale runs
 	RenderRect::End();
 	IDirect3DDevice9* device = TheRenderManager->device;
 	RenderRect::RescaleRegistered(device);	// Bloom's top level, read by the game's tonemap and the rain at full size
@@ -662,6 +674,14 @@ void TAAEffect::UpscaleFinish(bool ok, bool v2) {
 	Up.Active = false;
 	RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 	UpscaleReleaseTargets();
+	// UNOFFICIAL 2026-10-30 (top-left picture report): [Shaders.TAA.FSR] DebugView is a test view of the upscaled frame for FSR and DLSS alike,
+	// and 1 is exactly a small picture in the top-left corner: said in the log whenever it changes.
+	static int loggedDebugView = 0;
+	if (FSRSettings.DebugView != loggedDebugView) {
+		loggedDebugView = FSRSettings.DebugView;
+		if (loggedDebugView) Logger::Log("UNOFFICIAL RenderScale: [Shaders.TAA.FSR] DebugView %d is on, for FSR and DLSS alike (a test view: 1 the world as drawn, small "
+			"in the top-left corner, the rest black; 2 stretched without the upscaler; 3 the motion input). 0 = the real picture.", loggedDebugView);
+	}
 	if (!ok) { Up.HistoryValid = false; return; }
 
 	Up.Frames++;
