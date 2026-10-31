@@ -47,6 +47,15 @@ namespace RtAmbient {
 		int		GISpatial = 0;			// [0-4] (2026-10-30) ReSTIR GI's spatial step: neighbours' reservoirs merged (GIReuse > 0)
 		int		GIReuse = 8;			// [0-32] (2026-10-30) ReSTIR GI temporal reuse: the GI in its own pass (RtGITrace) keeping a reservoir per
 										// texel, at most this many frames of samples behind it; 0 = the bounce inside the AO pass as before
+		// UNOFFICIAL 2026-10-31 (rt-ao-sky, docs/next/FORK-RT-GAPS.md section 4) multi-bounce GI: a world-space radiance cache (32 x 32
+		// x 16 cells round the camera, fixed in the world) that its own pass (RtRadianceCache) keeps lit by tracing from each cell, its hits
+		// lit by the direct light + the cache itself (a bounce more each frame); the GI bounce's off-screen hits add its irradiance. Needs
+		// GI and GIReuse > 0 (the reuse passes carry it).
+		bool	RadianceCache = false;
+		float	CacheStrength = 1.0f;	// [0-2] the cache's light at a bounce hit
+		float	CacheCellSize = 128.0f;	// [32-512] world units a cell (the grid: 32 x 32 x 16 of them)
+		int		CacheRays = 8;			// [1-32] rays a cell when it is updated (a quarter of the cells a frame)
+		int		CacheFrames = 16;		// [1-32] the frames of samples a cell's light averages at most (the lag when the light changes)
 	};
 	inline Settings Current;
 
@@ -74,6 +83,11 @@ namespace RtAmbient {
 		Current.GISpatial = std::clamp(TheSettingManager->GetSettingI(s, "GISpatial"), 0, 4);
 		Current.GlowGI = std::clamp(TheSettingManager->GetSettingF(s, "GlowGI"), 0.0f, 4.0f);
 		Current.GlowDirect = std::clamp(TheSettingManager->GetSettingF(s, "GlowDirect"), 0.0f, 8.0f);
+		Current.RadianceCache = TheSettingManager->GetSettingI(s, "RadianceCache") != 0;
+		Current.CacheStrength = std::clamp(TheSettingManager->GetSettingF(s, "CacheStrength"), 0.0f, 2.0f);
+		Current.CacheCellSize = std::clamp(TheSettingManager->GetSettingF(s, "CacheCellSize"), 32.0f, 512.0f);
+		Current.CacheRays = std::clamp(TheSettingManager->GetSettingI(s, "CacheRays"), 1, 32);
+		Current.CacheFrames = std::clamp(TheSettingManager->GetSettingI(s, "CacheFrames"), 1, 32);
 	}
 
 	inline constexpr int GILampsMax = 8;
@@ -116,6 +130,24 @@ namespace RtAmbient {
 		D3DXVECTOR4	reuse;			// xyz this frame's camera minus last frame's, w the M cap (GIReuse; 0 = no history this frame) + 64 x GISpatial
 	};
 	static_assert(sizeof(GIConstants) <= 512, "RtCore: 512 bytes of constants a pass");
+
+	// (2026-10-31) RtRadianceCache.spv's uniform block (RtAOTrace.comp built with RT_CACHE_PASS), std140. With the cache on, the GI passes
+	// take at most 7 lamps and carry cacheA / cacheB in lampPos[7] / lampColor[7] (their constants are full; lampColor[7].w > 0 = on).
+	struct CacheConstants {
+		D3DXVECTOR4	origin;			// w the frame number
+		D3DXVECTOR4	gi;
+		D3DXVECTOR4	sunDir;
+		D3DXVECTOR4	sunColor;
+		D3DXVECTOR4	ambient;
+		D3DXVECTOR4	lampPos[GILampsMax];
+		D3DXVECTOR4	lampColor[GILampsMax];
+		D3DXVECTOR4	gi2;
+		D3DXVECTOR4	cacheA;			// xyz the camera's world position minus its cell's corner, w the cell size
+		D3DXVECTOR4	cacheB;			// xyz the camera's cell (world cell coordinates), w CacheStrength
+		D3DXVECTOR4	cacheC;			// x CacheRays, y the frames of history at most (negative: all cells start over), z this frame's turn, w 1 in this many cells a frame
+	};
+	static_assert(sizeof(CacheConstants) <= 512, "RtCore: 512 bytes of constants a pass");
+	inline constexpr UINT CacheCells = 32 * 32 * 16, CacheUpdateDiv = 4;	// RtAOTrace.comp CacheGrid; the image: 256 x 256 (4 texels a cell)
 
 	// The RT core (RtCore.h) runs: the helper is ready on a GPU with ray tracing. Off = NVR's own passes.
 	inline bool CoreReady() { return RtCore::Running(); }
