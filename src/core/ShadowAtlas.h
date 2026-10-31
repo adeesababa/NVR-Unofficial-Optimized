@@ -187,7 +187,7 @@ namespace ShadowAtlas {
 				if (mem) mem->Release();
 				return r3;
 			};
-			const HRESULT a = save(Surface, ".\NVR-Unofficial-Optimized-Logs\atlas_dump.raw");
+			const HRESULT a = save(Surface, "NVR-Unofficial-Optimized-Logs/atlas_dump.raw");
 			for (int s = 0; s < PointShadowForward::SlotCount; s++) {
 				const PointShadowForward::Slot& slot = PointShadowForward::Slots[s];
 				if (slot.slot != 0 || !slot.cube) continue;
@@ -195,7 +195,7 @@ namespace ShadowAtlas {
 				for (int f = 0; f < 6; f++) {
 					IDirect3DSurface9* face = nullptr;
 					char file[96];
-					sprintf_s(file, ".\NVR-Unofficial-Optimized-Logs\atlas_cube0_%d.raw", f);
+					sprintf_s(file, "NVR-Unofficial-Optimized-Logs/atlas_cube0_%d.raw", f);
 					if (SUCCEEDED(slot.cube->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &face))) { const HRESULT r = save(face, file); if (FAILED(r)) b = r; face->Release(); }
 				}
 				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot 0 light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
