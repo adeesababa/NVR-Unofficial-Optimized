@@ -1864,6 +1864,19 @@ void ShadowManager::LogSunShadowStats(bool cachedDistant) {
 		SunStats.Scheduled[MapLod] * perFrame, SunStats.ForCharacters[MapLod] * perFrame,
 		SunStats.Characters / (float)SunStats.Frames);
 	SunStats = {};
+	// UNOFFICIAL 2026-10-31 SunCacheByChange: why each cached cascade was redrawn (or kept), % of frames
+	if (TheSettingManager->GetSettingI("Main.Main.ReducedQuality", "SunCacheByChange")) {
+		char text[400]; int used = 0;
+		static const char* const names[4] = { "near", "middle", "far", "LOD" };
+		for (int i = MapMiddle; i <= MapLod; i++) {
+			const unsigned* r = SunCacheReasons[i];
+			const float total = (float)max(r[0] + r[1] + r[2] + r[3] + r[4], 1u);
+			used += sprintf_s(text + used, sizeof(text) - used, " | %s: kept %.0f, age %.0f, sun %.0f, moved %.0f, characters %.0f", names[i],
+				100.0f * r[4] / total, 100.0f * r[0] / total, 100.0f * r[1] / total, 100.0f * r[2] / total, 100.0f * r[3] / total);
+		}
+		Logger::Log("SUN CACHE BY CHANGE (%% of frames)%s", text);
+		memset(SunCacheReasons, 0, sizeof(SunCacheReasons));
+	}
 }
 
 void ShadowManager::RenderShadowMaps() {
@@ -2120,7 +2133,15 @@ void ShadowManager::RenderShadowMaps() {
 			// characters never keep a stale shadow (the flicker the plain stagger caused). Other moving objects (doors,
 			// physics clutter) are treated as still and can lag up to 3 or 7 frames in those cascades.
 			const bool staggered = TheSettingManager->SettingsMain.Main.StaggeredSunShadows;
-			const bool cachedDistant = TheSettingManager->SettingsMain.Main.CachedDistantShadows && !staggered;
+			// UNOFFICIAL 2026-10-31 SunCacheByChange ([Main.Main.ReducedQuality], off; root plan A1): the same cached middle, far and LOD
+			// cascades, but redrawn when something changed instead of on the 4 / 8 frame schedule: the sun stepped, the camera moved or turned
+			// by more than SunCacheMoveShare of the cascade's radius, a character is in it (as CachedDistantShadows), or SunCacheMaxAge
+			// frames passed (the net for doors and physics clutter, which are not tracked). Their selection spheres stay with the world, as
+			// the kept maps do.
+			const bool byChange = TheSettingManager->GetSettingI("Main.Main.ReducedQuality", "SunCacheByChange") != 0 && !staggered;
+			const unsigned cacheMaxAge = (unsigned)max(TheSettingManager->GetSettingI("Main.Main.ReducedQuality", "SunCacheMaxAge"), 1);
+			const float cacheMoveShare = max(TheSettingManager->GetSettingF("Main.Main.ReducedQuality", "SunCacheMoveShare"), 0.0f);
+			const bool cachedDistant = (TheSettingManager->SettingsMain.Main.CachedDistantShadows || byChange) && !staggered;
 			if (cachedDistant) CollectMovers(SunDir);
 			// UNOFFICIAL 2026-10-21 (sunshadow): SunCascadeOneWalk schedules every cascade first (the schedule of one does not depend
 			// on another's draw), walks once for all that redraw, then draws them in the same order. Without it each cascade is
@@ -2230,6 +2251,8 @@ void ShadowManager::RenderShadowMaps() {
 #endif
 				SunLandDropScale = 0.0f;
 				CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+				CascadeRefreshForward[i] = D3DXVECTOR3(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);	// SunCacheByChange
+				CascadeRefreshSun[i] = SunDir;
 				CascadeHadMover[i] = cascadeCached[i] && MoversInCascade(i, ShadowMap, cascadeInner[i]);
 			};
 			for (int i = MapNear; i < MapOrtho; i++) {
@@ -2240,11 +2263,28 @@ void ShadowManager::RenderShadowMaps() {
 
 				bool update = ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod);
 				const float innerDepth = i > MapNear ? ((const float*)Shadows->Constants.ShadowMapRadius)[i - 1] : 0.0f;
+				if (byChange && cachedCascade && !ForceAllCascades) {	// SunCacheByChange: the reasons replace the schedule
+					const D3DXVECTOR3 camera = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+					const D3DXVECTOR3 forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+					const D3DXVECTOR4& sphere = ShadowMap->ShadowMapCascadeCenterRadius;
+					const D3DXVECTOR3 moved = camera - CascadeRefreshCamera[i], turned = forward - CascadeRefreshForward[i];
+					// how far the cascade's fitted region has drifted: the camera's move plus the turn swinging its centre round
+					const float drift = D3DXVec3Length(&moved) + D3DXVec3Length(&turned) * sqrtf(sphere.x * sphere.x + sphere.y * sphere.y + sphere.z * sphere.z);
+					const D3DXVECTOR3 sunMoved = SunDir - CascadeRefreshSun[i];
+					int reason = -1;
+					if (CascadeAge[i] + 1 >= cacheMaxAge) reason = 0;
+					else if (D3DXVec3Length(&sunMoved) > 1e-4f) reason = 1;
+					else if (drift > cacheMoveShare * sphere.w) reason = 2;
+					update = reason >= 0;
+					if (update) SunCacheReasons[i][reason]++;
+				}
 				if (update) SunStats.Scheduled[i]++;
 				else if (cachedCascade && (CascadeHadMover[i] || MoversInCascade(i, ShadowMap, innerDepth))) {
 					update = true;
 					SunStats.ForCharacters[i]++;
+					if (byChange) SunCacheReasons[i][3]++;
 				}
+				if (byChange && cachedCascade) { if (update) CascadeAge[i] = 0; else { CascadeAge[i]++; SunCacheReasons[i][4]++; } }
 				if (update) {
 					updatedCascades |= 1u << i;
 					cascadeViewProj[i] = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
@@ -2264,7 +2304,7 @@ void ShadowManager::RenderShadowMaps() {
 					// A cached NEAR cascade (NearCascadeInterval 2) also moves its selection sphere with the
 					// camera: the centre is camera-relative, and the near sphere is small enough for a stale
 					// centre to matter. The rarely refreshed cascades keep their original behaviour.
-					if (i == MapNear) {
+					if (i == MapNear || byChange) {	// (SunCacheByChange: every kept cascade, its map stays with the world)
 						ShadowMap->ShadowMapCascadeCenterRadius.x -= difference.x;
 						ShadowMap->ShadowMapCascadeCenterRadius.y -= difference.y;
 						ShadowMap->ShadowMapCascadeCenterRadius.z -= difference.z;
@@ -2959,7 +2999,8 @@ void ShadowManager::RenderCharacterShadowMap(const D3DXVECTOR3& SunDir) {
 
 	BeginShadowMap(map, &viewProj);
 	// The walk: the player's node (the body, hair, headgear, the held weapon: all under it), culled against the box's planes.
-	NiNode* playerNode = Player->GetNode();
+	// (UNOFFICIAL 2026-10-31 CharacterShadowMapTarget: or the NPC it was fitted round in first person)
+	NiNode* playerNode = Shadows->CharacterTargetNode ? Shadows->CharacterTargetNode : Player->GetNode();
 	AccumChildren(playerNode, &map->Forms, false, false, &map->ShadowMapFrustumPlanes);
 	unsigned others = 0;
 	if (Shadows->Settings.ShadowMaps.CharacterMapOthers && Player->GetWorldSpace() && Tes && Tes->gridCellArray) {

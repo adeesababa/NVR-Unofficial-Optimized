@@ -330,6 +330,7 @@ public:
 	// origin snapped to a texel; false when there is nothing to fit (first person, no skeleton). Sets CharacterMap up for the draw and
 	// Constants.CharacterCameraToLight / CharacterCenter / CharacterData (w left to the caller).
 	bool		GetCharacterViewProj(const D3DXVECTOR3& sunDir, D3DXMATRIX& viewProj);
+	NiNode*		CharacterTargetNode = nullptr;	// UNOFFICIAL 2026-10-31 CharacterShadowMapTarget: whose node the map is fitted round and walks (GetCharacterViewProj)
 
 	void		clearShadowsBuffer();
 	bool		ShouldRender() override;

@@ -1210,16 +1210,57 @@ bool ShadowsExteriorEffect::EnsureCharacterMap() {
 // texel size every frame, and the projection is shifted so the world origin lands on a texel corner (GetCascadeViewProj's rounding),
 // so a step of the character moves the picture by whole texels and the shadows do not swim. The sun direction is the cascades' quantised
 // one, so the map turns only when they do. The camera's zoom (FOV) plays no part: the same texels at any third-person distance.
+// UNOFFICIAL 2026-10-31 CharacterShadowMapTarget 1 (root plan A2, off): in first person (the map had nothing to do there) it is fitted round
+// the nearest NPC whose head is in front of the camera within CharacterShadowMapNpcDistance, so the faces you talk to get the same sharp
+// sun self-shadow. One map, one box: the skin and clothing lookups already read it wherever a pixel is inside its box.
+static Character* CharacterMapNpc(float maxDistance) {
+	const NiPoint3 eye = WorldSceneGraph->camera->m_worldTransform.pos;
+	const D3DXVECTOR3 forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+	Character* best = nullptr;
+	float bestDistance = maxDistance;
+	__try {
+		UInt8* lists = (UInt8*)0x11E0E80;	// ProcessLists: the high-process actors (as BloodFlow / CapsuleShadows)
+		Actor** data = *(Actor***)(lists + 0x08);
+		if (!data) return nullptr;
+		const UInt32 begin = *(UInt32*)(lists + 0x14), end = *(UInt32*)(lists + 0x24);
+		if (end < begin || end - begin > 4096) return nullptr;
+		for (UInt32 i = begin; i < end; i++) {
+			Actor* actor = data[i];
+			if (!actor || (TESObjectREFR*)actor == (TESObjectREFR*)Player || !actor->baseForm || actor->baseForm->formType != TESForm::FormType::kFormType_NPC) continue;
+			if ((actor->flags & 0x800) != 0) continue;	// disabled
+			Character* npc = (Character*)actor;
+			NiNode* node = npc->GetNode();
+			if (!node || (node->m_flags & NiAVObject::APP_CULLED) || !npc->ActorSkinInfo || !npc->ActorSkinInfo->HeadNode || !npc->ActorSkinInfo->Spine2Node) continue;
+			const NiPoint3& h = npc->ActorSkinInfo->HeadNode->m_worldTransform.pos;
+			const D3DXVECTOR3 to(h.x - eye.x, h.y - eye.y, h.z - eye.z);
+			const float distance = D3DXVec3Length(&to);
+			if (!(distance < bestDistance) || D3DXVec3Dot(&to, &forward) < 0.5f * distance) continue;	// in front (within 60 degrees)
+			best = npc;
+			bestDistance = distance;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+	return best;
+}
+
 bool ShadowsExteriorEffect::GetCharacterViewProj(const D3DXVECTOR3& sunDir, D3DXMATRIX& viewProj) {
-	if (!Player || !Player->isThirdPerson) return false;
-	NiNode* node = Player->GetNode();
+	CharacterTargetNode = nullptr;
+	if (!Player) return false;
+	Character* target = (Character*)Player;
+	if (!Player->isThirdPerson) {
+		if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMapTarget") != 1) return false;
+		target = CharacterMapNpc(max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMapNpcDistance"), 0.0f));
+		if (!target) return false;
+	}
+	NiNode* node = target->GetNode();
 	if (!node || (node->m_flags & NiAVObject::APP_CULLED)) return false;
+	CharacterTargetNode = node;
 	const NiPoint3 cameraPosition = WorldSceneGraph->camera->m_worldTransform.pos;
 	D3DXVECTOR3 centre;
 	float radius;
-	if (Settings.ShadowMaps.CharacterMapFit == 0 && Player->ActorSkinInfo && Player->ActorSkinInfo->HeadNode && Player->ActorSkinInfo->Spine2Node) {
-		const NiPoint3& h = Player->ActorSkinInfo->HeadNode->m_worldTransform.pos;
-		const NiPoint3& t = Player->ActorSkinInfo->Spine2Node->m_worldTransform.pos;
+	if (Settings.ShadowMaps.CharacterMapFit == 0 && target->ActorSkinInfo && target->ActorSkinInfo->HeadNode && target->ActorSkinInfo->Spine2Node) {
+		const NiPoint3& h = target->ActorSkinInfo->HeadNode->m_worldTransform.pos;
+		const NiPoint3& t = target->ActorSkinInfo->Spine2Node->m_worldTransform.pos;
 		const D3DXVECTOR3 head(h.x, h.y, h.z), torso(t.x, t.y, t.z);
 		const D3DXVECTOR3 axis = head - torso;
 		centre = torso + axis * 0.5f;
