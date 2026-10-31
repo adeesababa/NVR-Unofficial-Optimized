@@ -290,3 +290,24 @@ nothing here is pushed, released or installed unless the user says so.
 - DLL CRC32 54E3449E, NvrRtHelper 63C95421 (protocol 4), NvrDlssHelper 20010E5E (this tree's build of b0146f54), d3d9
   D0F5B553 (unchanged). Package `H:/_NVR-pkg/rt-test-01a9a623` (plain defaults, no tester edits, no README-RT-TEST); DLSS
   add-on `H:/_NVR-pkg/rt-test-dlss-addon-01a9a623` (same NVIDIA notices as RT-test-8's, README updated). No zips.
+
+## Round 14 (2026-10-31 05:00, aa9b3080)
+- Merged on round 13b (01a9a623), everything OFF by default: claude/rt-refl-3 f267a210 ([Shaders.Reflections.RT] RayReuse false,
+  ReuseRoughness; [Main.Main.RayTracing] FarObjectLOD false (did not pass, keep false), FarRadius; NVR_RT_MASK_FAR 0x80),
+  claude/rt-restir-di 86b40c42 ([_Shaders.ShadowsInteriors.RT] ManyLights false + 5 keys, restart, RtLampTraceMany.spv new),
+  claude/rt-radiance-cache 6b95ad55 (cache v2: [_Shaders.AmbientOcclusion.RT] RadianceCache false, CacheExteriors false, ...;
+  RtRadianceCache.spv new, RtAOTrace / RtGITrace.spv changed), claude/rt-sun-soft 886582c2 (the READY line's commit; the
+  relayed "597e2cd2" does not exist: [Shaders.ShadowsExteriors.RT] Penumbra false, [Main.Main.RayTracing] ActorStillSkip false,
+  ActorRebuildInterval 0, NVR_RT_OP_FLAG_REBUILD 0x10; RtSunPenumbra.spv new, RtSunShadow.spv changed) and claude/motion-ring-fix
+  c7e2dafc (CapsuleShadows + contact [_Shaders.ShadowsInteriors.Capsules] Enabled false, restart; root plan step A
+  SunCacheByChange false, CharacterShadowMapTarget 0; NOT its newer 069da58c SunLayers, which had no READY line).
+- Conflicts: RtCore.cpp settings read (FarObjectLOD vs ActorStill*: both kept); RtLampShadows.h Submit (ManyLights state vs
+  CapsuleShadows screen source: both kept, LampsThisFrame gated on RtEnabled as in the capsule branch, ManyNoting kept).
+  No .spv overlaps (each shader binary changed by one branch only). aa9b3080 restores CRLF in ShadowManager.cpp.
+- Bench (one bulk run): iGPU Goodsprings (20261031-044742-slotC, rtm-igpu-ext5) PASS, helper ready 0.47 s, 0 compile errors,
+  every RT toggle changes the picture vs off (sun 4-9 %, AO+GI 21 %, reflections 13 %, all 25 %; same pattern as round 13);
+  1070 all off (045542-slotC, re-queued after a low-memory WAIT) PASS vs 13b: Vault 21 lamp shots 0.3 % of pixels (pools intact),
+  Goodsprings 16 % = clouds, tumbleweed and bushes moved (lighting the same).
+- DLL CRC32 63CE882A, NvrRtHelper 8ECC9D2D (protocol 4, includes the REBUILD flag), NvrDlssHelper ED0C3219, d3d9 D0F5B553
+  (unchanged). Package `H:/_NVR-pkg/rt-test-aa9b3080` (all 7 changed .spv + PointShadowForward.hlsl + TerrainTemplate.hlsl
+  checked equal to the tree; new switches checked off in its toml); DLSS add-on `H:/_NVR-pkg/rt-test-dlss-addon-aa9b3080`. No zips.
