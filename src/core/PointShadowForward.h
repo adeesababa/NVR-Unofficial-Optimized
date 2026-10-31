@@ -701,6 +701,7 @@ namespace PointShadowForward {
 				constants[14][2] = Slots[Focus].position.z - camera.z;
 				constants[14][3] = 1.0f / Slots[Focus].radius;
 				bound[5] = Slots[Focus].cube;
+				if (AtlasTexture) memcpy(constants[13], Slots[Focus].tile, 3 * sizeof(float));	// UNOFFICIAL 2026-10-30 ShadowAtlas: light 5's tint = the focus tile
 				if (!force) { TraceDraws++; if (focusIndex >= 0) TraceDrawsWithLamp++; }
 			}
 		}

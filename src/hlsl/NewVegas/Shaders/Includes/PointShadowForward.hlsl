@@ -654,7 +654,7 @@ float3 PointShadowFactor(float shadow, float4 tint) {
 // 40% when the lamp is not one of the draw's lights. Dark blue: beyond the cube's reach. Orange: no lamp data reached the
 // draw. Grey: the vertex shader gave no position.
 float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
-#if POINT_SHADOW_RT || POINT_SHADOW_ATLAS
+#if POINT_SHADOW_RT
     return 0.5f;    // (RT builds: the focus lamp's cube map has no sampler, see NVR_RtLampVis)
 #else
     float4 light = NVR_PointShadowFocus;
@@ -665,7 +665,7 @@ float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
     float d = length(p) * light.w;
     float3 color = float3(0.0f, 0.0f, 0.15f);
     [branch] if (d < 1.0f) {
-        float stored = texCUBElod(NVR_PointShadowCube5, float4(p * float3(1.0f, 1.0f, -1.0f), 0.0f)).r;
+        float stored = PS_TAP(NVR_PointShadowCube5, p * float3(1.0f, 1.0f, -1.0f));   // (atlas: the focus lamp's tile in light 5's tint)
         float blocked = (float)(stored > 0.0f) * (float)(stored <= d - NVR_PointShadowParams.y * d);
         float3 cell = floor(toPixel / 64.0f);
         float checker = frac((cell.x + cell.y + cell.z) * 0.5f) > 0.25f ? 1.0f : 0.7f;
