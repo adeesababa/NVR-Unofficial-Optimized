@@ -1891,10 +1891,10 @@ namespace {
 		c.recording = false;
 		c.record = nullptr;
 
-		if (c.actorsOn && (n % 300) == 0) {	// 2026-10-31: actor structure updates over the last 300 frames (ActorStillSkip, ActorRebuildInterval)
+		if (c.actorsOn && (n % 150) == 0) {	// 2026-10-31: actor structure updates over the last 150 frames (ActorStillSkip, ActorRebuildInterval)
 			Logger::Log("RT CORE: actor updates a frame: %.2f posed (%.2f of them rebuilt afresh), %.2f still (not posed: ActorStillSkip %s, threshold %.3f), "
-				"%.2f between poses (ActorUpdateInterval %u, rebuild interval %u); helper builds %.3f ms avg", c.actorUpdates[0] / 300.0f, c.actorUpdates[3] / 300.0f,
-				c.actorUpdates[1] / 300.0f, c.actorStillSkip ? "on" : "off", c.actorStillThreshold, c.actorUpdates[2] / 300.0f, c.actorInterval, c.actorRebuild,
+				"%.2f between poses (ActorUpdateInterval %u, rebuild interval %u); helper builds %.3f ms avg", c.actorUpdates[0] / 150.0f, c.actorUpdates[3] / 150.0f,
+				c.actorUpdates[1] / 150.0f, c.actorStillSkip ? "on" : "off", c.actorStillThreshold, c.actorUpdates[2] / 150.0f, c.actorInterval, c.actorRebuild,
 				c.shared->buildUsAvg / 1000.0);
 			memset(c.actorUpdates, 0, sizeof(c.actorUpdates));
 		}
