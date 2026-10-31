@@ -159,11 +159,28 @@ namespace ShadowAtlas {
 		// log folder as DDS (R16F / the cube's own format), with that slot's light and tile in the log.
 		if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "Dump") != 0) {
 			TheSettingManager->SetSetting("Shaders.ShadowsInteriors.Atlas", "Dump", (int)0);
-			const HRESULT a = D3DXSaveTextureToFileA(".\NVR-Unofficial-Optimized-Logs\atlas_dump.dds", D3DXIFF_DDS, Texture, NULL);
+			// (render targets: copied to system memory first, GetRenderTargetData; the cube's six faces one file each)
+			auto save = [&](IDirect3DSurface9* rt, const char* file) -> HRESULT {
+				D3DSURFACE_DESC t = {};
+				rt->GetDesc(&t);
+				IDirect3DSurface9* mem = nullptr;
+				HRESULT r = d->CreateOffscreenPlainSurface(t.Width, t.Height, t.Format, D3DPOOL_SYSTEMMEM, &mem, NULL);
+				if (SUCCEEDED(r)) r = d->GetRenderTargetData(rt, mem);
+				if (SUCCEEDED(r)) r = D3DXSaveSurfaceToFileA(file, D3DXIFF_DDS, mem, NULL, NULL);
+				if (mem) mem->Release();
+				return r;
+			};
+			const HRESULT a = save(Surface, ".\NVR-Unofficial-Optimized-Logs\atlas_dump.dds");
 			for (int s = 0; s < PointShadowForward::SlotCount; s++) {
 				const PointShadowForward::Slot& slot = PointShadowForward::Slots[s];
 				if (slot.slot != 0 || !slot.cube) continue;
-				const HRESULT b = D3DXSaveTextureToFileA(".\NVR-Unofficial-Optimized-Logs\atlas_cube0.dds", D3DXIFF_DDS, slot.cube, NULL);
+				HRESULT b = S_OK;
+				for (int f = 0; f < 6; f++) {
+					IDirect3DSurface9* face = nullptr;
+					char file[96];
+					sprintf_s(file, ".\NVR-Unofficial-Optimized-Logs\atlas_cube0_%d.dds", f);
+					if (SUCCEEDED(slot.cube->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &face))) { const HRESULT r = save(face, file); if (FAILED(r)) b = r; face->Release(); }
+				}
 				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot 0 light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
 					(unsigned)a, (unsigned)b, slot.position.x, slot.position.y, slot.position.z, slot.radius, slot.tile[0], slot.tile[1], slot.tile[2], Size);
 			}
