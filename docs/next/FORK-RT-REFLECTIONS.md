@@ -244,7 +244,8 @@ rtrefl-18, MaxRoughness 0.8 (rays on rougher surfaces), RayReuse 1 vs 0:
   two, in motion) needs a moving-camera test (the harness's `walk`); not run.
 - **Cost:** `Reflections trace (half)` (RayGen + exchange + Resolve) +4.3 ms at lucky22 (16.95 -> 21.27), +3.5 ms at luxe (16.19 ->
   19.74) on the iGPU: four more hit shadings (cube / screen / estimate with lamps) per rough pixel. The RT exchange is unchanged
-  (no rays). MaxRoughness 0.8 alone (base shot, 0.5, no reuse: 18.6 / 17.5) costs +1.7 / +1.3 ms of that.
+  (no rays). The base shot (MaxRoughness 0.5, no reuse) read 18.6 / 17.5 ms, above the 0.8 off shot: the shot-to-shot spread is
+  ~1.5 ms, so the reuse cost is +3.5-4.3 ms give or take that.
 - Verdict: works, off by default; on a 1070-class GPU the shading is cheap, on the iGPU it is a 20 % rise of the reflection pass.
 
 ### 2026-10-30 16:30 RT reflections on the first-person weapon (claude/rt-refl-weapon, on the installed motion-ring-fix aee0046c)
