@@ -164,13 +164,30 @@ namespace ShadowAtlas {
 				D3DSURFACE_DESC t = {};
 				rt->GetDesc(&t);
 				IDirect3DSurface9* mem = nullptr;
-				HRESULT r = d->CreateOffscreenPlainSurface(t.Width, t.Height, t.Format, D3DPOOL_SYSTEMMEM, &mem, NULL);
-				if (SUCCEEDED(r)) r = d->GetRenderTargetData(rt, mem);
-				if (SUCCEEDED(r)) r = D3DXSaveSurfaceToFileA(file, D3DXIFF_DDS, mem, NULL, NULL);
+				const HRESULT r1 = d->CreateOffscreenPlainSurface(t.Width, t.Height, t.Format, D3DPOOL_SYSTEMMEM, &mem, NULL);
+				const HRESULT r2 = SUCCEEDED(r1) ? d->GetRenderTargetData(rt, mem) : E_FAIL;
+				HRESULT r3 = E_FAIL;
+				// raw floats after a 16-byte header (width, height, format, bytes per row): D3DX's DDS writer refuses some float formats
+				if (SUCCEEDED(r2)) {
+					D3DLOCKED_RECT lock = {};
+					r3 = mem->LockRect(&lock, NULL, D3DLOCK_READONLY);
+					if (SUCCEEDED(r3)) {
+						FILE* out = nullptr;
+						if (!fopen_s(&out, file, "wb") && out) {
+							const UInt32 head[4] = { t.Width, t.Height, (UInt32)t.Format, (UInt32)lock.Pitch };
+							fwrite(head, sizeof(head), 1, out);
+							fwrite(lock.pBits, lock.Pitch, t.Height, out);
+							fclose(out);
+						}
+						else r3 = E_FAIL;
+						mem->UnlockRect();
+					}
+				}
+				Logger::Log("ShadowAtlas dump %s: %ux%u format %d, create %08X, copy %08X, write %08X", file, t.Width, t.Height, (int)t.Format, (unsigned)r1, (unsigned)r2, (unsigned)r3);
 				if (mem) mem->Release();
-				return r;
+				return r3;
 			};
-			const HRESULT a = save(Surface, ".\NVR-Unofficial-Optimized-Logs\atlas_dump.dds");
+			const HRESULT a = save(Surface, ".\NVR-Unofficial-Optimized-Logs\atlas_dump.raw");
 			for (int s = 0; s < PointShadowForward::SlotCount; s++) {
 				const PointShadowForward::Slot& slot = PointShadowForward::Slots[s];
 				if (slot.slot != 0 || !slot.cube) continue;
@@ -178,7 +195,7 @@ namespace ShadowAtlas {
 				for (int f = 0; f < 6; f++) {
 					IDirect3DSurface9* face = nullptr;
 					char file[96];
-					sprintf_s(file, ".\NVR-Unofficial-Optimized-Logs\atlas_cube0_%d.dds", f);
+					sprintf_s(file, ".\NVR-Unofficial-Optimized-Logs\atlas_cube0_%d.raw", f);
 					if (SUCCEEDED(slot.cube->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &face))) { const HRESULT r = save(face, file); if (FAILED(r)) b = r; face->Release(); }
 				}
 				Logger::Log("ShadowAtlas dump (atlas %08X, cube %08X): slot 0 light at %.1f %.1f %.1f radius %.1f, tile u %.6f v %.6f span %.6f (atlas %u)",
