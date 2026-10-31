@@ -7,6 +7,7 @@
 #include "SunShadowStats.h"	// UNOFFICIAL 2026-10-21 test tools: where the sun cascades' CPU time goes
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow: CoverMapOrthoFrame
 #include "DisplaceShadows.h"	// UNOFFICIAL 2026-10-27 displacement shadows: the land drawn with its bumps into the sun cascades
+#include "ShadowAtlas.h"	// UNOFFICIAL 2026-10-30 ShadowAtlas (INTERIOR-SHADOWS-MODERN step 1)
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -2778,6 +2779,7 @@ void ShadowManager::RenderShadowMaps() {
 						for (int f = 0; f < 6; f++) std::swap(faces[f], cube.faces[f]);
 						if (!drawn) continue;
 						cube.x = at.x; cube.y = at.y; cube.z = at.z; cube.radius = radius; cube.cell = currentCell; cube.valid = true;
+						cube.drawn++;	// UNOFFICIAL 2026-10-30 ShadowAtlas
 						if (GpuTimer::Enabled) ShadowPool::StatDrawn++;
 					}
 					if (cube.since <= 0.0) cube.since = nowSeconds;
@@ -2801,6 +2803,7 @@ void ShadowManager::RenderShadowMaps() {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
 			const int liveCount = PointShadowForward::SlotCount;	// UNOFFICIAL 2026-10-30 ShadowHold
 			PointShadowForward::PublishPool(poolEntries, poolCount);	// UNOFFICIAL 2026-10-29 ShadowPool (nothing when the pool is off)
+			ShadowAtlas::Update(Device, shadowedSlots);	// UNOFFICIAL 2026-10-30 ShadowAtlas: every published lamp's tile (nothing when off)
 			{	// UNOFFICIAL 2026-10-30 ShadowHold: which lamps have a shadow this frame (FadeIn continuity, the SHADOW FLIPS line)
 				static const void* published[ShadowCubeMapsMax + ShadowPoolMax];
 				int n = 0;
