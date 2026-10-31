@@ -234,6 +234,19 @@ instance and triangle counts, helper cost).
 
 ## Results
 
+### 2026-10-31 round 14: RayReuse (claude/rt-refl-3 80e39481, DLL 1E229562; fork-0033c, helper extra-p3e)
+rtrefl-18, MaxRoughness 0.8 (rays on rougher surfaces), RayReuse 1 vs 0:
+- lucky22 20261031-020411-slotA: reflection alone reuse vs off 1.00 % px > 2 (repeats 0.00 %), mean |d| 0.375; full picture 0.15 %
+  (pads 0.10 %). luxe 20261031-022432-slotA: 0.99 % (repeats 0.02 %), mean |d| 0.34; full 0.26 % (pads 0.11 %). No colour shift to
+  speak of (signed means within 0.08 levels): the ratio estimator keeps the lobe's average.
+- **Convergence is not measurable from these stills:** with time slowed, the temporal history has settled both settings over 224
+  frames (two reuse shots and two off shots each agree to ~0 %). The point of reuse (a rough reflection that settles in a frame or
+  two, in motion) needs a moving-camera test (the harness's `walk`); not run.
+- **Cost:** `Reflections trace (half)` (RayGen + exchange + Resolve) +4.3 ms at lucky22 (16.95 -> 21.27), +3.5 ms at luxe (16.19 ->
+  19.74) on the iGPU: four more hit shadings (cube / screen / estimate with lamps) per rough pixel. The RT exchange is unchanged
+  (no rays). MaxRoughness 0.8 alone (base shot, 0.5, no reuse: 18.6 / 17.5) costs +1.7 / +1.3 ms of that.
+- Verdict: works, off by default; on a 1070-class GPU the shading is cheap, on the iGPU it is a 20 % rise of the reflection pass.
+
 ### 2026-10-30 16:30 RT reflections on the first-person weapon (claude/rt-refl-weapon, on the installed motion-ring-fix aee0046c)
 `[Shaders.Reflections.RT] Weapon` (0 = off; strength), `WeaponRoughness` (0.3), `WeaponMetal` (1.0), only in frames the RT trace runs:
 - **Where the gun is:** FNV draws the viewmodel from the same eye with its own FOV (PlayerCharacter firstPersonFoV vs worldFoV), so a
