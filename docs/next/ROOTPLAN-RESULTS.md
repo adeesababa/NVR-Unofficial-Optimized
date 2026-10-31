@@ -485,3 +485,26 @@ and 0 of 6 mask-off shots (p ~0.03 if it were chance). Suggests FSR without the 
 Not a proof (the puffs are random); worth a look in motion before defaulting ReactiveMask on.
 Notes: the SettingShots `walk` applies to the whole list; `sgtm 0.001` freezes particle effects (none emit); placeatme <base> 1 300 0 puts
 it ahead of the player.
+
+## Round 13: INTERIOR-SHADOWS-MODERN step 1, the shadow atlas (ShadowAtlas, off)
+
+`[Shaders.ShadowsInteriors.Atlas] Enabled` (restart; Size 8192 = 128 MB R16F). core/ShadowAtlas.h, PointShadowForward.hlsl
+POINT_SHADOW_ATLAS. Every lamp shadow NVR publishes indoors (the live LightPoints slots, people included, and the ShadowPool's still
+maps) is also an octahedral tile of one atlas (live 1024, pool 512 at 8192), and the object / skin shaders read the draw's lamps from it
+on s8 instead of six cube maps: the same filters, only the tap reads the tile (each light's tile in its tint register c182-c187; the
+debug views 1-2 then tint every lamp red). A live tile is converted from its cube map when that was redrawn (or the slot changed lamp),
+a pool tile when its cube map was drawn. Off: no define, the shaders as before.
+
+Bench (atlas-still / atlas-walk, cube = user toml, atlas = user-toml-atlas; final 7b953f41, DLL 37C23EF7, runs 20261030-220400 /
+221308 stills, 220758 / 221509 Vault 21 walk):
+- look: atlas vs cube maps Lucky 38 0.04 % of pixels > 16 (repeat noise 0.01 %, cross-launch), Vault 21 0.36 %, Freeside 0.03 %, means
+  +-0.02; PoolLamps 160 changes Vault 21 by 0.13 % in both;
+- popping: SHADOW FLIPS 0 / s walking with the pool off in both; with PoolLamps 160 (76 lamps shadowed) 12-20 / s in both (the pool's
+  own churn, not the atlas's);
+- cost (GTX 1070, Vault 21 walk): world scene 3.8-3.9 ms vs 4.5-4.6 (one 2D sampler instead of six cubes), conversion 0.20 ms (about 5
+  live tiles a frame; every frame was 1.3 ms), frame GPU 6.96-7.10 vs 7.25-7.45 ms, CPU 7.2 vs 7.6 ms.
+Bugs on the way, fixed: the tap script rewrote the cube path's own PS_TAP into itself (skin lamp-shadow shaders failed to compile, so
+forward lamp shadows switched off with the atlas OFF: commits 0af1b129-d5..., fixed 2eeeac12; never sent in a READY line); a dump of the
+atlas (Dump) and a per-slot trace (TraceSlot, DebugView 3 reads the atlas) were added to find it. The atlas's first "6 % darker" was the
+atlas against the screen-space fallback, not against the cube maps.
+Next (steps 2-3): capsule shadows for people (they then leave the live cube maps), contact shadows.
