@@ -47,6 +47,7 @@ void HdrOutputNoteDesktop() { HdrOutput::NoteDesktop(); }	// UNOFFICIAL 2026-10-
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
 #include "../../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-26: DXVK PROFILE lines (F10 profiling on NVR DXVK 1.5)
+#include "../../core/ShadowAtlas.h"	// UNOFFICIAL 2026-10-30 ShadowAtlas (WorldStartConvert)
 #include "../../core/LandLamps.h"	// UNOFFICIAL 2026-10-30 LandAllLamps: the land lit by all of its own lamps (plan C)
 #include "../../core/ReactiveMask.h"	// UNOFFICIAL 2026-10-30 ReactiveMask: FSR's reactive mask from the world's alpha draws
 
@@ -3455,6 +3456,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	if (TAA) TAA->BeginJitter(FrameWorldCalls == 1);
 	// UNOFFICIAL terrain blending (off by default): the world's depth is copied as the first land shader of this scene binds.
 	TerrainShaders::BeginWorldScene();
+	if (FrameWorldCalls == 1) ShadowAtlas::WorldStart(TheRenderManager->device);	// UNOFFICIAL 2026-10-30 ShadowAtlas WorldStartConvert (test)
 	{
 		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
 		static GpuTimer worldTimer("World scene (game)");

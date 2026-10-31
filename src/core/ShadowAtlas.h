@@ -28,6 +28,7 @@ namespace ShadowAtlas {
 	inline bool Failed = false;
 	struct PoolTile { const void* light = nullptr; const void* texture = nullptr; UInt32 drawn = 0; float x = 0, y = 0, z = 0, radius = 0; };
 	inline PoolTile PoolTiles[ShadowPoolMax];
+	inline int LastLiveSlots = 0;		// Update's liveSlots (WorldStart converts the live tiles again with it)
 	inline unsigned StatFrames = 0;
 	inline unsigned long long StatLive = 0, StatPool = 0, StatPoolConverted = 0, StatNoTile = 0;
 
@@ -87,8 +88,16 @@ namespace ShadowAtlas {
 
 	// ShadowManager, indoors after Publish + PublishPool: every published lamp's tile, converted when needed; its uv into the slot.
 	// liveSlots: the live slot count (the slots below it are live, ShadowCubeMapsMax and up the pool's).
+	inline void Update(IDirect3DDevice9* d, int liveSlots);
+	// RenderWorldSceneGraphHook, as the world scene starts ([Shaders.ShadowsInteriors.Atlas] WorldStartConvert, test): the live tiles
+	// converted again from the cube maps as they are now (are the live cube maps changed after they are published?).
+	inline void WorldStart(IDirect3DDevice9* d) {
+		if (!CompiledIn() || !Texture || !TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Atlas", "WorldStartConvert")) return;
+		Update(d, LastLiveSlots);
+	}
 	inline void Update(IDirect3DDevice9* d, int liveSlots) {
 		if (!CompiledIn() || !Ensure(d)) return;
+		LastLiveSlots = liveSlots;
 		static GpuTimer convertTimer("Shadow atlas convert");
 		GpuProfileScope gpu(convertTimer, d);
 		NiDX9RenderState* state = TheRenderManager->renderState;
