@@ -2695,6 +2695,7 @@ void ShadowManager::RenderShadowMaps() {
 			}
 			now.partial = CubeCulledAny;	// UNOFFICIAL CubeFaceViewCull: redrawn next frame whatever happens
 			slots[i] = now;
+			if (i < 64) ShadowAtlas::LiveRedrawn[i] = true;	// UNOFFICIAL 2026-10-30 ShadowAtlas: its tile is converted again
 			if (GpuTimer::Enabled) { statRedrawn++; statReasons[(int)why]++; }
 
 			std::string message = "ShadowManager::RenderShadowCubeMap ";

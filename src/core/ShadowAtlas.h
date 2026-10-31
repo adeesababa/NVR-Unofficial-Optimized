@@ -28,6 +28,11 @@ namespace ShadowAtlas {
 	inline bool Failed = false;
 	struct PoolTile { const void* light = nullptr; const void* texture = nullptr; UInt32 drawn = 0; float x = 0, y = 0, z = 0, radius = 0; };
 	inline PoolTile PoolTiles[ShadowPoolMax];
+	// Live slots: converted only when ShadowManager redrew the slot's cube map this frame (LiveRedrawn, set there) or the slot changed
+	// lamp or texture. (Every frame cost 1.3 ms for 24 tiles of 1024 on the GTX 1070, run 20261030-220952-slotA.)
+	inline bool LiveRedrawn[64] = {};
+	struct LiveTile { const void* light = nullptr; const void* texture = nullptr; };
+	inline LiveTile LiveTiles[64];
 	inline int LastLiveSlots = 0;		// Update's liveSlots (WorldStart converts the live tiles again with it)
 	inline unsigned StatFrames = 0;
 	inline unsigned long long StatLive = 0, StatPool = 0, StatPoolConverted = 0, StatNoTile = 0;
@@ -147,9 +152,14 @@ namespace ShadowAtlas {
 			UINT x, y, n;
 			if (slot.slot < ShadowCubeMapsMax) {
 				if (!LiveRect(slot.slot, liveSlots, x, y, n)) { if (GpuTimer::Enabled) StatNoTile++; continue; }
-				convert(slot.cube, x, y, n);
+				LiveTile& t = LiveTiles[slot.slot];
+				if (LiveRedrawn[slot.slot] || t.light != slot.light || t.texture != slot.cube) {
+					convert(slot.cube, x, y, n);
+					t = { slot.light, slot.cube };
+					LiveRedrawn[slot.slot] = false;
+					if (GpuTimer::Enabled) StatLive++;
+				}
 				uv(slot, x, y, n);
-				if (GpuTimer::Enabled) StatLive++;
 			}
 			else {
 				const int index = slot.slot - ShadowCubeMapsMax;
@@ -228,7 +238,7 @@ namespace ShadowAtlas {
 
 		if (GpuTimer::Enabled && ++StatFrames >= 240) {
 			const double f = 1.0 / StatFrames;
-			Logger::Log("SHADOW ATLAS per frame: %.1f live tiles converted, %.1f pool tiles used (%.2f converted), %.2f lamps without a tile",
+			Logger::Log("SHADOW ATLAS per frame: %.2f live tiles converted, %.1f pool tiles used (%.2f converted), %.2f lamps without a tile",
 				StatLive * f, StatPool * f, StatPoolConverted * f, StatNoTile * f);
 			StatFrames = 0; StatLive = StatPool = StatPoolConverted = StatNoTile = 0;
 		}
