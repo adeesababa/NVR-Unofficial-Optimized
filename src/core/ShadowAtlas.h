@@ -102,7 +102,11 @@ namespace ShadowAtlas {
 		DWORD savedRS[sizeof(kRS) / sizeof(kRS[0])];
 		for (unsigned i = 0; i < sizeof(kRS) / sizeof(kRS[0]); i++) { if (FAILED(d->GetRenderState(kRS[i], &savedRS[i]))) savedRS[i] = want[i]; if (savedRS[i] != want[i]) d->SetRenderState(kRS[i], want[i]); }
 		static const D3DSAMPLERSTATETYPE kSS[] = { D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW, D3DSAMP_SRGBTEXTURE };
-		const DWORD wantS[] = { D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, FALSE };
+		// POINT: each tile texel takes a real cube texel. A linear read blended the "caster at the light" zeros (no data, lit) with the depths
+		// beside them into small positive values, which count as blockers: halos round every lamp fixture (run 20261030-214413-slotA, the
+		// atlas 6 % darker than the cube maps in Lucky 38 where the cube maps equal the screen-space shadows). The lookup's own linear filter
+		// stays, as on the cube maps.
+		const DWORD wantS[] = { D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, FALSE };
 		DWORD savedS[sizeof(kSS) / sizeof(kSS[0])];
 		for (unsigned i = 0; i < sizeof(kSS) / sizeof(kSS[0]); i++) { if (FAILED(d->GetSamplerState(0, kSS[i], &savedS[i]))) savedS[i] = wantS[i]; if (savedS[i] != wantS[i]) d->SetSamplerState(0, kSS[i], wantS[i]); }
 		float savedPS[4] = {};
