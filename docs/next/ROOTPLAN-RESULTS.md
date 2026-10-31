@@ -532,3 +532,22 @@ moment Capsules was switched on: now compiled on a worker thread from load (5.3 
 Verdict: works, keep OFF. Contact shadows are the visible part (small); capsules are correct but rarely visible with FNV's dim lamps,
 and cost more GPU than the cube redraws they save on the GTX 1070. Worth a look in a scene with a person next to a bright lamp, and as the
 no-RT half of the shared visibility buffer (design section 4).
+
+## Round 15: root plan step A, cache sun shadows and the character map by change rate (off)
+Built: 049c0e32 (DLL AB0A1185). A1 `[Main.Main.ReducedQuality]` SunCacheByChange (live, off), SunCacheMaxAge 30, SunCacheMoveShare 0.05:
+on top of CachedDistantShadows, each distant cascade is redrawn only when its map is 30 frames old, the sun moved, the camera moved or
+turned by more than 5 % of the cascade, or a character stands in it (the existing movers check); otherwise kept, its selection sphere
+following the camera. Log line "SUN CACHE BY CHANGE" gives the reason shares. A2 `[Shaders.ShadowsExteriors.ShadowMaps]`
+CharacterShadowMapTarget (live, 0): 1 = in first person the single character map fits round the nearest NPC in front (within
+CharacterShadowMapNpcDistance 400) instead of the player. No shader change.
+Bench (GTX 1070, one bulk batch, user-toml-capsules; still 20261031-025224 + -032157, walk -034008 + -035536; ALL FOUR OVERLAPPED
+another session's game run, so absolute times are loose; the A/B rounds alternate within one launch and agree):
+- A1 Freeside 14:00 clear: middle and far redrawn 100 % of frames (reason: characters in them, Freeside always has people), LOD kept
+  97 % (age 3 %). Sun cascades CPU 0.49 -> 0.39-0.41 ms, cascade geometry GPU 0.77 -> 0.67-0.70 ms (about -0.1 ms each), standing and
+  walking. Look: c0 vs c1 differs no more than c0 vs c0 (Freeside's moving people and fire: ~9 % > 2/255, 0.04 % > 16 both ways).
+- A2: not tested: Doc was placed but out of view in the face shots (t0 vs t1 = the same noise as t0 vs t0). Needs a framed person.
+- Capsules under a bright lamp (Vault 21, people beside the floor lamps, Doc and two residents): the final picture now changes, on the
+  people themselves and at their feet (0.10 % darker, 0.12 % lighter > 4/255 vs maps-only with DropActors), small next to the
+  animation noise (a vs b rounds 7.8 % > 2). Still no clear capsule shadow on the floor; pass 0.9-1.3 ms GPU.
+Verdict: A1 works, about -0.1 ms CPU and GPU, keep OFF (the gain needs the movers drawn as a separate layer over a kept static map;
+today any character in a cascade forces its full redraw). A2 built, look unproven. Capsules: visible but faint even here: keep OFF.
