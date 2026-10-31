@@ -101,6 +101,12 @@ public:
 	std::vector<D3DXVECTOR4>	FrameMovers;
 	D3DXVECTOR3				CascadeRefreshCamera[4] = {};
 	bool					CascadeHadMover[4] = {};
+	// UNOFFICIAL 2026-10-31 SunCacheByChange (root plan A1): per cascade at its last redraw, the camera's forward, the sun and the
+	// frames since; a cached cascade is redrawn when one of them (or a character in it) says the kept map is no longer right.
+	D3DXVECTOR3				CascadeRefreshForward[4] = {};
+	D3DXVECTOR3				CascadeRefreshSun[4] = {};
+	unsigned				CascadeAge[4] = {};
+	unsigned				SunCacheReasons[4][5] = {};	// per cascade: age, sun, moved, character, kept
 	float					MoverShadowStretch = 0.0f;
 	// UNOFFICIAL optional contact-hardening sun shadows (Shaders/Includes/Shadow.hlsl, SampleShadowAtlasContact; compiled
 	// in only when on at startup). [Shaders.ContactHardening.Main/.Status]. x: penumbra width per world unit between

@@ -8,6 +8,7 @@
 #include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "CapsuleShadows.h"	// UNOFFICIAL 2026-10-31 CapsuleShadows (INTERIOR-SHADOWS-MODERN steps 2-3)
 #include "EffectPrecompile.h"	// UNOFFICIAL 2026-10-28 the effects compiled in parallel at startup
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
@@ -1892,6 +1893,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!rtRegistered) { RtSunShadows::Register(); Effects.Reflections->RtRegister(); RtLampShadows::Register(); AmbientOcclusionEffect::RtRegister(); rtRegistered = true; }	// UNOFFICIAL 2026-10-28 RT sun + RT reflections + RT lamp shadows + RT AO/sky
 		RtCore::Frame(Device);
 		RtLampShadows::Denoise(Device);	// UNOFFICIAL 2026-10-29: the traced lamp shadows through the shared denoiser (Denoise, off)
+		CapsuleShadows::Render(Device);	// UNOFFICIAL 2026-10-31: people's capsules + contact shadows into the same buffer (no RT; off)
 	}
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {
