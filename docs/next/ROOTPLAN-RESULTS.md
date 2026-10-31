@@ -508,3 +508,27 @@ forward lamp shadows switched off with the atlas OFF: commits 0af1b129-d5..., fi
 atlas (Dump) and a per-slot trace (TraceSlot, DebugView 3 reads the atlas) were added to find it. The atlas's first "6 % darker" was the
 atlas against the screen-space fallback, not against the cube maps.
 Next (steps 2-3): capsule shadows for people (they then leave the live cube maps), contact shadows.
+
+## Round 14: INTERIOR-SHADOWS-MODERN steps 2-3, capsule people + contact shadows (CapsuleShadows, off)
+Built: ff2f6631 + fix 54d5655b (DLL DB142794), `[Shaders.ShadowsInteriors.Capsules]` Enabled (restart, off), live switches Capsules,
+Contact, DropActors. One D3D9 ps_3_0 pass (no RT GPU needed) after the depth and normals: each pixel's three strongest shadow lamps get
+capsule visibility (~15 capsules per Bip01 skeleton, one upright capsule for other skeletons, the 8 nearest actors) times a 12-step
+screen-space contact ray (20 units), written into the RT lamp buffer (TESR_RtLampShadow). The object/skin shaders read it through
+POINT_SHADOW_RT (reprojected, the darker of it and the lamp's own map): no forward shader change. DropActors leaves skinned casters
+out of the lamp maps and their redraw hash. With RT lamp shadows running they own the buffer.
+Bench (GTX 1070, one bulk batch, user-toml-capsules; runs 20261031-014231 still, -014503 people, -013635 walk):
+- Look: contact shadows are a small, repeatable darkening at edges (rails, fixtures): Lucky 38 0.16-0.17 % of pixels > 16/255 (a vs b
+  rounds identical), Vault 21 0.06-0.07 %, Freeside (outdoors, pass off) 0.03-0.10 % = noise. Capsules: the coverage view
+  (RT DebugView 2) shows the people's shadows on the Vault 21 floor, but the final picture changes 0.00-0.04 % (those lamps bring
+  little light where the people stand); capsules with people also in the maps (DropActors 0) = the same. Not yet seen: a person
+  right under a strong lamp.
+- Cost: the pass 0.6-1.1 ms GPU at 1920x1080 (FSR RenderScale 0.667, output screen-sized). DropActors in the Vault 21 walk with an NPC:
+  lamp cube maps 1.0 -> 0.4 ms GPU, so net about +0.4 ms GPU; CPU frame 7.2 vs 7.1 ms (no gain measurable).
+- Popping: none added (Vault 21 walk 0.00-0.02 flips per lamp per second both ways).
+Bugs on the way, fixed in 54d5655b: (1) with RenderScale < 1 the pass read the internal-resolution depth as if it filled the texture (the
+top-left 2/3 x 2/3 never matched: the coverage view's red block); (2) D3DXCompileShader on the render thread stalled the game 9.4 s the
+moment Capsules was switched on: now compiled on a worker thread from load (5.3 s there, no hitch), the three-lamp loop not unrolled
+(997 -> 445 slots). (The first run was void: the test toml's section lacked the `_` prefix.)
+Verdict: works, keep OFF. Contact shadows are the visible part (small); capsules are correct but rarely visible with FNV's dim lamps,
+and cost more GPU than the cube redraws they save on the GTX 1070. Worth a look in a scene with a person next to a bright lamp, and as the
+no-RT half of the shared visibility buffer (design section 4).
