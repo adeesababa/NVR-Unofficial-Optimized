@@ -255,3 +255,21 @@ nothing here is pushed, released or installed unless the user says so.
   20 %), no crash. Camera spot differed from round 12's run: no cross-round A/B.
 - DLL CRC32 D855A6BB, NvrRtHelper C8D088CE (round 12's build, source unchanged), fork-0033c D58B4425. Package
   `H:\_NVR-pkgt-test-c5164de1\`.
+
+## Round 13 = RT-test-8 release build (2026-10-30 21:45, 40d6d42a)
+- Merged on round 12b (c5164de1): claude/hdr-setting 588bb6e6 (NVR follows Windows "Use HDR"; NVR and the fork agree on the mode)
+  and claude/dlss-rr-2 7407a7d2 (DLAA stall fix [Shaders.TAA.DLSS] HelperWait 1 + HelperGpuPriority 1 + DLSS EXCHANGE STALL
+  line; Ray Reconstruction RayReconstruction false + RRPreset / RRAlbedo / RRRoughness / RRNormals / RRDepthLinear /
+  RRKeepDenoisers; DLSS Preset 0; NvrDlssHelper protocol 2). No conflicts, no line-ending churn.
+- Fork d3d9 D0F5B553 = DXVK v3.0.1 + patches 0001-0029 + 0030-0032 (HDR, from claude/hdr-fork-rt, now in tools/nvr-dxvk/patches)
+  + 0033 + 0034 (RTX arena order fix kept). Built in WSL ~/fork-r13 (the stack from scratch = fork-rthdr + 0033 + 0034, same tree).
+- Bench: iGPU Goodsprings (20261030-212429-slotC) PASS, each RT toggle changes the picture, helper ~0.5 s; 1070 RT off
+  (213531-slotC) vs round 9: clouds / tumbleweed / bushes moved, Vault 21 3-4 % (lamp-shadow choice + NPCs, as round 11);
+  1070 dlssrr-turn (213014-slotA, saloon16, helper pass-through as DLAA, HelperWait / GpuPriority 0/1): every frame exchanged,
+  0 stall lines, helper response 0.02-0.08 ms avg. HDR not testable here (no HDR display).
+- Package `H:/_NVR-pkg/rt-test-8-40d6d42a` (its defaults toml only: AlphaTested, Compact, MaterialBuffer true, PoolLamps 64,
+  ShadowContrast 0.5; ObjectMotion / OwnGlassDistance 24 / WeatherFogColor already default), README-RT-TEST.txt for testers.
+  Zip `H:/_NVR-pkg/NVR-Unofficial-Optimized-RT-test-8.zip` (2159 entries, 58,205,570 bytes, CRC32 44B6816A). DLSS helper +
+  NVIDIA nvngx_dlss.dll + licences kept OUT of the zip: `H:/_NVR-pkg/rt-test-8-dlss-addon-40d6d42a` (NvrDlssHelper 94A9344E).
+- DLL CRC32 42463A46, NvrRtHelper 2CA26AD1 (protocol 4), d3d9 D0F5B553.
+- Next: claude/dlss-rr-2 b0146f54 (DLSS top-left small picture fix) as 13b once READY.
