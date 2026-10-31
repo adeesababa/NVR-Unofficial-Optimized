@@ -200,7 +200,7 @@ float PointShadowAtlasTap(float4 tile, float3 v) {
 #define PS_TAP(cube, v) PointShadowAtlasTap(cube, v)
 #else
 #define PS_CUBE_T samplerCUBE
-#define PS_TAP(cube, v) PS_TAP(cube, v)
+#define PS_TAP(cube, v) texCUBElod(cube, float4(v, 0.0f)).r
 #endif
 
 // How much a blocker at the stored distance (distance / radius) shadows: [Shaders.ShadowsInteriors.Main] NearFade, less
