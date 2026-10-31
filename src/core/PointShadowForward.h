@@ -515,7 +515,7 @@ namespace PointShadowForward {
 				// The per-pixel ranking's intensity (luminance x dimmer) and the game's radius
 				const float intensity = source ? (0.2126f * source->Diff.r + 0.7152f * source->Diff.g + 0.0722f * source->Diff.b) * source->Dimmer : 1.0f;
 				const float gameRadius = source ? source->Spec.r : Slots[s].radius;
-				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop, intensity, gameRadius };
+				traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade, stop, intensity, gameRadius, Slots[s].light };
 			}
 			RtLampShadows::Submit(traced, SlotCount);
 		}
@@ -632,6 +632,35 @@ namespace PointShadowForward {
 		Active = ExteriorActive = SlotCount > 0;
 	}
 
+	// UNOFFICIAL 2026-10-31 ManyLights: a lamp without a shadow map of its own gets Publish's fill / invisible light rules (no FadeIn)
+	inline float ManyLampFade(const NiPointLight* source) {
+		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+		float fade = 1.0f;
+		if (forward.FillLightRadius > 0.0f && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
+		if ((forward.InvisibleLightShadowStrength < 1.0f || InvisibleSize > 0.0f) && LampFixtures::Invisible(source, forward.FixtureDistance)) {
+			fade *= forward.InvisibleLightShadowStrength;
+			if (InvisibleSize > 0.0f) fade = -fade;
+		}
+		return fade;
+	}
+	// ManyLights: a draw's point light into the next trace's table (RtLampShadows::NoteLamp; the cube-slot lamps are there already)
+	inline void NoteManyLamp(const ShadowSceneLight* light) {
+		if (!RtLampShadows::Noting(light)) return;
+		const NiPointLight* source = light->sourceLight;
+		if (!source || !(source->Spec.r > 0.0f)) return;
+		const ShadowsExteriorEffect::InteriorsStruct& interiors = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors;
+		const NiPoint3& p = source->m_worldTransform.pos;
+		float stop = 0.0f;
+		if (const LampFixtures::Glow* g = LampFixtures::NearestLampPart(source, interiors.Forward.FixtureDistance)) {
+			const float dx = g->x - p.x, dy = g->y - p.y, dz = g->z - p.z;
+			stop = sqrtf(dx * dx + dy * dy + dz * dz) + g->radius + 2.0f;
+		}
+		const float intensity = (0.2126f * source->Diff.r + 0.7152f * source->Diff.g + 0.0722f * source->Diff.b) * source->Dimmer;
+		RtLampShadows::SlotLamp lamp = { 0, D3DXVECTOR3(p.x, p.y, p.z), source->Spec.r * interiors.LightRadiusMult, ManyLampFade(source), stop,
+			(std::max)(intensity, 0.001f), source->Spec.r };
+		RtLampShadows::NoteLamp(light, lamp);
+	}
+
 	// One object's render pass: its lamps to c174-c187 and the cube stages. wanted: the world pass, or the first-person
 	// pass with FirstPerson on (never the water reflection). force: just after a shader bind, write everything.
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
@@ -658,7 +687,9 @@ namespace PointShadowForward {
 				if (!light || !light->bPointLight) continue;	// light 0 of most passes is the cell's directional light
 				if (trace && Focus >= 0 && Slots[Focus].light == light) focusIndex = k;
 				int first = 0, last = SlotCount;	// UNOFFICIAL 2026-10-29 ShadowPool: straight to the lamp's entry when the map is up
-				if (UseIndex) { auto found = SlotIndex.find(light); if (found == SlotIndex.end()) continue; first = found->second; last = first + 1; }
+				if (RtLampShadows::ManyNoting) NoteManyLamp(light);	// UNOFFICIAL 2026-10-31 ManyLights: into the next trace's table
+				if (UseIndex) { auto found = SlotIndex.find(light); if (found == SlotIndex.end()) first = last = 0; else { first = found->second; last = first + 1; } }
+				bool done = false;
 				for (int s = first; s < last; s++) {
 					if (Slots[s].light != light) continue;
 					constants[k][0] = Slots[s].position.x - camera.x;
@@ -676,9 +707,28 @@ namespace PointShadowForward {
 						memcpy(constants[8 + k], Slots[s].tile, 3 * sizeof(float));
 					}
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
-					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
+					// ManyLights: the lamp's id in the newest result (its cube map the fallback); without ManyLights its cube slot
+					const int manyId = RtLampShadows::ManyIdOf(light);
+					tracedSlots[k] = manyId >= 0 ? (float)manyId : RtLampShadows::TracedMany ? -1.0f : RtLampShadows::TracedSlot(Slots[s].slot);
 					matched++;
+					done = true;
 					break;
+				}
+				// UNOFFICIAL 2026-10-31 ManyLights: a lamp with no shadow map here (no cube slot, no pool map, no atlas tile) that the newest
+				// result traced: shadowed by the trace where the traced frame saw the point, lit elsewhere (id + 256: no cube lookup)
+				float reach = 0.0f;
+				const int manyId = done ? -1 : RtLampShadows::ManyIdOf(light, &reach);
+				if (manyId >= 0 && reach > 0.0f && light->sourceLight) {
+					const NiPoint3& at = light->sourceLight->m_worldTransform.pos;
+					constants[k][0] = at.x - camera.x;
+					constants[k][1] = at.y - camera.y;
+					constants[k][2] = at.z - camera.z;
+					constants[k][3] = 1.0f / reach;
+					bound[k] = neutral;
+					constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f;
+					constants[8 + k][3] = ManyLampFade(light->sourceLight);
+					tracedSlots[k] = (float)(manyId + 256);
+					matched++;
 				}
 			}
 		}

@@ -150,6 +150,8 @@ float4 NVR_PointShadowRT      : register(c215); // x: 0 = the cube maps (as with
                                                 // log2(farZ) / 4095 (the depth code's unit); w: 1 = the darker of traced and cube map
                                                 // (the RT scene has no people yet: their shadows come from the cube maps)
 float4 NVR_PointShadowRTSlot[2] : register(c216); // the draw's lights 0-3 and 4-5: their cube slot (0-62) when the lamp is in the trace's table, -1 = cube map; [1].z DebugView 3's slot
+                                                // [1].w (2026-10-31): 1 / the result's packing unit, 1024 or 4096 (ManyLights: lamp ids 0-254 in the
+                                                // slots, + 256 for a lamp with no shadow map of its own)
 sampler2D NVR_RtLampVis : register(s15);          // point / clamp, set by the DLL (PointShadowForward::Bind; no sampler_state:
                                                 // the POINT variants define POINT, and raw shader compiles ignore it anyway)
                                                 // on s15, the sixth lamp's cube map's: every other sampler is taken in some variant
@@ -359,17 +361,23 @@ float PointShadowTraced(float slot, float3 worldPos) {
     float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
     [branch] if (any(abs(uv - 0.5f) > 0.5f)) return -1.0f;
     float2 traced = tex2Dlod(NVR_RtLampVis, float4(uv, 0.0f, 0.0f)).xy;
-    float depthCode = floor(traced.y / 1024.0f);
-    float depthError = abs(exp2(depthCode * NVR_PointShadowRT.z) - clip.w) / clip.w;
+    // 2026-10-31: the packing unit U from c217.w (1 / U, a power of 2: every step below stays exact): 1024, or 4096 with ManyLights
+    float unit = NVR_PointShadowRTSlot[1].w;
+    float2 scaled = traced * unit;
+    float2 high = floor(scaled);                    // entry 1, the depth code
+    float depthError = abs(exp2(high.y * NVR_PointShadowRT.z) - clip.w) / clip.w;
     [branch] if (!(depthError <= NVR_PointShadowRT.y)) return -2.0f - saturate(depthError);  // -2..-3: the depth did not match
-    // 2026-10-29 v4 (RtLampTrace.comp): three entries, cube slot + 64 x visibility (16 steps); the lamp's own slot, or -4: this pixel
-    // traced other lamps (they bring it more light), the cube map then
-    float hi = floor(traced.x / 1024.0f);
-    float3 entries = float3(traced.x - 1024.0f * hi, hi, traced.y - 1024.0f * depthCode);
-    float3 visible = floor(entries / 64.0f);
-    float3 slots = entries - 64.0f * visible;
-    float3 match = (float3)(abs(slots - slot) < 0.5f);
-    [branch] if (!(dot(match, 1.0f) > 0.5f)) return -4.0f;
+    // 2026-10-29 v4 (RtLampTrace.comp): three entries, slot + U / 16 x visibility (16 steps); the lamp's own slot, or -4: this pixel
+    // traced other lamps (they bring it more light), the cube map then. ManyLights (RtLampTraceMany.comp): two entries, the third's
+    // place holds R, the traced share of every other lamp at this pixel, which such a lamp takes instead.
+    float3 entries = float3(scaled.x - high.x, high.x * unit, scaled.y - high.y) * 16.0f;    // entry / (U / 16)
+    float3 visible = floor(entries);
+    float3 slots = entries - visible;                                                       // slot / (U / 16)
+    float lampSlot = slot > 255.5f ? slot - 256.0f : slot;                                  // ManyLights: + 256 = no map of its own
+    float3 match = (float3)(abs(slots - lampSlot * 16.0f * unit) < 8.0f * unit);
+    bool many = unit < 0.0005f;
+    match.z = many ? 0.0f : match.z;
+    [branch] if (!(dot(match, 1.0f) > 0.5f)) return many ? saturate(entries.z * (256.0f / 4095.0f)) : -4.0f;
     return dot(match, visible) / (15.0f * dot(match, 1.0f));
 }
 
@@ -380,6 +388,12 @@ float PointShadowTraced(float slot, float3 worldPos) {
 // RED = the traced frame saw another depth there (brighter = further off), GREY = no light of this draw is traced. Exact per pixel
 // (an earlier version sent the classes through the lighting as encoded shadow values, which other lighting maths then distorted).
 float3 PointShadowRtCoverage(float3 worldPos) {
+    // UNOFFICIAL 2026-10-31 DebugView 4 (x 5, ManyLights): R, the traced share of the lamps not traced exactly: cyan = lit .. black =
+    // blocked, MAGENTA = no traced data there, dark blue = not the ManyLights packing
+    [branch] if (NVR_PointShadowRT.x > 4.5f) {
+        float rest = PointShadowTraced(-8.0f, worldPos);
+        return rest >= 0.0f ? float3(0.0f, rest, rest) : rest < -3.5f ? float3(0.0f, 0.0f, 0.3f) : float3(1.0f, 0.0f, 1.0f);
+    }
     // UNOFFICIAL 2026-10-29 DebugView 3 (x 4): ONE traced lamp, NVR_PointShadowRTSlot[1].z, at every pixel whatever the draw's own lamps:
     // white = lit .. black = blocked, MAGENTA = no traced data there (off the traced frame, another depth).
     [branch] if (NVR_PointShadowRT.x > 3.5f) {
@@ -437,6 +451,10 @@ float PointShadowCube(PS_CUBE_T cube, float4 light, float fade, float3 worldPos,
         rayLit = PointShadowTraced(rtSlot, worldPos);
         [branch] if (NVR_PointShadowRT.x < 1.5f && rayLit >= 0.0f && NVR_PointShadowRT.w < 0.5f) return lerp(1.0f, rayLit, NVR_PointShadowParams.x * abs(fade));
     }
+#endif
+#if POINT_SHADOW_RT
+    // 2026-10-31 ManyLights: a lamp with no shadow map of its own (+ 256): lit where the traced frame did not see the point
+    [branch] if (rtSlot > 255.5f) return POINT_SHADOW_DONE(1.0f);
 #endif
 #if POINT_SHADOW_RT_ONLY
     return rayLit >= 0.0f ? lerp(1.0f, rayLit, NVR_PointShadowParams.x * abs(fade)) : 1.0f;   // not traced here: lit (as before)
