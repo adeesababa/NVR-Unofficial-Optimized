@@ -24,6 +24,8 @@ namespace {
 		bool	halfResolution = false;
 		int		denoiseKernel = 5;			// the shared denoiser's a-trous kernel: 5 (5 x 5) or 3 (3 x 3, cheaper)		// trace a quarter of the pixels (2 x 2 blocks), denoise and upsample
 		bool	cloudShadows = false;	// 2026-10-30: the volumetric clouds' shadow map in the traced visibility
+		bool	penumbra = false;		// 2026-10-31: contact-hardening soft shadows (RtSunPenumbra.frag; SunAngle 0 = the real sun, 0.53 deg)
+		float	penumbraMaxRadius = 32.0f;	// the widest penumbra filter (full-size pixels)
 		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
@@ -50,6 +52,15 @@ namespace {
 	bool		tracedThisFrame = false;
 	UInt32		frames = 0;
 	D3DXVECTOR4	replaceConstant = { 0.0f, 0.0f, 0.0f, 0.0f };
+	// 2026-10-31 Penumbra: the traced blocker distances (helper image + its copy here) and the contact-hardening filter's output
+	int			imageHit = -1;
+	IDirect3DTexture9*	hitTexture = nullptr;
+	IDirect3DSurface9*	hitSurface = nullptr;
+	bool		hitThisFrame = false;
+	IDirect3DTexture9*	penumbraTexture = nullptr;
+	IDirect3DSurface9*	penumbraSurface = nullptr;
+	ID3D9NvrExtPipeline* penumbraPipeline = nullptr;
+	bool		penumbraTried = false;
 	ID3D9NvrExtPipeline* combine[3] = {};	// [0] multiply, [1] write red (DebugView 1 / 3), [2] write all (DebugView 4, grey)
 	bool		combineTried[3] = {};
 	bool		tracedForDebug = false;		// this frame's visibility is there for RenderDebug
@@ -69,6 +80,9 @@ namespace {
 		S.halfResolution = TheSettingManager->GetSettingI(kSection, "HalfResolution") != 0;
 		S.denoiseKernel = TheSettingManager->GetSettingI(kSection, "DenoiseKernel") == 3 ? 3 : 5;
 		S.cloudShadows = TheSettingManager->GetSettingI(kSection, "CloudShadows") != 0;
+		S.penumbra = TheSettingManager->GetSettingI(kSection, "Penumbra") != 0;
+		S.penumbraMaxRadius = (std::min)((std::max)(TheSettingManager->GetSettingF(kSection, "PenumbraMaxRadius"), 2.0f), 64.0f);
+		if (S.penumbra && S.sunAngle <= 0.0f) S.sunAngle = 0.53f;	// the sun's real angular diameter
 	}
 
 	const D3DXVECTOR4* Constant(const char* name) {
@@ -94,6 +108,7 @@ namespace {
 		imageDepth = RtCore::AddImage("NVR RT sun depth", w, h, NVR_EXT_SHARED_R32F);
 		imageNormals = RtCore::AddImage("NVR RT sun normals", w, h, NVR_EXT_SHARED_RGBA16F);
 		imageVisibility = RtCore::AddImage("NVR RT sun visibility", w, h, NVR_EXT_SHARED_R16F);
+		imageHit = RtCore::AddImage("NVR RT sun hit distance", w, h, NVR_EXT_SHARED_R16F);	// 2026-10-31 Penumbra (always: the switch is live)
 		// 2026-10-30 CloudShadows: the clouds' shadow map (A16B16G16R16F, ShadowResolution x ShadowResolution), if it exists by now
 		imageCloud = -1;
 		imageCloudSize = 0;
@@ -120,7 +135,12 @@ namespace {
 			textureWidth = w;
 			textureHeight = h;
 			if (!visibilityTexture) return;
+			if (hitSurface) { hitSurface->Release(); hitSurface = nullptr; }
+			if (hitTexture) { hitTexture->Release(); hitTexture = nullptr; }
 		}
+		hitThisFrame = false;
+		const bool wantHit = S.penumbra && imageHit >= 0 && S.debugView != 7 && S.debugView != 8;
+		if (wantHit && !hitTexture) TheTextureManager->InitTexture("TESR_RtSunBlocker", &hitTexture, &hitSurface, w, h, D3DFMT_R16F);
 		IDirect3DBaseTexture9* depth = Texture("TESR_DepthBuffer");
 		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
 		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
@@ -145,6 +165,7 @@ namespace {
 		c.alpha[0] = RtCore::AlphaTested() ? 1.0f : 0.0f;
 		c.alpha[1] = (float)(frames & 1023);								// the jitter's frame
 		c.alpha[2] = tanf(0.5f * S.sunAngle * 0.0174532925f);				// the sun cone's half-angle tangent (0: hard)
+		c.alpha[3] = wantHit && hitSurface ? 1.0f : 0.0f;					// 2026-10-31 Penumbra: write the blocker distances (binding 7)
 		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f :
 			S.debugView == 9 ? 5.0f : S.debugView == 10 ? 6.0f : 0.0f;	// 9, 10 (2026-10-30): CloudShadows checks
 
@@ -183,11 +204,13 @@ namespace {
 			if (!RtCore::AddPass(hitDebugShader, images, 4, 0x1, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
 		}
 		else {
-			const int images[5] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility,	// [3]: binding 5
-				cloudsInTrace ? imageCloud : imageNormals };	// [4]: binding 6, the clouds' shadow map (a stand-in with cloud.x 0)
-			if (!RtCore::AddPass(shader, images, 5, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) { cloudsInTrace = false; return; }
+			const int images[6] = { imageDepth, imageNormals, imageVisibility, c.alpha[0] > 0.0f && atlas >= 0 ? atlas : imageVisibility,	// [3]: binding 5
+				cloudsInTrace ? imageCloud : imageNormals,	// [4]: binding 6, the clouds' shadow map (a stand-in with cloud.x 0)
+				c.alpha[3] > 0.0f ? imageHit : imageVisibility };	// [5]: binding 7, the blocker distances (a stand-in, not written, with alpha.w 0)
+			if (!RtCore::AddPass(shader, images, 6, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) { cloudsInTrace = false; return; }
 		}
 		tracedThisFrame = RtCore::CopyOut(imageVisibility, visibilitySurface, w, h);
+		if (tracedThisFrame && c.alpha[3] > 0.0f) hitThisFrame = RtCore::CopyOut(imageHit, hitSurface, w, h);
 		if (tracedThisFrame && frames++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows traced (%ux%u, Mode %d: %s, range %.0f, DebugView %d).", w, h, S.mode,
 				S.mode == 1 ? "replace the cascades inside the range" : "combine with the cascades", S.range, S.debugView);
@@ -196,6 +219,77 @@ namespace {
 				"sun %.3f %.3f %.3f (up %.0f), camera position %.0f %.0f %.0f", c.forward[0], c.forward[1], c.forward[2], c.forward[3], c.right[0], c.right[1],
 				c.right[2], c.up[0], c.up[1], c.up[2], c.origin[0], c.origin[1], c.origin[2], c.sun[0], c.sun[1], c.sun[2], c.sun[3],
 				TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+	}
+
+	// 2026-10-31 Penumbra: RtSunPenumbra.frag (4 sampled images + the sampler; push 64 bytes, the sampler index in the last 16)
+	ID3D9NvrExtPipeline* PenumbraPipeline() {
+		if (penumbraTried) return penumbraPipeline;
+		penumbraTried = true;
+		std::vector<char> spirv;
+		ID3D9NvrExt* ext = DxvkCompute::Extension();
+		if (!ext || !DxvkCompute::LoadSpirv("RtSunPenumbra", spirv)) return nullptr;
+		NVR_EXT_BINDING_DESC bindings[5] = {};
+		for (UINT i = 0; i < 4; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
+		bindings[4] = { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 48 };
+		NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
+		desc.pFragmentSpirv = spirv.data();
+		desc.FragmentSpirvSize = (UINT)spirv.size();
+		desc.BindingCount = 5;
+		desc.pBindings = bindings;
+		desc.PushConstantSize = 64;
+		desc.UsesSamplerHeap = TRUE;
+		desc.SamplerHeapSet = 0;
+		desc.SamplerHeapBinding = 0;
+		desc.ColorTargetCount = 1;
+		desc.Blend = NVR_EXT_BLEND_NONE;
+		desc.ColorWriteMask = 0xFu;
+		desc.pDebugName = "RtSunPenumbra";
+		if (FAILED(ext->CreateGraphicsPipeline(&desc, &penumbraPipeline))) {
+			penumbraPipeline = nullptr;
+			Logger::Log("UNOFFICIAL NVR DXVK: RT sun Penumbra: the pass could not be made (Compute\\RtSunPenumbra.spv; the DXVK log says why)");
+		}
+		return penumbraPipeline;
+	}
+
+	// The contact-hardening filter over the temporally accumulated visibility (Source) into penumbraTexture; false: not run
+	bool RunPenumbra(IDirect3DDevice9* Device, IDirect3DTexture9* Source) {
+		IDirect3DBaseTexture9* depth = Texture("TESR_DepthBuffer");
+		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
+		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
+		ID3D9NvrExtPipeline* pipeline = PenumbraPipeline();
+		if (!pipeline || !depth || !normals || !cameraData || !hitThisFrame || !hitTexture || !DxvkCompute::PointClamp()) return false;
+		const UINT w = textureWidth, h = textureHeight;
+		static UINT pw = 0, ph = 0;
+		if (!penumbraTexture || pw != w || ph != h) {
+			pw = w; ph = h;
+			if (penumbraSurface) { penumbraSurface->Release(); penumbraSurface = nullptr; }
+			if (penumbraTexture) { penumbraTexture->Release(); penumbraTexture = nullptr; }
+			Device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R16F, D3DPOOL_DEFAULT, &penumbraTexture, nullptr);
+			if (penumbraTexture) penumbraTexture->GetSurfaceLevel(0, &penumbraSurface);
+		}
+		if (!penumbraSurface) return false;
+		static GpuTimer timer("  RT sun penumbra");
+		GpuProfileScope gpu(timer, Device);
+		struct { float params[4], size[4], extra[4]; UInt32 samplerIndex, pad[3]; } push = {};
+		push.params[0] = tanf(0.5f * S.sunAngle * 0.0174532925f);
+		push.params[1] = cameraData->y;
+		push.params[2] = S.penumbraMaxRadius / (S.halfResolution ? 2.0f : 1.0f);	// the setting is in full-size pixels
+		push.params[3] = S.debugView == 11 ? 1.0f : 0.0f;
+		push.size[0] = 1.0f / w; push.size[1] = 1.0f / h; push.size[2] = (float)h; push.size[3] = TheRenderManager->projMatrix._22;
+		push.extra[0] = 0.75f;
+		NVR_EXT_RESOURCE_BINDING bindings[5] = {};
+		IUnknown* images[4] = { Source, hitTexture, depth, normals };
+		for (UINT i = 0; i < 4; i++) { bindings[i].Slot = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].pResource = images[i]; }
+		bindings[4].Slot = 0; bindings[4].Type = NVR_EXT_BIND_SAMPLER; bindings[4].pResource = DxvkCompute::PointClamp();
+		NVR_EXT_DRAW_DESC draw = {};
+		draw.pPipeline = pipeline;
+		draw.TargetCount = 1;
+		draw.Targets[0].pResource = penumbraSurface;
+		draw.BindingCount = 5;
+		draw.pBindings = bindings;
+		draw.pPushData = &push;
+		draw.PushDataSize = sizeof(push);
+		return SUCCEEDED(DxvkCompute::Extension()->Draw(&draw));
 	}
 
 	ID3D9NvrExtPipeline* CombinePipeline(int which) {
@@ -256,7 +350,12 @@ namespace RtSunShadows {
 			RtDenoise::Settings settings;
 			settings.Downscale = S.halfResolution ? 2 : 1;
 			settings.Kernel = S.denoiseKernel;
-			if (denoisedSurface && RtDenoise::Run(denoiser, Device, visibilityTexture, denoisedSurface, settings)) signalTexture = denoisedTexture;
+			const bool penumbra = S.penumbra && hitThisFrame;
+			if (penumbra) settings.Iterations = 0;	// 2026-10-31 Penumbra: temporal only, the spatial part is RtSunPenumbra's (sized per pixel)
+			if (denoisedSurface && RtDenoise::Run(denoiser, Device, visibilityTexture, denoisedSurface, settings)) {
+				signalTexture = denoisedTexture;
+				if (penumbra && RunPenumbra(Device, denoisedTexture)) signalTexture = penumbraTexture;
+			}
 		}
 		if (!traced || S.debugView == 2 || S.debugView >= 4 || !signalTexture) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
@@ -308,7 +407,7 @@ namespace RtSunShadows {
 		Device->SetRenderTarget(0, sunShadows->scratchSurface[0]);	// a pass may not draw into the device's current target
 		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { 1.0f, 0, 1, 0 };
 		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
-		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = S.debugView == 4 ? signalTexture : visibilityTexture;
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = S.debugView == 4 || S.debugView == 11 ? signalTexture : visibilityTexture;
 		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
 		NVR_EXT_DRAW_DESC draw = {};
 		draw.pPipeline = pipeline;

@@ -104,6 +104,9 @@ struct NvrRtImageDesc {
 // size once the build's frame is done and copies it into a structure of that size a frame later (typically half the memory). An older
 // helper ignores the flag (no compaction, nothing else changes).
 #define NVR_RT_OP_FLAG_COMPACT    0x8u
+// UNOFFICIAL 2026-10-31 ([Main.Main.RayTracing] ActorRebuildInterval): a DYNAMIC build the helper must build afresh instead of refitting
+// (a refit's tree degrades as the pose moves away from the one it was built in). An older helper ignores it and refits (protocol stays 4).
+#define NVR_RT_OP_FLAG_REBUILD    0x10u
 #define NVR_RT_ARENA_SEQUENCE     0x80000000u   // NvrRtFrame::arenaTexels: a sequence texel follows the geometry (2026-10-30)
 inline uint32_t NvrRtSequenceOf(uint64_t frame) { return (uint32_t)frame ? (uint32_t)frame : 1u; }
 

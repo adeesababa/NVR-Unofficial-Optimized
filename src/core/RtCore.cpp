@@ -74,6 +74,12 @@ namespace {
 		bool	refused = false;	// the fork refused it (logged once): never again
 		bool	textured = false;	// skinned: its last build carried texcoords (hit textures)
 		bool	skinned = false;	// an actor's partition (dropped at once when the player changes cell)
+		// UNOFFICIAL 2026-10-31 actors (docs\next\RT-SUN-SOFT-AND-BUILD.md): the camera its last pose was posed against (the posed
+		// vertices are camera relative: the instance moves them by pose camera - camera), that pose's world-space bone palette
+		// (ActorStillSkip) and the poses sent since its last full build (ActorRebuildInterval)
+		float	poseCamera[3] = { 0.0f, 0.0f, 0.0f };
+		std::vector<float> palette;
+		UInt32	poses = 0;
 	};
 
 	// A diffuse texture's average colour (linear rgb), from its smallest mip, once per texture (protocol v2's instance records).
@@ -206,6 +212,10 @@ namespace {
 		bool		walkingPlayer = false;				// Gather's walk of the player's own node (NVR_RT_MASK_PLAYER on its rigid parts)
 		float		actorRadius = 3000.0f;				// [Main.Main.RayTracing] ActorRadius (live)
 		UInt32		actorInterval = 2;					// [Main.Main.RayTracing] ActorUpdateInterval (live)
+		bool		actorStillSkip = false;				// [Main.Main.RayTracing] ActorStillSkip (live, 2026-10-31)
+		float		actorStillThreshold = 0.05f;		// [Main.Main.RayTracing] ActorStillThreshold (live)
+		UInt32		actorRebuild = 0;					// [Main.Main.RayTracing] ActorRebuildInterval (live; 0 never)
+		UInt32		actorUpdates[4] = {};				// since the last line: posed, still (not posed), between poses (ActorUpdateInterval), rebuilds
 		UInt32		actorPartitions = 0;				// skinned partitions staged (exchanges 1-60)
 		UInt32		partitionFate[5] = {};
 		UInt32		skinTex[6] = {};	// hit textures on actors: not PPLighting, no diffuse, texcoords elsewhere, no slot, staged without texcoords, textured				// skipped: no buffer data, too many bones, not described, streams / half positions, palette
@@ -928,7 +938,21 @@ namespace {
 			if (!entry.id) entry.id = nextId++ & 0xFFFFFF;
 			// ActorUpdateInterval: a posed partition is re-posed only every Nth frame (staggered by id), the frames between keep the
 			// last pose (a frame or two late: unseen in shadows; rt-lamp: actors were most of the RT cost indoors, ~60 partitions a frame)
-			const bool pose = !entry.sent || actorInterval <= 1 || ((sceneFrame + entry.id) % actorInterval) == 0;
+			bool pose = !entry.sent || actorInterval <= 1 || ((sceneFrame + entry.id) % actorInterval) == 0;
+			if (!pose) actorUpdates[2]++;
+			// UNOFFICIAL 2026-10-31 ActorStillSkip: no bone moved (world space) since its last pose: the structure stays. A rotation term
+			// moves a vertex by about its distance from the model's origin (a body: up to ~128 units), so it gets threshold / 128.
+			if (pose && actorStillSkip && entry.sent && entry.palette.size() == palette.size()) {
+				const float moveLimit = actorStillThreshold, turnLimit = actorStillThreshold / 128.0f;
+				const float cam[3] = { cx, cy, cz };
+				bool still = true;
+				for (size_t i = 0; i < palette.size() && still; i++) {
+					const int c = (int)(i % 4u), r = (int)((i % 12u) / 4u);
+					const float now = c == 3 ? palette[i] + cam[r] : palette[i];
+					still = fabsf(now - entry.palette[i]) <= (c == 3 ? moveLimit : turnLimit);
+				}
+				if (still) { pose = false; actorUpdates[1]++; }
+			}
 			NVR_EXT_RT_GEOMETRY_INFO info = {};
 			if (pose && FAILED(rt->MeasureGeometry(&desc, &info))) { entry.refused = true; skip[kMeasure]++; continue; }
 			if (record->instanceCount >= NVR_RT_MAX_INSTANCES) { waiting++; continue; }
@@ -948,9 +972,22 @@ namespace {
 					entry.textured = hasUv;
 					if (slot >= 0) skinTex[hasUv ? 5 : 4]++;
 					op.flags = NVR_RT_OP_FLAG_DYNAMIC | (hasUv ? NVR_RT_OP_FLAG_TEXCOORDS : 0u);
+					// 2026-10-31 ActorRebuildInterval: every Nth pose built afresh (the helper refits the others)
+					if (entry.sent && actorRebuild && (++entry.poses % actorRebuild) == 0) { op.flags |= NVR_RT_OP_FLAG_REBUILD; actorUpdates[3]++; }
 					arenaUsed += info.Texels;
 					entry.sent = true;
 					actorPartitions++;
+					actorUpdates[0]++;
+					// 2026-10-31: the camera this pose is relative to, and its world-space palette (ActorStillSkip)
+					entry.poseCamera[0] = cx; entry.poseCamera[1] = cy; entry.poseCamera[2] = cz;
+					if (actorStillSkip) {
+						entry.palette.resize(palette.size());
+						for (size_t i = 0; i < palette.size(); i++) {
+							const int c = (int)(i % 4u), r = (int)((i % 12u) / 4u);
+							entry.palette[i] = c == 3 ? palette[i] + (r == 0 ? cx : r == 1 ? cy : cz) : palette[i];
+						}
+					}
+					else entry.palette.clear();
 				}
 			}
 
@@ -962,6 +999,10 @@ namespace {
 			NvrRtInstance& instance = record->instances[record->instanceCount++];
 			memset(instance.transform, 0, sizeof(instance.transform));
 			instance.transform[0][0] = instance.transform[1][1] = instance.transform[2][2] = 1.0f;	// posed in scene space already
+			// ... relative to the camera of its last pose (2026-10-31: frames without a pose kept the old offset and slid with the camera)
+			instance.transform[0][3] = entry.poseCamera[0] - cx;
+			instance.transform[1][3] = entry.poseCamera[1] - cy;
+			instance.transform[2][3] = entry.poseCamera[2] - cz;
 			instance.geometryId = entry.id;
 			instance.customIndex = 0;
 			instance.mask = NVR_RT_MASK_ACTOR;
@@ -1652,6 +1693,9 @@ namespace {
 		grassMax = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "GrassMaxTufts"));
 		actorRadius = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorRadius"));
 		actorInterval = (UInt32)(std::max)(1, (std::min)(8, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorUpdateInterval")));
+		actorStillSkip = TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorStillSkip") != 0;
+		actorStillThreshold = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.RayTracing", "ActorStillThreshold"));
+		actorRebuild = (UInt32)(std::max)(0, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ActorRebuildInterval"));
 		arenaUsed = 0;
 		waiting = 0;
 		atlasThisFrame = 0;
@@ -1847,6 +1891,13 @@ namespace {
 		c.recording = false;
 		c.record = nullptr;
 
+		if (c.actorsOn && (n % 300) == 0) {	// 2026-10-31: actor structure updates over the last 300 frames (ActorStillSkip, ActorRebuildInterval)
+			Logger::Log("RT CORE: actor updates a frame: %.2f posed (%.2f of them rebuilt afresh), %.2f still (not posed: ActorStillSkip %s, threshold %.3f), "
+				"%.2f between poses (ActorUpdateInterval %u, rebuild interval %u); helper builds %.3f ms avg", c.actorUpdates[0] / 300.0f, c.actorUpdates[3] / 300.0f,
+				c.actorUpdates[1] / 300.0f, c.actorStillSkip ? "on" : "off", c.actorStillThreshold, c.actorUpdates[2] / 300.0f, c.actorInterval, c.actorRebuild,
+				c.shared->buildUsAvg / 1000.0);
+			memset(c.actorUpdates, 0, sizeof(c.actorUpdates));
+		}
 		if (n == 60 || (n % 600) == 0) {
 			const NvrRtShared* s = c.shared;
 			Logger::Log("RT CORE: frame %llu, %u instances, %u geometries known (%u waiting for arena space, %u released); helper: %u geometries, %llu triangles, "

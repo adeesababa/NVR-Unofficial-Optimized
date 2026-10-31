@@ -987,7 +987,7 @@ namespace {
 				// same, only the posed positions move). Anything else is rebuilt under the same id: the old one goes.
 				// ... and only when it keeps its texcoords the same (a partition first built before its texture had an atlas slot comes
 				// back with texcoords: a refit would keep the old data without them; rtsun-25: textured actors stayed grey)
-				const bool refit = dynamic && existing != h.geometries.end() && existing->second.dynamic &&
+				const bool refit = dynamic && !(op.flags & NVR_RT_OP_FLAG_REBUILD) && existing != h.geometries.end() && existing->second.dynamic &&
 					existing->second.vertices == op.vertexCount && existing->second.triangles == op.triangleCount &&
 					(existing->second.uvOffset != NVR_RT_NO_DATA) == ((op.flags & NVR_RT_OP_FLAG_TEXCOORDS) != 0);
 				if (!refit) ReleaseGeometry(h, op.id, frameNumber);
