@@ -64,9 +64,59 @@ namespace Upscaler {
 
 	// [Shaders.TAA.DLSS] HelperTest (the helper's pass-through test: the same exchange, no DLSS) and JitterFlip (bit 0
 	// flips the jitter's x, bit 1 its y, for checks with NVIDIA's development DLL). Set by TAAEffect::UpdateSettings.
-	void		DlssOptions(bool PassThroughTest, int JitterFlip);
+	// UNOFFICIAL 2026-10-30 (DLAA stall report, RTX 5060: the game's GPU sat ~45 ms in the wait for the helper with interior shadows on):
+	// HelperWait 1 (the helper waits on the CPU for the game's inputs, then submits with no GPU wait in it; 0 = its submission waits on the
+	// GPU, as before) and HelperGpuPriority 1 (the helper's queue and process at the high GPU priority; 0 = normal). Both are the helper's
+	// start options: a change starts it again.
+	void		DlssOptions(bool PassThroughTest, int JitterFlip, bool HelperCpuWait = true, bool HelperHighPriority = true);
 
 	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run),
 	// 2 FSR 3.1 ([Shaders.TAA.FSR] Enabled + Version 1; FSR 2 from its first failure on, logged once).
 	IUpscaler*	Choose(int setting);
+
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md; [Shaders.TAA.DLSS] RayReconstruction, off by default):
+	// the DLSS helper's second NGX feature (DLSS-D), evaluated at the RR point of the pre-tonemap chain (TAAEffect::RayReconstruct,
+	// after the Reflections composite, native resolution only) instead of DLSS SR after the tonemap. The same helper, semaphores and
+	// frame counter as Dlss(): a frame goes either to DLSS SR (Evaluate) or to RR (EvaluateRayReconstruction), never both.
+	// Inputs' Color is the noisy lit picture decoded to linear HDR (Hdr true); Depth / Motion as the upscalers get them (FSRPrep's).
+	struct RrInputs : Inputs {
+		IDirect3DBaseTexture9*	DiffuseAlbedo = nullptr;	// rgba16f: rgb diffuse albedo
+		IDirect3DBaseTexture9*	SpecularAlbedo = nullptr;	// rgba16f: rgb specular albedo
+		IDirect3DBaseTexture9*	Normals = nullptr;			// rgba16f: xyz unit normal (camera-relative world space; view space with NormalsView)
+		IDirect3DBaseTexture9*	Roughness = nullptr;		// r16f: linear roughness
+		float	WorldToView[16] = {};	// camera-relative view (rotation only), D3DX row-vector layout
+		float	ViewToClip[16] = {};	// the unjittered projection, the same layout
+	};
+	struct RrOptions {
+		bool	Wanted = false;			// RayReconstruction (with [Shaders.TAA.DLSS] Enabled); a change restarts the helper (its images)
+		bool	KeepDenoisers = false;	// RRKeepDenoisers: NVR's own RT denoisers keep running under RR (A/B)
+		int		Preset = 0;				// Preset: DLSS SR's model (NvrDlssPreset: 0 default, 1 CNN, 2 transformer, 3 transformer J)
+		int		RrPreset = 0;			// RRPreset (NvrDlssRrPreset: 0 default, 1 D, 2 E)
+		bool	NormalsView = false;	// RRNormals 1: the normals guide in view space
+		bool	DepthLinear = false;	// RRDepthLinear: DLSS.Use.HW.Depth 0
+	};
+	// TAAEffect::UpdateSettings, every settings pass, next to DlssOptions.
+	void		DlssRrOptions(const RrOptions& Options);
+	const RrOptions& DlssRrSettings();
+	// True when an RR evaluate this frame can work: Wanted, the helper running with rrAvailable (RTX + nvngx_dlssd.dll + NGX's
+	// SuperSamplingDenoising, or the pass-through test). The RR point's own frame checks (native size, a world frame) are the caller's.
+	bool		RayReconstructionReady();
+	// This frame's DLSS-D: the inputs go to the helper, the result is in RayReconstructionOutput() (rgba16f, linear, display size).
+	// False: nothing was recorded (RR not ready, an input missing, the helper stopped): the caller leaves the frame alone, and DLSS SR
+	// (or FSR 2) runs after the tonemap as before.
+	bool		EvaluateRayReconstruction(IDirect3DDevice9* Device, const RrInputs& In);
+	IDirect3DTexture9*	RayReconstructionOutput();
+	// Once a frame, at the start of the pre-tonemap chain (before the RT point): last frame's RR result becomes this frame's
+	// WantsRaw, and this frame's starts at "not run" (and "not planned").
+	void		RayReconstructionFrameBegin();
+	// UNOFFICIAL 2026-10-30 (review): the frame's plan, set once after FrameBegin and before the RT point (TAAEffect::
+	// RayReconstructionPlanned: every frame check that is known then). WantsRaw needs it, so a frame that will not go to RR (the Pip-Boy,
+	// a menu, a RenderScale frame...) keeps every denoiser even right after RR frames.
+	void		RayReconstructionPlan(bool Planned);
+	// The RR point put DLSS-D's result into the frame (after its composite and the chain's Commit): that is what next frame's WantsRaw
+	// goes by (an evaluate whose composite failed does not count).
+	void		RayReconstructionDelivered();
+	// The per-effect RT denoisers hand RR their raw signals this frame: RR ran last frame, Wanted, KeepDenoisers off. False: every
+	// effect runs exactly its old path.
+	bool		RayReconstructionWantsRaw();
 }

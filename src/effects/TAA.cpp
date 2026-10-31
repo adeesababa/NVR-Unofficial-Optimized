@@ -97,8 +97,38 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;
 	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; DLSS Enabled above is real DLSS,
 	// with FSR 2 whenever it cannot run). Both read as 0 (off) when missing.
+	// UNOFFICIAL 2026-10-30 (DLAA stall report): HelperWait / HelperGpuPriority, 1 when the key is missing (FillNode: 0 is a real value).
+	SettingManager::Configuration::ConfigNode helperNode;
+	const bool helperCpuWait = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperWait") ? helperNode.FloatValue != 0.0f : true;
+	const bool helperHighPriority = TheSettingManager->Config.FillNode(&helperNode, "Shaders.TAA.DLSS", "HelperGpuPriority") ? helperNode.FloatValue != 0.0f : true;
 	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
-		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3));
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3), helperCpuWait, helperHighPriority);
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (TAAFSR.cpp RayReconstruct, docs/next/FORK2-DLSS-RR.md) and DLSS SR's preset. A missing
+	// key reads as 0 / false: RR off, no preset hint (the DLL's own choice, as before), the guides' defaults. RRRoughness is the one where 0
+	// is a real value (a mirror), so only a key that is there at all replaces its default.
+	{
+		Upscaler::RrOptions rr;
+		// (review 2026-10-30: only at RenderScale 1, the one size RR runs at for now; below it the helper would make RR's guide images and
+		// set RR up for nothing. Crossing RenderScale 1 with RR on restarts the helper, with or without them.)
+		const bool rrKey = dlss && TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RayReconstruction") != 0;
+		rr.Wanted = rrKey && FSRSettings.RenderScale >= 0.999f;
+		static bool rrScaleLogged = false;
+		if (rrKey && !rr.Wanted && !rrScaleLogged) {
+			rrScaleLogged = true;
+			Logger::Log("UNOFFICIAL DLSS RR: RayReconstruction is on, but DLSS Ray Reconstruction runs at RenderScale 1 only for now (the RT effects "
+				"do not run in rect frames); at RenderScale %.2f DLSS SR upscales as before (logged once).", FSRSettings.RenderScale);
+		}
+		rr.KeepDenoisers = TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRKeepDenoisers") != 0;
+		rr.Preset = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "Preset"), 0, 3);
+		rr.RrPreset = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRPreset"), 0, 2);
+		RRSettings.Normals = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRNormals"), 0, 1);
+		rr.NormalsView = RRSettings.Normals == 1;
+		rr.DepthLinear = TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRDepthLinear") != 0;
+		Upscaler::DlssRrOptions(rr);
+		RRSettings.Albedo = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "RRAlbedo"), 0, 1);
+		SettingManager::Configuration::ConfigNode node;
+		RRSettings.Roughness = TheSettingManager->Config.FillNode(&node, "Shaders.TAA.DLSS", "RRRoughness") ? std::clamp(node.FloatValue, 0.0f, 1.0f) : 0.6f;
+	}
 }
 
 // Texture mip LOD bias on every sampler while the jittered world draws. Averaging jittered frames
@@ -406,6 +436,18 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 		Up.Upscaled = false;
 		historyValid = false;
 		lastPathFSR = false;
+		frameJittered = false;
+		renderTime = 0.0f;
+		return;
+	}
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (TAAFSR.cpp RayReconstruct): this frame was denoised and anti-aliased by DLSS-D before the
+	// tonemap, on TAA's own jitter; nothing is left to resolve. The jitter goes on to its next step (RR keeps no index of its own); TAA's
+	// history (and DLSS SR's) starts again on the next frame RR does not run.
+	if (rrRanThisFrame) {
+		rrRanThisFrame = false;
+		historyValid = false;
+		lastPathFSR = false;
+		jitterIndex = (jitterIndex + 1) % JitterSequenceLength;
 		frameJittered = false;
 		renderTime = 0.0f;
 		return;

@@ -16,6 +16,7 @@
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
 #include "RtCore.h"	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core
 #include "RtSunShadows.h"	// UNOFFICIAL 2026-10-28 RT sun shadows
+#include "Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (RayReconstructionFrameBegin)
 #include <unordered_map>	// UNOFFICIAL 2026-10-27 RenderScale v2 (RenderRect::RescaleRegistered)
 #include <vector>
 
@@ -1791,9 +1792,16 @@ void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
 }
 
 void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget) {
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (core/Upscaler.h; off by default: nothing changes): once a frame, before anything below
+	// (the RT point first of all), last frame's RR result becomes what the RT effects' denoisers go by this frame (RayReconstructionWantsRaw),
+	// and this frame's starts at "not run". (Before the early returns: a frame without the chain ran no RR either.)
+	Upscaler::RayReconstructionFrameBegin();
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
 	if (GameState.OverlayIsOn && TESMain::IsMenuBackgroundReady()) return; // disable all effects during terminal/lockpicking sequences
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (review): the frame's plan for the RR point, before the RT point and every RT denoiser
+	// that asks Upscaler::RayReconstructionWantsRaw (false with RayReconstruction off: nothing changes).
+	TAAEffect::RayReconstructionPlanned();
 
 	auto timer = TimeLogger();
 	static CpuTimer preTonemapCpuTimer("Pre-tonemap chain (CPU)");
@@ -2472,6 +2480,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(godRaysTimer, Device);
 		{ Effects.GodRays->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface); PixelInspector::AfterFrame(Effects.GodRays); }
 	}
+	// UNOFFICIAL 2026-10-30 the DLSS Ray Reconstruction point ([Shaders.TAA.DLSS] RayReconstruction, off by default; effects/TAAFSR.cpp,
+	// docs/next/FORK2-DLSS-RR.md): every RT composite is in the picture now, and the fog, the volumetric light, the sandstorm and the god
+	// rays (drawn with this frame's jittered depth: RR resolves them with the rest); nothing of exposure, bloom, lens and LUT yet. DLSS-D
+	// denoises and anti-aliases it here, and TAA's resolve after the tonemap skips the frame. Off, or whenever it cannot run this frame
+	// (logged once): nothing happens.
+	if (Effects.TAA) Effects.TAA->RayReconstruct(Device, RenderTarget);
 
 	{
 		GpuProfileScope gpu(hdrTimer, Device);

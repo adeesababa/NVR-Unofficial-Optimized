@@ -10,6 +10,7 @@
 #include "../core/RtCoreClient.h"	// UNOFFICIAL 2026-10-28 (RT reflections)
 #include "../core/RtCore.h"
 #include "../core/GlassMask.h"	// UNOFFICIAL 2026-10-29 glass reflections
+#include "../core/Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS RR (RayReconstructionWantsRaw: the RT resolve unblurred, no history)
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -437,7 +438,12 @@ bool ReflectionsEffect::ShouldRender() {
 // Temporal on: Trace -> Trace buffer, Temporal -> Temp (copied to History), Blur X -> Trace, Blur Y -> Buffer.
 // Off: Trace -> Temp, then the same blurs. The composite (technique 0) then reads Buffer.
 void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
-	const bool temporal = Settings.Temporal > 0.0f;
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md): with the RT rays on while RR denoises the frame
+	// (Upscaler::RayReconstructionWantsRaw), the RT resolve reaches the composite as it is: no Temporal pass and no history (the
+	// Temporal 0 path, but the noise frame keeps turning, so RoughShare's 2 x 2 casters still rotate for RR to average), and no blurs
+	// (below). A frame the helper traced nothing draws the normal trace, which still gets the blurs.
+	const bool rrRaw = Upscaler::RayReconstructionWantsRaw() && RtWanted();
+	const bool temporal = Settings.Temporal > 0.0f && !rrRaw;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
@@ -469,7 +475,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		D3DXMatrixMultiply(&Constants.Reproject, &toLastView, &lastProj);
 	}
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
-	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
+	Constants.Data2.w = temporal || rrRaw ? (float)(now % 64) : 0.0f;
 
 	// The surroundings cube, before the trace reads it; the light grid's constants.
 	CubeStep(Device);
@@ -512,8 +518,17 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		pass(Textures.TempSurface, 3);
 		Device->StretchRect(Textures.TempSurface, NULL, Textures.HistorySurface, NULL, D3DTEXF_NONE);
 	}
-	pass(Textures.TraceSurface, 2);
-	pass(Textures.BufferSurface, 4);
+	if (rrRaw && rtResolved) {
+		// UNOFFICIAL 2026-10-30 DLSS RR (above): the resolve (in Temp, as with Temporal 0) copied into Buffer, what the composite reads.
+		// (Resolve cannot draw into Buffer itself: every pass binds Buffer as an input.)
+		Device->StretchRect(Textures.TempSurface, NULL, Textures.BufferSurface, NULL, D3DTEXF_NONE);
+		static bool logged = false;
+		if (!logged) { logged = true; Logger::Log("UNOFFICIAL DLSS RR: Reflections: its own denoiser is skipped (RR denoises the raw signal)"); }
+	}
+	else {
+		pass(Textures.TraceSurface, 2);
+		pass(Textures.BufferSurface, 4);
+	}
 	ClearPassTextures();
 
 	haveHistory = temporal;

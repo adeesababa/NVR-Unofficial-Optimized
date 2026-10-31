@@ -5,6 +5,7 @@
 #include "../core/RtAmbient.h"
 #include "../core/RtCore.h"
 #include "../core/RtDenoise.h"	// (2026-10-29) the shared RT denoiser	// (the RT core: AddUser / CopyIn / AddPass / CopyOut)	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
+#include "../core/Upscaler.h"	// UNOFFICIAL 2026-10-30 DLSS RR (RayReconstructionWantsRaw: the RT temporal pass is skipped)
 #include "BounceLightMath.h"	// (the RT AO's temporal pass)
 
 // UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
@@ -792,13 +793,17 @@ bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTe
 	NVR_EXT_RESOURCE_BINDING resources[8] = {};
 	UINT count = 0;
 	AOPush push = {};
+	// UNOFFICIAL 2026-10-30 DLSS Ray Reconstruction (docs\next\FORK2-DLSS-RR.md): while RR denoises the frame (Upscaler::
+	// RayReconstructionWantsRaw) the estimate goes straight into AO 0, where the blurs and the combine read it, and the temporal pass
+	// does not run (with no history share it would copy AO 1 into AO 0 unchanged). No history is kept: the first frame after starts afresh.
+	const bool rrRaw = Upscaler::RayReconstructionWantsRaw();
 	bool drawn;
 	{
 		GpuProfileScope gpu(rtTimers[0], Device);
 		IDirect3DBaseTexture9* inputs[2] = { depth, raw };
-		drawn = Resources(resources, count, inputs, 2, extUniforms.Buffer) && ExtDrawTo(extEstimateRT.Pipeline, &Surfaces[1], 1, resources, count, &push, sizeof(push));
+		drawn = Resources(resources, count, inputs, 2, extUniforms.Buffer) && ExtDrawTo(extEstimateRT.Pipeline, &Surfaces[rrRaw ? 0 : 1], 1, resources, count, &push, sizeof(push));
 	}
-	if (drawn) {
+	if (drawn && !rrRaw) {
 		GpuProfileScope gpu(rtTimers[1], Device);
 		IDirect3DBaseTexture9* inputs[3] = { Textures[1], rtHistoryTexture[read], depth };
 		IDirect3DSurface9* targets[2] = { Surfaces[0], rtHistorySurface[write] };
@@ -809,6 +814,12 @@ bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTe
 		rtFailed = true;
 		Logger::Log("UNOFFICIAL RT AO: the RT estimate failed to draw; AmbientOcclusion's own estimate runs from now on.");
 		return false;
+	}
+	if (rrRaw) {	// UNOFFICIAL 2026-10-30 DLSS RR (above)
+		RtHistoryValid = false;
+		static bool logged = false;
+		if (!logged) { logged = true; Logger::Log("UNOFFICIAL DLSS RR: AmbientOcclusion: its own denoiser is skipped (RR denoises the raw signal)"); }
+		return true;
 	}
 	rtHistoryIndex = write;
 	RtHistoryValid = true;
