@@ -1241,7 +1241,9 @@ namespace {
 		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
 		// Alpha-tested casters (AlphaTested on): traced with their diffuse alpha (RtAlpha.glsl); blended-only (glass, fx) stays out
 		bool alphaTested = false;
-		if (alpha && (alpha->flags & (NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK | NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))) {
+		// (UNOFFICIAL 2026-10-31 FarObjectLOD: the object LOD meshes all carry an alpha property for their distance fade, not cut-outs:
+		// rtrefl-20 met 30 a frame, all refused as alpha. Past SceneRadius they go in as opaque.)
+		if (alpha && !walkingFar && (alpha->flags & (NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK | NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))) {
 			if (!(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) { skip[kAlpha]++; alphaFate[0]++; return; }
 			if (!alphaOn) { skip[kAlpha]++; alphaFate[1]++; return; }
 			alphaTested = true;
