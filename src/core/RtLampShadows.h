@@ -41,6 +41,16 @@ namespace RtLampShadows {
 	}
 
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
+	// UNOFFICIAL 2026-10-31 CapsuleShadows (core/CapsuleShadows.h): a second writer of the same buffer, a D3D9 pass (people's capsules and
+	// contact shadows), no RT needed. RtEnabled: the RT section on at startup with the RT core's interface (the RT path may trace);
+	// ScreenCompiledIn: [Shaders.ShadowsInteriors.Capsules] Enabled at startup. ScreenSourceFrame: this frame's buffer is the pass's
+	// (set in Submit: the pass is wanted and the RT path is not running).
+	inline constexpr const char* kScreenSection = "Shaders.ShadowsInteriors.Capsules";
+	inline bool RtEnabled = false, ScreenCompiledIn = false, ScreenSourceFrame = false;
+	inline bool ScreenWants() {
+		return ScreenCompiledIn && !TheShaderManager->GameState.isExterior &&
+			(TheSettingManager->GetSettingI(kScreenSection, "Capsules") != 0 || TheSettingManager->GetSettingI(kScreenSection, "Contact") != 0);
+	}
 	inline char Status[200] = "not checked yet";
 
 	// The trace pass's uniform block (RtLampTrace.comp, std140, 128 bytes); the lamps are in the lamp table image
@@ -145,6 +155,7 @@ namespace RtLampShadows {
 	// RenderManager, right after DxvkCompute::Initialize and before any shader is loaded: decides POINT_SHADOW_RT for the session.
 	inline void Initialize() {
 		CompiledIn = false;
+		RtEnabled = false;
 		for (int i = 0; i < MapSlots; i++) PendingMap[i] = TracedMap[i] = -1;
 		ID3D9NvrExtRt* rt = nullptr;
 		ID3D9NvrExt* ext = DxvkCompute::Extension();
@@ -157,9 +168,17 @@ namespace RtLampShadows {
 		else {
 			rt->Release();
 			CompiledIn = true;
+			RtEnabled = true;
 			strcpy_s(Status, "lamp shaders compiled to read traced lamp shadows (used once the RT helper runs)");
 		}
 		if (TheSettingManager->GetSettingI(kSection, "Enabled")) Logger::Log("UNOFFICIAL RT lamp shadows: %s", Status);
+		// UNOFFICIAL 2026-10-31 CapsuleShadows: the same shader reader (POINT_SHADOW_RT), its buffer from a D3D9 pass (any GPU)
+		ScreenCompiledIn = TheSettingManager->GetSettingI(kScreenSection, "Enabled") != 0 &&
+			TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") != 0;
+		if (ScreenCompiledIn) CompiledIn = true;
+		if (TheSettingManager->GetSettingI(kScreenSection, "Enabled"))
+			Logger::Log("UNOFFICIAL CapsuleShadows: %s", ScreenCompiledIn ? "lamp shaders compiled to read the capsule and contact shadows (POINT_SHADOW_RT)" :
+				"off: needs the per-object lamp shadows ([Shaders.ShadowsInteriors.Forward] Enabled)");
 	}
 
 	inline const D3DXVECTOR4* Constant(const char* name) {
@@ -177,6 +196,7 @@ namespace RtLampShadows {
 		Mode = 0.0f;
 		LampCount = 0;
 		LampsThisFrame = false;
+		ScreenSourceFrame = false;
 		if (!CompiledIn) return;
 		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "MaxLamps"), 0), TableSlots);
 		// The table: every published lamp in cube slots 0-62, in NVR's order (its ranking), up to MaxLamps
@@ -186,10 +206,13 @@ namespace RtLampShadows {
 				PendingMap[lamps[i].slot] = lamps[i].slot;
 				Lamps[LampCount++] = lamps[i];
 			}
-		LampsThisFrame = TheSettingManager->GetSettingI(kSection, "Live") != 0;
+		LampsThisFrame = RtEnabled && TheSettingManager->GetSettingI(kSection, "Live") != 0;
+		// UNOFFICIAL 2026-10-31 CapsuleShadows: the pass writes the buffer when the RT path is not running (no RT GPU, or RT off)
+		const bool rtSource = RtEnabled && RtCore::Running();
+		if (!rtSource && ScreenWants() && count > 0) { ScreenSourceFrame = true; LampsThisFrame = true; }
 
 		// The newest result: traced last frame (Record moves Pending to Traced once its copy-out is recorded)
-		if (!Traced.valid || !ResultTexture || !LampsThisFrame || !RtCore::Running()) return;
+		if (!Traced.valid || !ResultTexture || !LampsThisFrame || !(rtSource || ScreenSourceFrame)) return;
 		const D3DXMATRIX& v = Traced.view;
 		const D3DXVECTOR3 right(v._11, v._21, v._31), up(v._12, v._22, v._32), forward(v._13, v._23, v._33);
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
@@ -209,7 +232,7 @@ namespace RtLampShadows {
 		Reproject[3][3] = D3DXVec3Dot(&d, &forward);
 		RtConstant[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "DepthTolerance"), 0.004f);	// at least the depth code's step
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
-		RtConstant[3] = ActorsFromCubeMaps() ? 1.0f : 0.0f;
+		RtConstant[3] = ScreenSourceFrame || ActorsFromCubeMaps() ? 1.0f : 0.0f;	// the capsule / contact buffer: always the darker of it and the lamp's map
 		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
 		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : debugView == 3 ? 4.0f : 1.0f;
 		DebugLamp = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "DebugLamp"), 0), TableSlots - 1);
@@ -228,7 +251,7 @@ namespace RtLampShadows {
 	// come from the cube map). ShadowManager's cube loop asks before drawing slot i.
 	inline UInt32 SkippedCubes = 0, SkippedCubesFrames = 0;
 	inline bool KeepCube(int slot, const PointShadowSlotState& last, const PointShadowSlotState& now) {
-		if (!CompiledIn || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;
+		if (!CompiledIn || ScreenSourceFrame || Mode <= 0.0f || slot < 0 || slot >= MapSlots || TracedMap[slot] < 0) return false;	// (the capsule buffer replaces no map)
 		if (!TheSettingManager->GetSettingI(kSection, "SkipTracedCubes")) return false;
 		if (!last.valid || last.light != now.light || last.cell != now.cell || last.texture != now.texture ||
 			last.radius != now.radius) return false;
@@ -276,7 +299,7 @@ namespace RtLampShadows {
 
 	// --- The RT core user -----------------------------------------------------------------------------------------------------------
 	inline bool Wants() {
-		return (CompiledIn && LampsThisFrame && LampCount > 0 && (!TheShaderManager->GameState.isExterior || ExteriorFrame)) || FlashWanted();
+		return (RtEnabled && !ScreenSourceFrame && LampsThisFrame && LampCount > 0 && (!TheShaderManager->GameState.isExterior || ExteriorFrame)) || FlashWanted();
 	}
 
 	// Exteriors: ShadowManager, every frame outdoors right after GetNearbyLights: the mask's lamps (the shadow lamps, then the tracked

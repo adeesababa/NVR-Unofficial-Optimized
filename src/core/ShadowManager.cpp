@@ -8,6 +8,7 @@
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow: CoverMapOrthoFrame
 #include "DisplaceShadows.h"	// UNOFFICIAL 2026-10-27 displacement shadows: the land drawn with its bumps into the sun cascades
 #include "ShadowAtlas.h"	// UNOFFICIAL 2026-10-30 ShadowAtlas (INTERIOR-SHADOWS-MODERN step 1)
+#include "CapsuleShadows.h"	// UNOFFICIAL 2026-10-31 CapsuleShadows (steps 2-3): DropActors
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -180,6 +181,9 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	if (!LampFixtures::NoShadowWords.empty())	// UNOFFICIAL NoShadowLampModels (2026-10-27): its words and the cell's lamp list redraw too
 		hash = (hash ^ (UInt64)std::hash<std::string>{}(LampFixtures::NoShadowFrom) ^ ((UInt64)LampFixtures::Generation << 40) ^
 			(UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
+	// UNOFFICIAL 2026-10-31 CapsuleShadows DropActors: people leave the maps (switching it redraws them)
+	const bool dropActors = CapsuleShadows::DropActors();
+	if (dropActors) hash = (hash ^ 0x5851F42D4C957F2DULL) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 	// FastCasterHash switched (live): its hashes differ from the old ones, so every caster's motion starts again from 'first sight'
@@ -203,6 +207,7 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	// the static cube map.
 	for (auto entry = light->kGeometryList.start; entry; entry = entry->next) {
 		NiGeometry* geo = entry->data;
+		if (dropActors && geo && geo->skinInstance) continue;	// not in the map: neither moving nor hashed
 		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
 		CasterMotion* motion = nullptr;
 		bool moving;
@@ -1438,6 +1443,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		D3DXVECTOR3(0.0f, 0.0f, 1.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f) };
 	const bool useGeometryList = Lights[LightIndex]->kGeometryList.start != nullptr;
 	cubeCasters.clear();
+	const bool dropActors = CapsuleShadows::DropActors();	// UNOFFICIAL 2026-10-31 CapsuleShadows (interiors only)
 	std::unordered_map<int, int> lampModelCache;	// UNOFFICIAL LampModelShadows: this light's answer per lamp model (LampFixtures::NearLampModel)
 	std::unordered_map<int, int> noShadowCache;		// UNOFFICIAL NoShadowLampModels (2026-10-27): the same for LampFixtures::NoShadowLampModel
 	if (useGeometryList) {
@@ -1452,6 +1458,9 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 			if (!shaderProp)
 				continue;
+
+			// UNOFFICIAL 2026-10-31 CapsuleShadows DropActors: skinned casters (people, creatures) cast their lamp shadows as capsules
+			if (geo->skinInstance && dropActors) continue;
 
 			// UNOFFICIAL RedrawActorsOnly: the static layer takes what never moves, the moving layer the rest.
 			if (Layer != CubeLayer::All && IsMovingCaster(geo, shaderProp) != (Layer == CubeLayer::MovingOnto))
