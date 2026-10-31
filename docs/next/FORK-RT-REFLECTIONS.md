@@ -234,6 +234,21 @@ instance and triangle counts, helper cost).
 
 ## Results
 
+### 2026-10-31 round 14: FarObjectLOD (claude/rt-refl-3 d6751f35, DLL F516B120): NOT PASSED, stays off
+- rtrefl-19 (noon 20261031-033157-slotA): 0 far instances. The probe (rtrefl-20, 20261031-035000-slotA) showed why: the object LOD
+  root holds 73 objects a frame round this spot, 13 outside the ring, 30 geometries, and AddGeometry refused all 30 as alpha (the
+  LOD meshes carry an alpha property for their distance fade). Fixed: past SceneRadius they go in opaque (d6751f35).
+- rtrefl-21 (noon 20261031-043552-slotA): 30 far instances a frame now (`far object LOD on: 30.0 instances`), and they cost: helper
+  triangles 400k -> 877k, memory 62 -> 136 MB, helper passes 1.08 -> 2.58 ms (part of it the reflection rays now reaching
+  FarRadius 40000), a 113 ms build once when the far ring first loads.
+- But the reflections do not gain the skyline here: RT DebugView 2 shows MORE misses with it on (170k vs 48k saturated red pixels,
+  same launch). The skyline at this spot is mountains, i.e. LOD **land**, which the core leaves out while the full land is loaded
+  (its coarse quads stand above the real ground); the 30 far objects are scattered buildings. Why the misses rise is not
+  explained yet (the longer reach is the main suspect). Next step, if wanted: a far LOD land ring (LOD land quads only past
+  SceneRadius, where they do not overlap the real land), then re-measure misses.
+- (The noon setup with rain moves ~40 % of pixels between any two shots: picture comparisons there are not usable; the miss counts
+  and the log lines are.)
+
 ### 2026-10-31 round 14: RayReuse (claude/rt-refl-3 80e39481, DLL 1E229562; fork-0033c, helper extra-p3e)
 rtrefl-18, MaxRoughness 0.8 (rays on rougher surfaces), RayReuse 1 vs 0:
 - lucky22 20261031-020411-slotA: reflection alone reuse vs off 1.00 % px > 2 (repeats 0.00 %), mean |d| 0.375; full picture 0.15 %
