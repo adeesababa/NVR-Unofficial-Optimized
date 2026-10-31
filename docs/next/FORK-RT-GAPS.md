@@ -170,6 +170,35 @@ and separate GI pass both), and no slot ever went NaN (the shots stay clean).
   frame (roughly a quarter of the cost), the lamp pick only (no sun shadow ray) for cache hits outdoors, and a still first-person
   spot where the lit area is behind the camera (a room lit through a door) for the A/B.
 
+### Cost cut + DebugView 7: run rt-rc-2 (2026-10-31, 86767536, DLL 9EECBCFE; same fork / helper / toml as rt-rc-1)
+Changes: interiors only unless `CacheExteriors` (default false); `CacheSpread` 8 (1 in 8 cells a frame, was a fixed 4);
+outdoors `CacheRaysExterior` 4 and `CacheSpreadExterior` 8; **lazy cells**: a settled cell whose rays found no surface within 2.5 cells
+(the air: no lookup reaches it; flagged by the header's sign) or that is mostly inside something (lookups weigh it out) is traced 1 visit
+in 8. RT `DebugView 7`: the bounce light (as 6) with every hit lit as off screen (Shade everywhere), so the cache's whole share shows.
+Bench 20261031-041101-slotA (lucky22) **PASS**; 20261031-042622-slotC (og-goodsprings) "FAIL": the self-test's 480 s limit (the
+trip there took 4 min and this list is 2 shots longer), after every measured shot had run; CrashLogger header only in both.
+- **Cost** (`RtRadianceCache.spv`, ms a run):
+
+  | | rt-rc-1 (8 rays, 1 in 4) | old settings + lazy cells | new defaults |
+  |---|---|---|---|
+  | Lucky 38 | 3.0-3.4 | 2.9 | **1.7-2.2** |
+  | Goodsprings (CacheExteriors 1) | 7.6-8.9 | 5.6 | **2.1** |
+  | Goodsprings, default | 7.6-8.9 | | **0** (off outdoors: no cache pass in the log) |
+
+  Lazy cells save ~30 % outdoors (the air above the ground), little indoors. Spread 8 doubles the lag: a cell's light follows a
+  lamp switched on within CacheFrames x 8 frames.
+- **Why so little light in Lucky 38: a real result, not a scale error.** DebugView 7 (all hits off screen, still camera): cache off
+  7.63 / 255 mean, cache on **8.02** (+0.39, +5 %); cache off again 7.68 (noise 0.05). DebugView 6 (the real mix) is 17.9: about
+  60 % of the bounce light comes from hits on screen, which take the game's lit frame (it already holds the light's later bounces),
+  and of the off-screen 40 % the cache adds 5 %. The units check out (L1 of pi x radiance: irradiance(n) = c0 + 2 c1 . n, the same
+  units as Shade's direct light; CacheStrength 2 doubled the gain in rt-rc-1: +0.19 -> +0.42). The casino hall is large and dark
+  (low albedo, far walls: a second bounce is albedo x view factor of the first), and the cache is lit by the 7 nearest lamps only.
+  Where the cache should matter: a room lit only from behind the camera or through a door (not this spot). The camera moved
+  before the DebugView 6 pair, and Goodsprings' player walked between every shot again (no picture A/B there).
+- **Verdict:** RadianceCache stays **off** by default; on, it now costs ~2 ms indoors and nothing outdoors (CacheExteriors off).
+  For a real look gain it needs more light in the cache (all of the cell's lamps, not the 7 GI lamps) and a test spot lit from
+  off screen.
+
 ## Runs (iGPU, fork-0033c, helper extra-p3d, run toml rtao/run-toml-igpu-hit-plants.toml = AlphaTested + HitTextures + Actors + plant wind on)
 - **rtfol-1** 20261030-135727-slotC (og-goodsprings 16:00, Bend 16): no crash, no helper errors. Log: `plant sway on: 581.5 plant
   instances leaned a frame`; `player: third person; body node drawn; 29.4 body instances a frame`. The slot's camera faces the sun
