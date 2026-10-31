@@ -149,6 +149,27 @@ same feedback loop that gives SHaRC its infinite bounces:
 One bulk run, iGPU, Lucky 38 (an interior lit by lamps) and Goodsprings noon (sun bounce), RadianceCache 0 / 1 (+ DebugView 6):
 the bounce light's mean and its change off-screen-lit corners, the pass costs (update pass + the GI pass with lookups), no crash.
 
+### Results: run rt-rc-1 (2026-10-31, c7cc26b6, DLL 4E9E4A49; iGPU, fork-r13 d3d9 D0F5B553, helper extra-r13b 63C95421, run toml rtao/run-toml-igpu-hit-glow.toml)
+Bench 20261031-021205-slotA (lucky22) and 20261031-031236-slotC (og-goodsprings): both **PASS**, CrashLogger header only, no helper
+or shader errors. The cache logged "started over" on each switch-on (32 x 32 x 16 cells of 128 units, 8 rays, merged AO + GI pass
+and separate GI pass both), and no slot ever went NaN (the shots stay clean).
+- **Cost** (helper pass times, ms a run; each line prints at the next shot's change, so it covers the shot before):
+  - `RtRadianceCache.spv`: Lucky 38 **3.0-3.4 ms**, Goodsprings **7.6-8.9 ms** (outdoors the rays travel far and most hit
+    something lit by the sun: two shadow rays a hit). Over the < 3 ms target outdoors.
+  - The merged AO + GI pass with the lookups: Lucky 38 40.4 ms (c1-light) vs 38.7 / 37.7 (c0-light / c0b-light): about +2 ms,
+    inside this iGPU's noise. Goodsprings' numbers drift too much shot to shot (24-37 ms) to split.
+- **Picture** (DebugView 6, the GI bounce light alone; System.Drawing, every 2nd pixel):
+  - Lucky 38, still camera for c0 / c1 / c2: RadianceCache 1 adds **+0.19 / 255** mean (0.06 % of pixels change by more than
+    8), CacheStrength 2 **+0.42**. It works and scales with the strength, but in this spot almost every bounce ray lands on
+    screen and takes the lit frame (which already holds the earlier bounces), so the cache has little to add.
+  - The camera moved after c2 (c0b looks through palm fronds; Lucky 38 camera cell 6 -27 -> 8 -27 -> 5 -28 over the run), and in
+    Goodsprings the third-person player walked between every shot, so the c0b noise check, the g4 pair and all of Goodsprings
+    give no A/B (c0 vs c0b: -11.9 Lucky, -15.2 Goodsprings: view changes, not the cache).
+- **Verdict:** safe to ship **off** (default false; off = the earlier passes, except the AO / GI shader code is ~8.5 KB bigger).
+  Not worth turning on yet: too little gain where measured, too costly outdoors. Next, if pursued: CacheRays 4 and 1 in 8 cells a
+  frame (roughly a quarter of the cost), the lamp pick only (no sun shadow ray) for cache hits outdoors, and a still first-person
+  spot where the lit area is behind the camera (a room lit through a door) for the A/B.
+
 ## Runs (iGPU, fork-0033c, helper extra-p3d, run toml rtao/run-toml-igpu-hit-plants.toml = AlphaTested + HitTextures + Actors + plant wind on)
 - **rtfol-1** 20261030-135727-slotC (og-goodsprings 16:00, Bend 16): no crash, no helper errors. Log: `plant sway on: 581.5 plant
   instances leaned a frame`; `player: third person; body node drawn; 29.4 body instances a frame`. The slot's camera faces the sun
