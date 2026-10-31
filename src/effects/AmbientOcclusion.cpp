@@ -386,6 +386,9 @@ namespace {
 	int RtImageIn = -1, RtImageOut = -1, RtImageGI = -1, RtImageAlphaStandIn = -1, RtImageLight = -1, RtImageAlbedoStandIn = -1, RtShader = -1;
 	int RtGIShader = -1, RtImageReservoir[2][2] = { { -1, -1 }, { -1, -1 } };	// (2026-10-30) GIReuse: RtGITrace and its two reservoir pairs (A, B)
 	bool RtGIHistory = false;
+	int RtCacheShader = -1, RtImageCache = -1;	// (2026-10-31) RadianceCache: RtRadianceCache and its 256 x 256 image (4 texels a cell)
+	bool RtCacheValid = false;	// the cache image holds this session's cells (else the next cache pass starts every cell over)
+	float RtCacheCellSize = 0.0f, RtCacheCap = 0.0f;
 	int RtImageGIOut = -1, RtImageGlowList = -1;	// (2026-10-30) the reuse passes' bounce light out (estimate + GlowDirect) and the glow lights
 	IDirect3DTexture9* RtGlowTexture = nullptr;	// the glow lights' source (32 x 3, dynamic: filled each frame from RtCore::GlowLights())
 	constexpr UINT GlowLightsMax = 32;	// the reservoirs hold last frame's (cleared at each helper start and whenever a frame had no GI pass)
@@ -417,6 +420,8 @@ namespace {
 		RtGIHistory = false;
 		RtImageGIOut = RtCore::AddImage("NVR RT gi out", w, h, NVR_EXT_SHARED_RGBA16F);
 		RtImageGlowList = RtCore::AddImage("NVR RT glow lights", GlowLightsMax, 3, NVR_EXT_SHARED_RGBA16F);
+		RtImageCache = RtCore::AddImage("NVR RT radiance cache", 256, 256, NVR_EXT_SHARED_RGBA16F);	// (2026-10-31) RadianceCache
+		RtCacheValid = false;
 	}
 
 	// (2026-10-30) GlowDirect: the strongest glow-mapped instances as seen from the eye (colour x radius^2 / distance^2), at most 32, into
@@ -501,6 +506,7 @@ namespace {
 void AmbientOcclusionEffect::RtRegister() {
 	RtShader = RtCore::AddShader("RtAOTrace");
 	RtGIShader = RtCore::AddShader("RtGITrace");	// (2026-10-30) GIReuse: RtAOTrace.comp built with RT_GI_PASS
+	RtCacheShader = RtCore::AddShader("RtRadianceCache");	// (2026-10-31) RadianceCache: RtAOTrace.comp built with RT_CACHE_PASS
 	RtCore::AddUser({ "RT ambient occlusion", RtWants, RtSetup, RtRecordUser });
 }
 
@@ -668,6 +674,28 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const bool reuse = gi && rt.GIReuse > 0 && RtImageReservoir[0][0] >= 0 && RtImageReservoir[1][1] >= 0;
 	const bool merged = reuse && rt.Interleave == 1 && rt.GIInterleave == 1 && rt.GlowDirect <= 0.0f;	// (GlowDirect's list: the GI pass only)
 	const bool giPass = reuse && !merged && RtGIShader >= 0;
+	// (2026-10-31) RadianceCache (docs/next/FORK-RT-GAPS.md section 4): the cache's update pass before the GI, and the GI's off-screen
+	// hits read it. The grid is fixed in the world: the camera's cell and where in it the camera is go to the passes (camera-relative
+	// scene space, as everything else). The GI passes' constants are full, so they take 7 lamps and the grid in lamp slot 7.
+	// (2026-10-31 b) interiors only unless CacheExteriors (outdoors: its own rays and spread). DebugView 7 (every bounce hit lit as off
+	// screen) rides on lamp slot 7 too (lampColor[7].w + 16), with or without the cache.
+	const bool exterior = TheShaderManager->GameState.isExterior;
+	const bool cacheOn = rt.RadianceCache && rt.CacheStrength > 0.0f && (giPass || merged) && RtImageCache >= 0 && RtCacheShader >= 0 &&
+		(rt.CacheExteriors || !exterior);
+	const bool offscreenView = rt.DebugView == 7 && (giPass || merged);
+	const int cacheRays = exterior ? rt.CacheRaysExterior : rt.CacheRays, cacheSpread = exterior ? rt.CacheSpreadExterior : rt.CacheSpread;
+	RtAmbient::CacheConstants cc = {};
+	if (cacheOn || offscreenView) {
+		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+		const double size = rt.CacheCellSize;
+		const double cell[3] = { floor(camera.x / size), floor(camera.y / size), floor(camera.z / size) };
+		cc.cacheA = D3DXVECTOR4((float)(camera.x - cell[0] * size), (float)(camera.y - cell[1] * size), (float)(camera.z - cell[2] * size), (float)size);
+		cc.cacheB = D3DXVECTOR4((float)cell[0], (float)cell[1], (float)cell[2], cacheOn ? rt.CacheStrength : 0.0f);
+		c.gi.z = (std::min)(c.gi.z, (float)(RtAmbient::GILampsMax - 1));
+		c.lampPos[RtAmbient::GILampsMax - 1] = cc.cacheA;
+		c.lampColor[RtAmbient::GILampsMax - 1] = cc.cacheB;
+		if (offscreenView) c.lampColor[RtAmbient::GILampsMax - 1].w += 16.0f;	// (the cache pass's own cacheB keeps the plain strength)
+	}
 	RtAmbient::GIConstants g = {};
 	if (reuse && (giPass || merged)) {
 		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
@@ -728,25 +756,63 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 		prevCamera = camera;
 	}
 	const bool mergedNow = merged && c.gi3.z > 0.5f;
+	const bool cacheNow = cacheOn && (giPass || mergedNow);
+	bool cacheReset = false;
+	if (cacheOn && !cacheNow) { c.lampColor[RtAmbient::GILampsMax - 1] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, offscreenView ? 16.0f : 0.0f); g.lampColor[RtAmbient::GILampsMax - 1] = c.lampColor[RtAmbient::GILampsMax - 1]; }
+	if (cacheNow) {
+		cc.origin = c.origin;
+		cc.gi = c.gi;
+		cc.sunDir = c.sunDir;
+		cc.sunColor = c.sunColor;
+		cc.ambient = c.ambient;
+		memcpy(cc.lampPos, c.lampPos, sizeof(cc.lampPos));
+		memcpy(cc.lampColor, c.lampColor, sizeof(cc.lampColor));
+		cc.gi2 = c.gi2;
+		// A new image or cell size: every cell traced and started over this frame. When the light changes (the reuse's history cut,
+		// giCap back to 1) the cells may lean on 2 frames only, growing back to CacheFrames by one every CacheSpread frames (a cell's turn).
+		cacheReset = !RtCacheValid || RtCacheCellSize != rt.CacheCellSize;
+		const UINT div = cacheReset ? 1u : (UINT)cacheSpread;
+		RtCacheCap = cacheReset || giCap <= 1.0f ? 2.0f : (std::min)(RtCacheCap + 1.0f / (float)div, (float)rt.CacheFrames);
+		cc.cacheC = D3DXVECTOR4((float)cacheRays, cacheReset ? -RtCacheCap : (std::min)(RtCacheCap, (float)rt.CacheFrames),
+			(float)(TheFrameRateManager->FrameNumber % div), (float)div);
+		cc.cacheD = D3DXVECTOR4((float)((TheFrameRateManager->FrameNumber / div) % 4096u), (float)RtAmbient::CacheLazyPeriod, 2.5f, 0.0f);
+	}
 	const int cur = giParity & 1, prev = cur ^ 1;
 	// (2026-10-30) the glow atlas as image 11 (binding 15): the merged pass's last; the plain AO pass binds 6-10 too then (not used there:
 	// the reservoirs and the GI out, unwritten without gi3.z), so the atlas lands at its binding
 	const bool glowAtlas = gi && c.sunColor.w > 0.5f;
-	const int images[12] = { RtImageIn, RtImageOut, RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
+	const int images[12] = { RtImageIn, RtImageOut, cacheNow && mergedNow ? RtImageCache : RtImageGI, alphaAtlas, RtImageLight, albedoAtlas,
 		RtImageReservoir[prev][0], RtImageReservoir[prev][1], RtImageReservoir[cur][0], RtImageReservoir[cur][1],
 		RtImageGIOut, glowAtlas ? RtCore::GlowAtlasImage() : RtImageGIOut };
 	const UINT aoImages = mergedNow ? (glowAtlas ? 12u : 11u) : (glowAtlas && RtImageGIOut >= 0 && RtImageReservoir[1][1] >= 0 ? 12u : 6u);
-	const int giImages[11] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
-		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList, glowAtlas ? RtCore::GlowAtlasImage() : RtImageGlowList };
+	const int giImages[12] = { RtImageIn, RtImageReservoir[prev][0], RtImageReservoir[prev][1], alphaAtlas, RtImageLight, albedoAtlas,
+		RtImageReservoir[cur][0], RtImageReservoir[cur][1], RtImageGIOut, RtImageGlowList, glowAtlas ? RtCore::GlowAtlasImage() : RtImageGlowList,
+		RtImageCache };	// (2026-10-31: the radiance cache as image 11, binding 15, with RadianceCache)
+	// (2026-10-31) the cache pass: the cache at binding 2, the atlases at theirs (5, 7, 15); the bindings between are fillers (unused)
+	const int cacheImages[12] = { RtImageCache, RtImageCache, RtImageCache, alphaAtlas, RtImageCache, albedoAtlas, RtImageCache, RtImageCache,
+		RtImageCache, RtImageCache, RtImageCache, glowAtlas ? RtCore::GlowAtlasImage() : RtImageCache };
+	const UINT cacheGroups = RtAmbient::CacheCells / (cacheNow ? (UINT)cc.cacheC.w : 1u) / 64u;
 	const bool glowOk = (giPass || mergedNow) && RtImageGIOut >= 0 && RtImageGlowList >= 0 && RtFillGlowLights(Device, rt.GlowDirect);
 	if ((giPass || mergedNow) && !glowOk) { RtGIHistory = false; return; }
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) || (gi && !RtCore::CopyIn(RtImageLight, rtLightTexture)) ||
 		(glowOk && !RtCore::CopyIn(RtImageGlowList, RtGlowTexture)) ||
-		!RtCore::AddPass(RtShader, images, aoImages, mergedNow ? 0x706 : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
+		(cacheNow && !RtCore::AddPass(RtCacheShader, cacheImages, glowAtlas ? 12 : 6, 0x1, &cc, sizeof(cc), cacheGroups, 1)) ||
+		!RtCore::AddPass(RtShader, images, aoImages, mergedNow ? (cacheNow ? 0x702 : 0x706) : 0x6, &c, sizeof(c), ((rt.Interleave >= 2 ? (width + 1) / 2 : width) + 7) / 8,
 			((rt.Interleave >= 4 ? (height + 1) / 2 : height) + 7) / 8) ||	// (Interleave: only the traced texels' threads)
-		(giPass && !RtCore::AddPass(RtGIShader, giImages, glowAtlas ? 11 : 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
+		(giPass && !RtCore::AddPass(RtGIShader, giImages, cacheNow ? 12 : glowAtlas ? 11 : 10, 0x1C0, &g, sizeof(g), (width + 7) / 8, (height + 7) / 8)) ||
 		!RtCore::CopyOut(RtImageOut, rtRawSurface) ||
-		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageGIOut : RtImageGI, rtGISurface))) { RtGIHistory = false; return; }
+		(gi && !RtCore::CopyOut(giPass || mergedNow ? RtImageGIOut : RtImageGI, rtGISurface))) { RtGIHistory = false; RtCacheValid = false; return; }
+	RtCacheValid = cacheNow;	// (a frame without the cache pass: the next one starts the cells over)
+	RtCacheCellSize = rt.CacheCellSize;
+	if (cacheNow) {
+		static bool cacheLogged = false;
+		if (!cacheLogged || cacheReset) {
+			Logger::Log("UNOFFICIAL RT AO: radiance cache %s (32 x 32 x 16 cells of %.0f units, %d rays a cell, 1 in %d cells a frame, up to %d frames, lazy cells 1 visit in %u; %s; camera cell %.0f %.0f %.0f; %s).",
+				cacheReset ? "started over" : "on", rt.CacheCellSize, cacheRays, cacheSpread, rt.CacheFrames, RtAmbient::CacheLazyPeriod, exterior ? "exterior" : "interior",
+				cc.cacheB.x, cc.cacheB.y, cc.cacheB.z, mergedNow ? "read by the merged AO + GI pass" : "read by the GI pass");
+			cacheLogged = true;
+		}
+	}
 	if (giPass || mergedNow) giParity++;
 	RtGIHistory = giPass || mergedNow;
 	RtGITraced = gi;

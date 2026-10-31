@@ -53,7 +53,7 @@ void AmbientLightEffect::UpdateSettings() {
 	RtAmbient::UpdateSettings();
 	if (RtAmbient::Current.Enabled && RtAmbient::Current.DebugView != 0 && RtAmbient::Current.DebugView != 2) Constants.Data2.w = 1.0f;
 	// (rt-ao-gi) RT DebugView 6: the RT bounce light alone, through this effect's view 13 (the GI light as it arrives).
-	if (RtAmbient::Current.Enabled && RtAmbient::Current.GI && RtAmbient::Current.DebugView == 6) Constants.Data2.w = 13.0f;
+	if (RtAmbient::Current.Enabled && RtAmbient::Current.GI && (RtAmbient::Current.DebugView == 6 || RtAmbient::Current.DebugView == 7)) Constants.Data2.w = 13.0f;	// (7: 2026-10-31)
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).

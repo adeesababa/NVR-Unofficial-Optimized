@@ -105,6 +105,100 @@ Built 2026-10-30 on the round 11 merge e4e76fdd.
 Verdict for 3: no prototype. The current behaviour (only opaque and alpha-tested casters block rays) is the right
 one for this game.
 
+## 4. Multi-bounce GI: a world-space radiance cache (2026-10-31, plan; branch claude/rt-radiance-cache)
+
+### The gap
+Modern RT games (Cyberpunk / Alan Wake 2 path tracing with SHaRC or NRC, Metro Exodus EE's probes, RTXGI DDGI) carry light over
+several bounces through a world-space cache: a path stops at its second vertex and takes everything after it from the cache. NVR's RT
+GI (FORK-RT-AO.md) is one bounce: a ray from each half-resolution pixel, and at its hit either the game's lit frame (on screen) or
+analytic light (sun + one picked lamp, each with a shadow ray; GlowGI). Hits on screen already hold more than one bounce (the lit
+frame has last frame's GI in it), so the gap is **off screen**: a room lit by a lamp behind the camera, a sunlit courtyard seen
+through a door, the far side of a corridor. There the bounce sees only direct light, and corners that light reaches in two bounces
+stay black.
+
+### Design (no new core features: shared images and passes only)
+The core has no storage buffers or integer images to share, so a hash grid with atomic inserts (SHaRC proper) is out. A
+**camera-centred, world-anchored grid of irradiance cells** updated by gathering (DDGI-style) needs neither, and its update has the
+same feedback loop that gives SHaRC its infinite bounces:
+- **Grid:** 32 x 32 x 16 cells round the camera, `CacheCellSize` units each (default 128, ~1.8 m: 58 x 58 x 29 m). The cells are
+  fixed in the world (cell = floor(world / size)) and stored toroidally (slot = cell mod 32/32/16), so moving the camera re-uses
+  every cell still inside the box. Each slot keeps its cell's world coordinate (its stamp) and is reset when a different cell maps there.
+- **Storage:** one RGBA16F shared image, 256 x 256 = 16384 cells x 4 texels: three L1 coefficient texels (red, green, blue: the mean
+  of the incoming light and the mean of light x direction, so irradiance(n) = c0 + 2 c1 . n) and one header texel (the stamp, the
+  frames of samples behind it, how much of what it sees is the back of something).
+- **Update pass** (`RtRadianceCache.spv`, RtAOTrace.comp built with RT_CACHE_PASS): a quarter of the cells a frame (in turn), each
+  traces `CacheRays` rays (default 8, a rotated Fibonacci sphere) from its centre. At a hit: the hit's colour (HitTextures) x (the
+  same direct light as the GI bounce: sun + one picked lamp with shadow rays) + **the cache's own irradiance at the hit** (last
+  frame's: the recursion: bounce n+1 from bounce n, one more bounce a frame) + glow. Misses give 0 (the sky's light is the game's
+  ambient already, as for GI). Blended into the cell's history (1 / M, M up to `CacheFrames`, default 16).
+- **Leaks:** a cell whose centre sits inside a wall sees mostly back faces; its header keeps that share and lookups weigh it out.
+  Lookups also weigh each of the 8 cells round the point by the cosine toward it (DDGI's normal weight) and look from half a cell off
+  the surface.
+- **Lookup:** in the GI bounce (both the separate GI pass and the merged AO + GI pass), at an off-screen hit, the light it sends back
+  becomes albedo x (direct + `CacheStrength` x cache irradiance) instead of albedo x direct. On-screen hits stay the lit frame.
+  The merged pass has no free image binding, so the cache goes at binding 4 (the plain AO path's GI output, unused when the
+  reuse runs in that pass); the separate GI pass binds it as its 12th image (binding 15).
+- **Settings** (`[Shaders.AmbientOcclusion.RT]`, needs GI and GIReuse > 0): `RadianceCache` (default false), `CacheStrength` (1.0),
+  `CacheCellSize` (128), `CacheRays` (8), `CacheFrames` (16). Off = exactly the current passes (no image is registered differently,
+  the update pass is not added, the lookup's flag is 0).
+- **Debug:** `DebugView 6` (the GI bounce light alone, as before) with RadianceCache 0 / 1 shows what the cache adds.
+- **Expected cost on the iGPU:** 4096 cells x 8 rays x (1 + up to 2 shadow rays) ~ 100k rays a frame, ~1/5 of the GI pass's;
+  the lookup 32 image reads per off-screen hit. Target < 3 ms.
+
+### Test
+One bulk run, iGPU, Lucky 38 (an interior lit by lamps) and Goodsprings noon (sun bounce), RadianceCache 0 / 1 (+ DebugView 6):
+the bounce light's mean and its change off-screen-lit corners, the pass costs (update pass + the GI pass with lookups), no crash.
+
+### Results: run rt-rc-1 (2026-10-31, c7cc26b6, DLL 4E9E4A49; iGPU, fork-r13 d3d9 D0F5B553, helper extra-r13b 63C95421, run toml rtao/run-toml-igpu-hit-glow.toml)
+Bench 20261031-021205-slotA (lucky22) and 20261031-031236-slotC (og-goodsprings): both **PASS**, CrashLogger header only, no helper
+or shader errors. The cache logged "started over" on each switch-on (32 x 32 x 16 cells of 128 units, 8 rays, merged AO + GI pass
+and separate GI pass both), and no slot ever went NaN (the shots stay clean).
+- **Cost** (helper pass times, ms a run; each line prints at the next shot's change, so it covers the shot before):
+  - `RtRadianceCache.spv`: Lucky 38 **3.0-3.4 ms**, Goodsprings **7.6-8.9 ms** (outdoors the rays travel far and most hit
+    something lit by the sun: two shadow rays a hit). Over the < 3 ms target outdoors.
+  - The merged AO + GI pass with the lookups: Lucky 38 40.4 ms (c1-light) vs 38.7 / 37.7 (c0-light / c0b-light): about +2 ms,
+    inside this iGPU's noise. Goodsprings' numbers drift too much shot to shot (24-37 ms) to split.
+- **Picture** (DebugView 6, the GI bounce light alone; System.Drawing, every 2nd pixel):
+  - Lucky 38, still camera for c0 / c1 / c2: RadianceCache 1 adds **+0.19 / 255** mean (0.06 % of pixels change by more than
+    8), CacheStrength 2 **+0.42**. It works and scales with the strength, but in this spot almost every bounce ray lands on
+    screen and takes the lit frame (which already holds the earlier bounces), so the cache has little to add.
+  - The camera moved after c2 (c0b looks through palm fronds; Lucky 38 camera cell 6 -27 -> 8 -27 -> 5 -28 over the run), and in
+    Goodsprings the third-person player walked between every shot, so the c0b noise check, the g4 pair and all of Goodsprings
+    give no A/B (c0 vs c0b: -11.9 Lucky, -15.2 Goodsprings: view changes, not the cache).
+- **Verdict:** safe to ship **off** (default false; off = the earlier passes, except the AO / GI shader code is ~8.5 KB bigger).
+  Not worth turning on yet: too little gain where measured, too costly outdoors. Next, if pursued: CacheRays 4 and 1 in 8 cells a
+  frame (roughly a quarter of the cost), the lamp pick only (no sun shadow ray) for cache hits outdoors, and a still first-person
+  spot where the lit area is behind the camera (a room lit through a door) for the A/B.
+
+### Cost cut + DebugView 7: run rt-rc-2 (2026-10-31, 86767536, DLL 9EECBCFE; same fork / helper / toml as rt-rc-1)
+Changes: interiors only unless `CacheExteriors` (default false); `CacheSpread` 8 (1 in 8 cells a frame, was a fixed 4);
+outdoors `CacheRaysExterior` 4 and `CacheSpreadExterior` 8; **lazy cells**: a settled cell whose rays found no surface within 2.5 cells
+(the air: no lookup reaches it; flagged by the header's sign) or that is mostly inside something (lookups weigh it out) is traced 1 visit
+in 8. RT `DebugView 7`: the bounce light (as 6) with every hit lit as off screen (Shade everywhere), so the cache's whole share shows.
+Bench 20261031-041101-slotA (lucky22) **PASS**; 20261031-042622-slotC (og-goodsprings) "FAIL": the self-test's 480 s limit (the
+trip there took 4 min and this list is 2 shots longer), after every measured shot had run; CrashLogger header only in both.
+- **Cost** (`RtRadianceCache.spv`, ms a run):
+
+  | | rt-rc-1 (8 rays, 1 in 4) | old settings + lazy cells | new defaults |
+  |---|---|---|---|
+  | Lucky 38 | 3.0-3.4 | 2.9 | **1.7-2.2** |
+  | Goodsprings (CacheExteriors 1) | 7.6-8.9 | 5.6 | **2.1** |
+  | Goodsprings, default | 7.6-8.9 | | **0** (off outdoors: no cache pass in the log) |
+
+  Lazy cells save ~30 % outdoors (the air above the ground), little indoors. Spread 8 doubles the lag: a cell's light follows a
+  lamp switched on within CacheFrames x 8 frames.
+- **Why so little light in Lucky 38: a real result, not a scale error.** DebugView 7 (all hits off screen, still camera): cache off
+  7.63 / 255 mean, cache on **8.02** (+0.39, +5 %); cache off again 7.68 (noise 0.05). DebugView 6 (the real mix) is 17.9: about
+  60 % of the bounce light comes from hits on screen, which take the game's lit frame (it already holds the light's later bounces),
+  and of the off-screen 40 % the cache adds 5 %. The units check out (L1 of pi x radiance: irradiance(n) = c0 + 2 c1 . n, the same
+  units as Shade's direct light; CacheStrength 2 doubled the gain in rt-rc-1: +0.19 -> +0.42). The casino hall is large and dark
+  (low albedo, far walls: a second bounce is albedo x view factor of the first), and the cache is lit by the 7 nearest lamps only.
+  Where the cache should matter: a room lit only from behind the camera or through a door (not this spot). The camera moved
+  before the DebugView 6 pair, and Goodsprings' player walked between every shot again (no picture A/B there).
+- **Verdict:** RadianceCache stays **off** by default; on, it now costs ~2 ms indoors and nothing outdoors (CacheExteriors off).
+  For a real look gain it needs more light in the cache (all of the cell's lamps, not the 7 GI lamps) and a test spot lit from
+  off screen.
+
 ## Runs (iGPU, fork-0033c, helper extra-p3d, run toml rtao/run-toml-igpu-hit-plants.toml = AlphaTested + HitTextures + Actors + plant wind on)
 - **rtfol-1** 20261030-135727-slotC (og-goodsprings 16:00, Bend 16): no crash, no helper errors. Log: `plant sway on: 581.5 plant
   instances leaned a frame`; `player: third person; body node drawn; 29.4 body instances a frame`. The slot's camera faces the sun
