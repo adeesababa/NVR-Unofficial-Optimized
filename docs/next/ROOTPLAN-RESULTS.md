@@ -458,3 +458,30 @@ Run 20261030-190713-slotA (still Freeside at night, FSR 3.1 RenderScale 0.67, AB
 0.49 %, uncut 2.33 %, mask-off repeat 0.11 %; lower half (the near alpha draws) 0.85 %. Coverage walking: 5.2 % of the screen > 0.1 at
 scale 1, 8.4 % at 4. Not judged: whether smoke / sparks trail less in motion (needs a scene with them and a look in motion); cost not
 measured cleanly (walk timings swing; two screen copies + one pass at 960x540).
+
+## Round 12: plan step C (the other shader families onto one lamp list) + the reactive trailing question
+
+**Which family loses lamps (LAMP CAPS census, d618e2fc, run 20261030-195707-slotA).** Per pass type and object, a frame's passes against
+the object's own active lamps (its lighting property's list). Lucky 38, Vault 21 (people) and Freeside at night:
+- the shiny many-lamp shaders (SLS2034/2036) show 16 / 550 / 15 objects a frame "short" by 21 / 2850 / 72 lamps, and ManyLamps' own line
+  shows it adds exactly those (16 / 564 / 16 objects, 21 / 2902 / 77 lamps): they are lit;
+- every other object family (SLS2011-2031 objects, people, NOLIGHT) is short of nothing; SLS2024 (2-lamp glowing objects) 3 objects;
+- the land (TerrainTemplate SLS2092-2146, lamps from Vanilla Plus Terrain): in Freeside half the pieces near the lamps (7.25 own lamps)
+  are drawn by the 6-lamp land shader with lamps left out (2 objects, 15 lamps a frame).
+So step C's per-family table ports have nothing to light that is not lit already, except the land. The rest of C's value (fewer
+permutations, one falloff / shadow lookup) carries no measured picture or time gain here; the one shared lookup the atlas needs is built
+with the atlas step.
+
+**LandAllLamps (off, restart; e042b74f, DLL E35F344C).** The land cannot read the table (no free sampler), so NVR adds the piece's
+other lamps after VPT's in VPT's own registers (c39 colours / c63 positions / c88 count; land shaders compiled for 24), after VPT's count
+write. Self-check against VPT's entries: v1 (acting on every write) 46 % matched and refused itself; v2 100 % matched by position, colour
+difference 0.0000 (run 20261030-202304-slotA): 16 lamps a frame added to 6 land draws. Picture vs off (run 202124, two launches, Freeside
+at night and with a placed street light): 0.09-0.11 % of pixels > 16, mean -0.02, the cross-launch noise; no change on the road in the
+diff maps. The added lamps are in each piece's list but reach nothing visible at these spots. Stays off.
+
+**Reactive mask and fire (the trailing question).** The game's fire FXFireMed01 placed ahead in Freeside at night (it drifts as puffs).
+Walking (run 201820) and still (run 202441), ReactiveMask 0 / 4 alternating: the fire puff is on screen in 4 of 6 ReactiveMask 4 shots
+and 0 of 6 mask-off shots (p ~0.03 if it were chance). Suggests FSR without the mask drops short-lived fire; with it the fire shows.
+Not a proof (the puffs are random); worth a look in motion before defaulting ReactiveMask on.
+Notes: the SettingShots `walk` applies to the whole list; `sgtm 0.001` freezes particle effects (none emit); placeatme <base> 1 300 0 puts
+it ahead of the player.
