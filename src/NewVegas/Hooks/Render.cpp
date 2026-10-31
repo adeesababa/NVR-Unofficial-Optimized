@@ -48,6 +48,7 @@ void HdrOutputNoteDesktop() { HdrOutput::NoteDesktop(); }	// UNOFFICIAL 2026-10-
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
 #include "../../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-26: DXVK PROFILE lines (F10 profiling on NVR DXVK 1.5)
+#include "../../core/LandLamps.h"	// UNOFFICIAL 2026-10-30 LandAllLamps: the land lit by all of its own lamps (plan C)
 #include "../../core/ReactiveMask.h"	// UNOFFICIAL 2026-10-30 ReactiveMask: FSR's reactive mask from the world's alpha draws
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
@@ -668,7 +669,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 #endif
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
 	ManyLamps::BeginFrame(ConstantFilter::Hooked);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass (F10 statistics)
-	ConstantFilter::PixelWriteAfter = ManyLamps::State == 1 ? &ManyLamps::AfterPixelWrite : nullptr;	// UNOFFICIAL ManyLampsOnePass: the block back after the game's writes
+	LandLamps::BeginFrame();	// UNOFFICIAL 2026-10-30 LandAllLamps
+	// UNOFFICIAL ManyLampsOnePass: the block back after the game's writes; 2026-10-30 LandAllLamps: the land's other lamps after VPT's
+	struct AfterWrite { static void Both(UINT start, UINT count) { ManyLamps::AfterPixelWrite(start, count); LandLamps::AfterPixelWrite(start, count); } };
+	ConstantFilter::PixelWriteAfter = ManyLamps::State == 1 && LandLamps::CompiledIn() ? &AfterWrite::Both : ManyLamps::State == 1 ? &ManyLamps::AfterPixelWrite :
+		LandLamps::CompiledIn() ? &LandLamps::AfterPixelWrite : nullptr;
+	if (LandLamps::CompiledIn() && !ConstantFilter::Hooked) { static bool warned = false; if (!warned) { warned = true; Logger::Log("[WARNING] LandAllLamps: the pixel-constant hook (ConstantFilter) is not in: nothing added"); } }	// UNOFFICIAL ManyLampsOnePass: the block back after the game's writes
 	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
 	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
 	PbrPop::SpecDistance::BeginFrame();	// UNOFFICIAL 2026-10-27 SpecularDistance (before the scene walk builds the objects' passes)
@@ -2931,6 +2937,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 #endif
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	LandLamps::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr);	// UNOFFICIAL 2026-10-30 LandAllLamps
 	ManyLamps::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the run's first object
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
 	OnePassDepth::Reapply(TheRenderManager->device);	// UNOFFICIAL LampsDepthFirst: a bind inside a depth-only draw keeps the depth-only shader
@@ -3006,7 +3013,65 @@ namespace LampCountStats {
 	struct Seen { const void* light; float x, y, z, radius; unsigned draws; };
 	static Seen Lamps[128] = {};
 	static int LampCount = 0;
+	// UNOFFICIAL 2026-10-30 LAMP CAPS (F10 profile, world scene; ROOT-ASSUMPTIONS-PLAN C: which shader family loses lamps): per pass type
+	// (named by the first pixel shader seen drawing it), its objects a frame, and against each object's own active lamps (its lighting
+	// property's list +0x60, filtered as GetNumberOfActiveNonShadowLights, as ManyLamps reads it) the lamps none of its passes this frame
+	// carried: objects short of lamps and the lamps left out.
+	struct Obj { UInt8 type; std::vector<const void*> own, seen; };	// (own: listed when first drawn; the geometry is not read again)
+	struct Cap { unsigned long long objects = 0, draws = 0, own = 0, short_ = 0, leftOut = 0; char shader[16] = ""; };
+	static Cap Caps[256];
+	static std::unordered_map<NiGeometry*, Obj> Objects;
+	static unsigned CapFrames = 0;
+	static UInt32 CapFrame = 0;
+	static int OwnLamps(NiGeometry* geometry, std::vector<const void*>* list) {
+		// only a lighting property has the light list at +0x60 (run 20261030-193412-slotA crashed reading it from another kind)
+		BSShaderProperty* shade = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
+		const UInt8* property = shade && shade->IsLightingProperty() ? (const UInt8*)shade : nullptr;
+		int n = 0;
+		for (const UInt32* node = property ? *(const UInt32* const*)(property + 0x60) : nullptr; node; node = (const UInt32*)node[0]) {
+			const UInt8* light = (const UInt8*)node[2];
+			if (!light || *(const UInt16*)(light + 0x110) == 0xFF) continue;
+			const UInt8* niLight = *(const UInt8* const*)(light + 0xF8);
+			if (!niLight || (niLight[0x30] & 1) || light[0xEC]) continue;
+			n++;
+			if (list) list->push_back(light);
+		}
+		return n;
+	}
+	static void EndCapFrame() {
+		for (auto& e : Objects) {
+			Cap& cap = Caps[e.second.type];
+			cap.objects++;
+			cap.own += e.second.own.size();
+			int missing = 0;
+			for (const void* l : e.second.own) if (std::find(e.second.seen.begin(), e.second.seen.end(), l) == e.second.seen.end()) missing++;
+			if (missing) { cap.short_++; cap.leftOut += missing; }
+		}
+		Objects.clear();
+		if (++CapFrames < 240) return;
+		const double f = 1.0 / CapFrames;
+		for (unsigned t = 0; t < 256; t++) {
+			Cap& k = Caps[t];
+			if (k.objects) Logger::Log("LAMP CAPS pass 0x%02X (%s): %.1f objects a frame (%.1f draws), %.2f own lamps each; %.1f objects a frame short of lamps, %.1f lamps left out",
+				t, k.shader[0] ? k.shader : "?", k.objects * f, k.draws * f, (double)k.own / k.objects, k.short_ * f, k.leftOut * f);
+			k = Cap();
+		}
+		CapFrames = 0;
+	}
+	static void CountCaps(const PointShadowForward::RenderPassView* pass) {
+		if (!GpuTimer::Enabled || !pass || !pass->geometry || ShaderSplit::CurrentContext != ShaderSplit::World) return;
+		const UInt32 frame = TheFrameRateManager ? TheFrameRateManager->FrameNumber : 0;
+		if (frame != CapFrame) { if (CapFrame) EndCapFrame(); CapFrame = frame; }
+		const UInt8 type = pass->passEnum & 0xFF;
+		Cap& cap = Caps[type];
+		cap.draws++;
+		if (!cap.shader[0] && PointShadowForward::LastPixelShaderName) strncpy_s(cap.shader, PointShadowForward::LastPixelShaderName, _TRUNCATE);
+		auto found = Objects.find(pass->geometry);
+		if (found == Objects.end()) { found = Objects.emplace(pass->geometry, Obj{ type, {}, {} }).first; OwnLamps(pass->geometry, &found->second.own); }
+		for (int k = 0; pass->lights && k < pass->numLights; k++) if (pass->lights[k]) found->second.seen.push_back(pass->lights[k]);
+	}
 	static void Count(const PointShadowForward::RenderPassView* pass) {
+		CountCaps(pass);
 		if (!PointShadowForward::LogObjectLamps || !pass) return;
 		const unsigned type = pass->passEnum & 0xFF;
 		Draws[type][(std::min)((unsigned)pass->numLights, 15u)]++;
@@ -3070,6 +3135,7 @@ static void MaterialForPass(void* Pass) {
 static void ForwardShadowsForPass(void* Pass) {
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) MaterialForPass(Pass);	// UNOFFICIAL 2026-10-29 MaterialBuffer
 	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
+	LandLamps::ForPass((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL 2026-10-30 LandAllLamps: the piece's own lamps, for after VPT's write
 	ManyLamps::ForPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the object's lamps in c37-c63
 	LampsInOnePass::GlowForPass((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsGlow: the glow map on s4
 	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,

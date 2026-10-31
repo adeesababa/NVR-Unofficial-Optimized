@@ -6,6 +6,7 @@
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ManyLamps.h"	// UNOFFICIAL 2026-10-27 ManyLampsOnePass
+#include "LandLamps.h"	// UNOFFICIAL 2026-10-30 LandAllLamps
 #include "ShaderPrecompile.h"
 #include "TestTools.h"	// NVR_TEST_TOOLS (FailShaders)
 #include <unordered_set>
@@ -229,6 +230,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// up to 24 lamps from c37-c63, c76-c87 and c98-c107, lit per pixel through the surface's tangent frame. DXVK only (shader length), read at startup.
 	// UNOFFICIAL 2026-10-29: 2 = LightCommonLamps (the lamps from the frame's lamp table, Includes/LightCommon.hlsl)
 	AppendDefine("MANY_LAMPS_ON", ManyLamps::ShaderDefine());
+	// UNOFFICIAL 2026-10-30 LandAllLamps (core/LandLamps.h, TerrainTemplate.hlsl): every land shader with lamps compiled for 24. Defined only
+	// when on at startup, so that otherwise the land shaders (and the cache's keys) are exactly as before.
+	if (LandLamps::CompiledIn()) AppendDefine("LAND_ALL_LAMPS", "1");
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
